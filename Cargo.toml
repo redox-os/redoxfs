@@ -13,4 +13,4 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "redoxfs-utility"
-path = "src/utility.rs"
+path = "utility/main.rs"

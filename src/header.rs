@@ -1,5 +1,5 @@
-use std::{mem, slice};
-use std::ops::{Deref, DerefMut};
+use core::{mem, slice};
+use core::ops::{Deref, DerefMut};
 
 use super::Extent;
 

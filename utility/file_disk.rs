@@ -1,10 +1,7 @@
-extern crate redoxfs;
-
 use std::fs::File;
-use std::io::{Result, Read, Write, Seek, SeekFrom};
-use std::str;
+use std::io::{Error, Result, Read, Write, Seek, SeekFrom};
 
-use redoxfs::{Disk, FileSystem};
+use redoxfs::Disk;
 
 pub struct FileDisk {
     path: String,
@@ -21,7 +18,7 @@ impl FileDisk {
     }
 }
 
-impl Disk for FileDisk {
+impl Disk<Error> for FileDisk {
     fn name(&self) -> &str {
         &self.path
     }
@@ -34,14 +31,5 @@ impl Disk for FileDisk {
     fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         try!(self.file.seek(SeekFrom::Start(block * 512)));
         self.file.write(buffer)
-    }
-}
-
-fn main() {
-    let disk = FileDisk::new("../../build/i386-unknown-redox/debug/harddrive.bin").unwrap();
-    let filesystem = FileSystem::new(Box::new(disk)).unwrap();
-    for (node_block, node) in filesystem.nodes.iter() {
-        let name = unsafe { str::from_utf8_unchecked(&node.name) };
-        println!("{}: {}", node_block, name);
     }
 }

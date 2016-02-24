@@ -1,18 +1,23 @@
-use std::cmp;
-use std::collections::BTreeMap;
+use alloc::boxed::Box;
+
+use collections::{BTreeMap, String};
+
+use core::cmp;
+
+use core::fmt::Display;
 
 use super::{Disk, Header, Node};
 
 /// A file system
-pub struct FileSystem {
-    pub disk: Box<Disk>,
+pub struct FileSystem<E> {
+    pub disk: Box<Disk<E>>,
     pub header: Header,
     pub nodes: BTreeMap<u64, Node>,
 }
 
-impl FileSystem {
+impl<E: Display> FileSystem<E> {
     /// Create a file system from a disk
-    pub fn new(mut disk: Box<Disk>) -> Result<Self, String> {
+    pub fn new(mut disk: Box<Disk<E>>) -> Result<Self, String> {
         let mut header = Header::new();
         try!(disk.read_at(1, &mut header).map_err(|err| format!("{}: could not read header: {}", disk.name(), err)));
         if header.valid() {
