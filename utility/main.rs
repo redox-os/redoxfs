@@ -25,7 +25,7 @@ fn main() {
                             }
                         }
                         if name == path {
-                            println!("{}: {}: cat", node_block, name);
+                            println!("{}: {}", node_block, name);
                             break;
                         } else if name.starts_with(&path) {
                             println!("{}: {}", node_block, name);
