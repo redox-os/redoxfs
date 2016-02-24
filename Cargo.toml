@@ -1,0 +1,16 @@
+[package]
+name = "redoxfs"
+description = "The Redox Filesystem"
+repository = "https://github.com/redox-os/redoxfs"
+version = "0.1.0"
+license-file = "LICENSE"
+readme = "README.md"
+authors = ["Jeremy Soller <jackpot51@gmail.com>"]
+
+[lib]
+name = "redoxfs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "redoxfs-utility"
+path = "src/utility.rs"
