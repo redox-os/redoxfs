@@ -33,7 +33,7 @@ impl Header {
 
     pub fn new(size: u64, root: u64, free: u64) -> Header {
         Header {
-            signature: *b"REDOXFS\0",
+            signature: *b"RedoxFS\0",
             version: 1,
             uuid: [0; 16],
             size: size,
@@ -43,7 +43,7 @@ impl Header {
     }
 
     pub fn valid(&self) -> bool {
-        &self.signature == b"REDOXFS\0" && self.version == 1
+        &self.signature == b"RedoxFS\0" && self.version == 1
     }
 }
 

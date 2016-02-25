@@ -76,10 +76,45 @@ impl<E> FileSystem<E> {
         Ok(block)
     }
 
+    pub fn deallocate(&mut self, _block: u64) -> Result<bool, E> {
+        Ok(false)
+    }
+
     pub fn node(&mut self, block: u64) -> Result<Node, E> {
         let mut node = Node::default();
         try!(self.disk.read_at(block, &mut node));
         Ok(node)
+    }
+
+    pub fn find_node(&mut self, name: &str) -> Result<Option<(u64, Node)>, E> {
+        let mut parent_node = (self.header.1.root, Node::default());
+        loop {
+            if parent_node.0 > 0 {
+                try!(self.disk.read_at(parent_node.0, &mut parent_node.1));
+            }else{
+                return Ok(None);
+            }
+
+            for extent in parent_node.1.extents.iter() {
+                for i in 0 .. extent.length/512 {
+                    let mut child_node = (extent.block + i, Node::default());
+                    try!(self.disk.read_at(child_node.0, &mut child_node.1));
+
+                    let mut matches = false;
+                    if let Ok(child_name) = child_node.1.name() {
+                        if child_name == name {
+                            matches = true;
+                        }
+                    }
+                    if matches {
+                        return Ok(Some(child_node));
+                    }
+                }
+            }
+
+            parent_node.0 = parent_node.1.next;
+            parent_node.1 = Node::default();
+        }
     }
 
     fn create_node(&mut self, name: &str, mode: u64) -> Result<Option<(u64, Node)>, E> {
@@ -111,10 +146,14 @@ impl<E> FileSystem<E> {
                 }
 
                 for mut extent in next_node.1.extents.iter_mut() {
-                    if extent.length == 0 {
+                    if extent.block + extent.length/512 == block {
                         inserted = true;
-                        extent.length = 512;
+                        extent.length += 512;
+                        break;
+                    } else if extent.length == 0 {
+                        inserted = true;
                         extent.block = block;
+                        extent.length = 512;
                         break;
                     }
                 }
@@ -142,5 +181,17 @@ impl<E> FileSystem<E> {
 
     pub fn create_file(&mut self, name: &str) -> Result<Option<(u64, Node)>, E> {
         self.create_node(name, Node::MODE_FILE)
+    }
+
+    fn remove_node(&mut self, _name: &str, _mode: u64) -> Result<bool, E> {
+        Ok(false)
+    }
+
+    pub fn remove_dir(&mut self, name: &str) -> Result<bool, E> {
+        self.remove_node(name, Node::MODE_DIR)
+    }
+
+    pub fn remove_file(&mut self, name: &str) -> Result<bool, E> {
+        self.remove_node(name, Node::MODE_FILE)
     }
 }

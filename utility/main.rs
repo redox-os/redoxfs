@@ -42,7 +42,20 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                             Err(err) => println!("node: invalid block {}: {}", arg, err)
                         }
                     } else {
-                        println!("node <block>")
+                        println!("node <block>");
+                    }
+                },
+                "find" => {
+                    if let Some(arg) = args.next() {
+                        match fs.find_node(arg) {
+                            Ok(node_option) => match node_option {
+                                Some(node) => println!("{}: {:#?}", node.0, node.1),
+                                None => println!("find: did not find {}", arg)
+                            },
+                            Err(err) => println!("find: failed to read {}: {}", arg, err)
+                        }
+                    } else {
+                        println!("find <path>");
                     }
                 },
                 "ls" => {
@@ -85,7 +98,7 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                         println!("touch <file>");
                     }
                 },
-                _ => println!("commands: exit header node ls mkdir touch")
+                _ => println!("commands: exit header node find ls mkdir touch")
             }
         }
     }
