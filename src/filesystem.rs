@@ -61,15 +61,19 @@ impl<E> FileSystem<E> {
     }
 
     pub fn allocate(&mut self) -> Result<Option<u64>, E> {
-        if self.free.1.extents[0].length >= 512 {
-            let block = self.free.1.extents[0].block;
-            self.free.1.extents[0].length -= 512;
-            self.free.1.extents[0].block += 1;
-            try!(self.disk.write_at(self.free.0, &self.free.1));
-            Ok(Some(block))
-        } else {
-            Ok(None)
+        let mut block = None;
+        for mut extent in self.free.1.extents.iter_mut() {
+            if extent.length >= 512 {
+                block = Some(extent.block);
+                extent.length -= 512;
+                extent.block += 1;
+                break;
+            }
         }
+        if block.is_some() {
+            try!(self.disk.write_at(self.free.0, &self.free.1));
+        }
+        Ok(block)
     }
 
     pub fn node(&mut self, block: u64) -> Result<Node, E> {
@@ -78,13 +82,37 @@ impl<E> FileSystem<E> {
         Ok(node)
     }
 
-    pub fn touch(&mut self, name: &str) -> Result<Option<(u64, Node)>, E> {
+    fn create_node(&mut self, name: &str, mode: u64) -> Result<Option<(u64, Node)>, E> {
         if let Some(block) = try!(self.allocate()) {
-            let node = (block, Node::new(name, Node::MODE_FILE));
+            let node = (block, Node::new(name, mode));
             try!(self.disk.write_at(node.0, &node.1));
-            Ok(Some(node))
+
+            let mut inserted = false;
+            for mut extent in self.root.1.extents.iter_mut() {
+                if extent.length == 0 {
+                    inserted = true;
+                    extent.length = 512;
+                    extent.block = block;
+                    break;
+                }
+            }
+            if inserted {
+                try!(self.disk.write_at(self.root.0, &self.root.1));
+
+                Ok(Some(node))
+            } else {
+                Ok(None)
+            }
         } else {
             Ok(None)
         }
+    }
+
+    pub fn create_dir(&mut self, name: &str) -> Result<Option<(u64, Node)>, E> {
+        self.create_node(name, Node::MODE_DIR)
+    }
+
+    pub fn create_file(&mut self, name: &str) -> Result<Option<(u64, Node)>, E> {
+        self.create_node(name, Node::MODE_FILE)
     }
 }

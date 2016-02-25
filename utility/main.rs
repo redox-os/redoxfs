@@ -35,7 +35,7 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                         match arg.parse::<u64>() {
                             Ok(block) => {
                                 match fs.node(block) {
-                                    Ok(node) => println!("{:#?}", node),
+                                    Ok(node) => println!("{}: {:#?}", block, node),
                                     Err(err) => println!("node: failed to read {}: {}", block, err)
                                 }
                             },
@@ -46,38 +46,46 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                     }
                 },
                 "ls" => {
-                    /*
-                    let path = args.next().unwrap_or("/");
-                    for (node_block, node) in filesystem.nodes.iter() {
-                        let mut name = "/".to_string();
-                        for &b in node.name.iter() {
-                            if b == 0 {
-                                break;
-                            } else {
-                                unsafe { name.as_mut_vec().push(b); }
-                            }
-                        }
-                        if name.starts_with(&path) {
-                            println!("{}: {}", node_block, name);
+                    let mut blocks = Vec::new();
+                    for extent in fs.root.1.extents.iter() {
+                        for i in 0 .. extent.length/512 {
+                            blocks.push(extent.block + i);
                         }
                     }
-                    */
-                    println!("TODO: ls");
+                    for &block in blocks.iter() {
+                        match fs.node(block) {
+                            Ok(node) => println!("{}: {:#?}", block, node),
+                            Err(err) => println!("ls: failed to read {}: {}", block, err)
+                        }
+                    }
+                },
+                "mkdir" => {
+                    if let Some(arg) = args.next() {
+                        match fs.create_dir(arg) {
+                            Ok(node_option) => match node_option {
+                                Some(node) => println!("{}: {:#?}", node.0, node.1),
+                                None => println!("mkdir: not enough space for {}", arg)
+                            },
+                            Err(err) => println!("mkdir: failed to create {}: {}", arg, err)
+                        }
+                    } else {
+                        println!("mkdir <file>");
+                    }
                 },
                 "touch" => {
                     if let Some(arg) = args.next() {
-                        match fs.touch(arg) {
+                        match fs.create_file(arg) {
                             Ok(node_option) => match node_option {
                                 Some(node) => println!("{}: {:#?}", node.0, node.1),
                                 None => println!("touch: not enough space for {}", arg)
                             },
-                            Err(err) => println!("touch: failed to touch {}: {}", arg, err)
+                            Err(err) => println!("touch: failed to create {}: {}", arg, err)
                         }
                     } else {
                         println!("touch <file>");
                     }
                 },
-                _ => println!("unknown command: {}", command)
+                _ => println!("commands: exit header node ls mkdir touch")
             }
         }
     }
