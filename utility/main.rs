@@ -64,6 +64,19 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                     */
                     println!("TODO: ls");
                 },
+                "touch" => {
+                    if let Some(arg) = args.next() {
+                        match fs.touch(arg) {
+                            Ok(node_option) => match node_option {
+                                Some(node) => println!("{}: {:#?}", node.0, node.1),
+                                None => println!("touch: not enough space for {}", arg)
+                            },
+                            Err(err) => println!("touch: failed to touch {}: {}", arg, err)
+                        }
+                    } else {
+                        println!("touch <file>");
+                    }
+                },
                 _ => println!("unknown command: {}", command)
             }
         }
@@ -90,11 +103,15 @@ fn main() {
             }
         }else{
             //Create a 1 GB disk image
-            match Image::create(&path, 1024 * 1024 * 1024) {
+            let size = 1024 * 1024 * 1024;
+            match Image::create(&path, size) {
                 Ok(disk) => match FileSystem::create(Box::new(disk)) {
-                    Ok(filesystem) => {
-                        println!("redoxfs: created filesystem {}", path);
-                        shell(filesystem);
+                    Ok(filesystem_option) => match filesystem_option {
+                        Some(filesystem) => {
+                            println!("redoxfs: created filesystem {}", path);
+                            shell(filesystem);
+                        },
+                        None => println!("redoxfs: not enough space for filesystem on {}", path)
                     },
                     Err(err) => println!("redoxfs: failed to create filesystem {}: {}", path, err)
                 },
