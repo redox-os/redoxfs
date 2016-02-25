@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Error, Read, Write, Seek, SeekFrom};
 
 use redoxfs::Disk;
@@ -9,14 +9,15 @@ pub struct Image {
 
 impl Image {
     pub fn open(path: &str) -> Result<Image, Error> {
-        let file = try!(File::open(path));
+        let file = try!(OpenOptions::new().read(true).write(true).open(path));
         Ok(Image {
             file: file
         })
     }
 
-    pub fn create(path: &str) -> Result<Image, Error> {
-        let file = try!(File::create(path));
+    pub fn create(path: &str, size: u64) -> Result<Image, Error> {
+        let file = try!(OpenOptions::new().read(true).write(true).create(true).open(path));
+        try!(file.set_len(size));
         Ok(Image {
             file: file
         })
@@ -32,5 +33,9 @@ impl Disk<Error> for Image {
     fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize, Error> {
         try!(self.file.seek(SeekFrom::Start(block * 512)));
         self.file.write(buffer)
+    }
+
+    fn size(&mut self) -> Result<u64, Error> {
+        self.file.seek(SeekFrom::End(0))
     }
 }

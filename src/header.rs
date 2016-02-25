@@ -16,7 +16,7 @@ pub struct Header {
     /// Block of root node
     pub root: u64,
     /// Block of free space node
-    pub free_space: u64,
+    pub free: u64,
 }
 
 impl Header {
@@ -27,18 +27,18 @@ impl Header {
             uuid: [0; 16],
             size: 0,
             root: 0,
-            free_space: 0,
+            free: 0,
         }
     }
 
-    pub fn new() -> Header {
+    pub fn new(size: u64, root: u64, free: u64) -> Header {
         Header {
             signature: *b"REDOXFS\0",
             version: 1,
             uuid: [0; 16],
-            size: 0,
-            root: 0,
-            free_space: 0,
+            size: size,
+            root: root,
+            free: free,
         }
     }
 

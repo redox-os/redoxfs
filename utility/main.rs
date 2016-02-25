@@ -29,9 +29,7 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
             match command {
                 "" => (),
                 "exit" => break,
-                "header" => {
-                    println!("{:#?}", fs.header);
-                },
+                "header" => println!("{:#?}", fs.header),
                 "node" => {
                     if let Some(arg) = args.next() {
                         match arg.parse::<u64>() {
@@ -76,6 +74,7 @@ fn main() {
     let mut args = env::args();
     if let Some(path) = args.nth(1) {
         if Path::new(&path).exists() {
+            //Open an existing image
             match Image::open(&path) {
                 Ok(disk) => match FileSystem::open(Box::new(disk)) {
                     Ok(filesystem_option) => match filesystem_option {
@@ -90,7 +89,8 @@ fn main() {
                 Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
             }
         }else{
-            match Image::create(&path) {
+            //Create a 1 GB disk image
+            match Image::create(&path, 1024 * 1024 * 1024) {
                 Ok(disk) => match FileSystem::create(Box::new(disk)) {
                     Ok(filesystem) => {
                         println!("redoxfs: created filesystem {}", path);

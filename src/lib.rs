@@ -1,6 +1,7 @@
 #![crate_name="redoxfs"]
 #![crate_type="lib"]
 #![feature(alloc)]
+#![feature(associated_consts)]
 #![feature(collections)]
 #![no_std]
 

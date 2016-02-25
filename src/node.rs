@@ -1,3 +1,5 @@
+use collections::Vec;
+
 use core::{fmt, mem, ops, slice, str};
 
 use super::Extent;
@@ -12,10 +14,28 @@ pub struct Node {
 }
 
 impl Node {
+    pub const MODE_MASK: u64 = 0xF000;
+    pub const MODE_FILE: u64 = 0x8000;
+    pub const MODE_DIR: u64 = 0x4000;
+
     pub fn default() -> Node {
         Node {
             name: [0; 256],
             mode: 0,
+            next: 0,
+            extents: [Extent::default(); 15]
+        }
+    }
+
+    pub fn new(name: &str, mode: u64) -> Node {
+        let mut bytes = [0; 256];
+        for (mut b, c) in bytes.iter_mut().zip(name.bytes()) {
+            *b = c;
+        }
+
+        Node {
+            name: bytes,
+            mode: mode,
             next: 0,
             extents: [Extent::default(); 15]
         }
@@ -33,11 +53,21 @@ impl Node {
 
         str::from_utf8(&self.name[..len])
     }
+
+    pub fn size(&self) -> u64 {
+        self.extents.iter().fold(0, |size, extent| size + extent.length)
+    }
 }
 
 impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Node {{ name: {:?}, mode: {:?}, next: {:?}, extents: {:?} }}", self.name(), self.mode, self.next, self.extents)
+        let extents: Vec<&Extent> = self.extents.iter().filter(|extent| -> bool { extent.length > 0 }).collect();
+        f.debug_struct("Node")
+            .field("name", &self.name())
+            .field("mode", &self.mode)
+            .field("next", &self.next)
+            .field("extents", &extents)
+            .finish()
     }
 }
 
