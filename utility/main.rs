@@ -14,6 +14,8 @@ use image::Image;
 pub mod image;
 
 fn shell<E: Display>(mut fs: FileSystem<E>){
+    let mut block = fs.header.1.root;
+
     let mut stdout = io::stdout();
     let stdin = io::stdin();
 
@@ -59,10 +61,45 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                         Err(err) => println!("node: failed to read {}: {}", block, err)
                     }
                 },
+                "cd" => {
+                    if let Some(arg) = args.next() {
+                        if arg == "." {
+
+                        } else if arg == ".." {
+                            match fs.node(block) {
+                                Ok(node) => {
+                                    if node.1.parent > 0 {
+                                        block = node.1.parent;
+                                        println!("cd: {}", block);
+                                    } else {
+                                        println!("cd: no parent directory {}", block);
+                                    }
+                                },
+                                Err(err) => println!("cd: failed to read {}: {}", block, err)
+                            }
+                        } else {
+                            match fs.find_node(arg, block) {
+                                Ok(node_option) => match node_option {
+                                    Some(node) => {
+                                        if node.1.is_dir() {
+                                            block = node.0;
+                                            println!("cd: {}", block);
+                                        } else {
+                                            println!("cd: not a dir {}", arg);
+                                        }
+                                    },
+                                    None => println!("cd: did not find {}", arg)
+                                },
+                                Err(err) => println!("cd: failed to read {}: {}", arg, err)
+                            }
+                        }
+                    } else {
+                        println!("cd <path>");
+                    }
+                },
                 "find" => {
                     if let Some(arg) = args.next() {
-                        let root_block = fs.header.1.root;
-                        match fs.find_node(arg, root_block) {
+                        match fs.find_node(arg, block) {
                             Ok(node_option) => match node_option {
                                 Some(node) => println!("{}: {:#?}", node.0, node.1),
                                 None => println!("find: did not find {}", arg)
@@ -74,19 +111,17 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                     }
                 },
                 "ls" => {
-                    let root_block = fs.header.1.root;
                     let mut children = Vec::new();
-                    match fs.child_nodes(&mut children, root_block) {
+                    match fs.child_nodes(&mut children, block) {
                         Ok(()) => for node in children.iter() {
                             println!("{}: {:#?}", node.0, node.1);
                         },
-                        Err(err) => println!("ls: failed to read {}: {}", root_block, err)
+                        Err(err) => println!("ls: failed to read {}: {}", block, err)
                     }
                 },
                 "mkdir" => {
                     if let Some(arg) = args.next() {
-                        let root_block = fs.header.1.root;
-                        match fs.create_node(arg, Node::MODE_DIR, root_block) {
+                        match fs.create_node(Node::MODE_DIR, arg, block) {
                             Ok(node_option) => match node_option {
                                 Some(node) => println!("{}: {:#?}", node.0, node.1),
                                 None => println!("mkdir: not enough space for {}", arg)
@@ -99,8 +134,7 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                 },
                 "touch" => {
                     if let Some(arg) = args.next() {
-                        let root_block = fs.header.1.root;
-                        match fs.create_node(arg, Node::MODE_FILE, root_block) {
+                        match fs.create_node(Node::MODE_FILE, arg, block) {
                             Ok(node_option) => match node_option {
                                 Some(node) => println!("{}: {:#?}", node.0, node.1),
                                 None => println!("touch: not enough space for {}", arg)

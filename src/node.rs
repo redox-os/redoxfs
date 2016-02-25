@@ -7,35 +7,40 @@ use super::Extent;
 /// A file/folder node
 #[repr(packed)]
 pub struct Node {
-    pub name: [u8; 256],
-    pub mode: u64,
+    pub mode: u16,
+    pub name: [u8; 254],
+    pub parent: u64,
     pub next: u64,
     pub extents: [Extent; 15],
 }
 
 impl Node {
-    pub const MODE_MASK: u64 = 0xF000;
-    pub const MODE_FILE: u64 = 0x8000;
-    pub const MODE_DIR: u64 = 0x4000;
+    pub const MODE_TYPE: u16 = 0xF000;
+    pub const MODE_FILE: u16 = 0x8000;
+    pub const MODE_DIR: u16 = 0x4000;
+
+    pub const MODE_PERM: u16 = 0x0FFF;
 
     pub fn default() -> Node {
         Node {
-            name: [0; 256],
             mode: 0,
+            name: [0; 254],
+            parent: 0,
             next: 0,
             extents: [Extent::default(); 15]
         }
     }
 
-    pub fn new(name: &str, mode: u64) -> Node {
-        let mut bytes = [0; 256];
+    pub fn new(mode: u16, name: &str, parent: u64) -> Node {
+        let mut bytes = [0; 254];
         for (mut b, c) in bytes.iter_mut().zip(name.bytes()) {
             *b = c;
         }
 
         Node {
-            name: bytes,
             mode: mode,
+            name: bytes,
+            parent: parent,
             next: 0,
             extents: [Extent::default(); 15]
         }
@@ -52,6 +57,14 @@ impl Node {
         }
 
         str::from_utf8(&self.name[..len])
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.mode & Node::MODE_TYPE == Node::MODE_DIR
+    }
+
+    pub fn is_file(&self) -> bool {
+        self.mode & Node::MODE_TYPE == Node::MODE_FILE
     }
 
     pub fn size(&self) -> u64 {

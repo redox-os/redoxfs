@@ -39,11 +39,11 @@ impl<E> FileSystem<E> {
         let size = try!(disk.size());
 
         if size >= 4 * 512 {
-            let mut free = (3, Node::new("free", Node::MODE_FILE));
+            let mut free = (3, Node::new(Node::MODE_FILE, "free", 0));
             free.1.extents[0] = Extent::new(4, (size - 4 * 512));
             try!(disk.write_at(free.0, &free.1));
 
-            let root = (2, Node::new("root", Node::MODE_DIR));
+            let root = (2, Node::new(Node::MODE_DIR, "root", 0));
             try!(disk.write_at(root.0, &root.1));
 
             let header = (1, Header::new(size, root.0, free.0));
@@ -177,9 +177,9 @@ impl<E> FileSystem<E> {
         }
     }
 
-    pub fn create_node(&mut self, name: &str, mode: u64, parent_block: u64) -> Result<Option<(u64, Node)>, E> {
+    pub fn create_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<Option<(u64, Node)>, E> {
         if let Some(block) = try!(self.allocate()) {
-            let node = (block, Node::new(name, mode));
+            let node = (block, Node::new(mode, name, parent_block));
             try!(self.disk.write_at(node.0, &node.1));
 
             if try!(self.insert_block(block, parent_block)) {
@@ -192,7 +192,7 @@ impl<E> FileSystem<E> {
         }
     }
 
-    pub fn remove_node(&mut self, _name: &str, _mode: u64) -> Result<bool, E> {
+    pub fn remove_node(&mut self, _name: &str) -> Result<bool, E> {
         Ok(false)
     }
 }
