@@ -88,21 +88,49 @@ impl<E> FileSystem<E> {
             try!(self.disk.write_at(node.0, &node.1));
 
             let mut inserted = false;
-            for mut extent in self.root.1.extents.iter_mut() {
-                if extent.length == 0 {
-                    inserted = true;
-                    extent.length = 512;
-                    extent.block = block;
-                    break;
+            let mut last_node = (0, Node::default());
+            let mut next_node = (self.header.1.root, Node::default());
+            while ! inserted {
+                if next_node.0 > 0 {
+                    try!(self.disk.read_at(next_node.0, &mut next_node.1));
+                }else{
+                    if let Some(block) = try!(self.allocate()) {
+                        next_node.0 = block;
+                        if last_node.0 > 0 {
+                            last_node.1.next = block;
+                            if last_node.0 == self.root.0 {
+                                self.root.1.next = last_node.1.next;
+                            }
+                            try!(self.disk.write_at(last_node.0, &last_node.1));
+                        } else {
+                            panic!("last_node was 0");
+                        }
+                    } else {
+                        return Ok(None);
+                    }
+                }
+
+                for mut extent in next_node.1.extents.iter_mut() {
+                    if extent.length == 0 {
+                        inserted = true;
+                        extent.length = 512;
+                        extent.block = block;
+                        break;
+                    }
+                }
+
+                if inserted {
+                    if next_node.0 == self.root.0 {
+                        self.root.1.extents = next_node.1.extents;
+                    }
+                    try!(self.disk.write_at(next_node.0, &next_node.1));
+                } else {
+                    last_node = next_node;
+                    next_node = (last_node.1.next, Node::default());
                 }
             }
-            if inserted {
-                try!(self.disk.write_at(self.root.0, &self.root.1));
 
-                Ok(Some(node))
-            } else {
-                Ok(None)
-            }
+            Ok(Some(node))
         } else {
             Ok(None)
         }
