@@ -20,6 +20,7 @@ pub struct Header {
 }
 
 impl Header {
+    pub const SIGNATURE: &'static [u8; 8] = b"RedoxFS\0";
     pub const VERSION: u64 = 0xFFFFFFFFFFFFFFFF;
 
     pub fn default() -> Header {
@@ -35,7 +36,7 @@ impl Header {
 
     pub fn new(size: u64, root: u64, free: u64) -> Header {
         Header {
-            signature: *b"RedoxFS\0",
+            signature: *Header::SIGNATURE,
             version: Header::VERSION,
             uuid: [0; 16],
             size: size,
@@ -45,7 +46,7 @@ impl Header {
     }
 
     pub fn valid(&self) -> bool {
-        &self.signature == b"RedoxFS\0" && self.version == Header::VERSION
+        &self.signature == Header::SIGNATURE && self.version == Header::VERSION
     }
 }
 
