@@ -7,7 +7,7 @@ use std::fmt::Display;
 use std::io::{self, Write};
 use std::path::Path;
 
-use redoxfs::FileSystem;
+use redoxfs::{FileSystem, Node};
 
 use image::Image;
 
@@ -35,7 +35,7 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                         match arg.parse::<u64>() {
                             Ok(block) => {
                                 match fs.node(block) {
-                                    Ok(node) => println!("{}: {:#?}", block, node),
+                                    Ok(node) => println!("{}: {:#?}", node.0, node.1),
                                     Err(err) => println!("node: failed to read {}: {}", block, err)
                                 }
                             },
@@ -45,9 +45,24 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                         println!("node <block>");
                     }
                 },
+                "root" => {
+                    let block = fs.header.1.root;
+                    match fs.node(block) {
+                        Ok(node) => println!("{}: {:#?}", node.0, node.1),
+                        Err(err) => println!("node: failed to read {}: {}", block, err)
+                    }
+                },
+                "free" => {
+                    let block = fs.header.1.free;
+                    match fs.node(block) {
+                        Ok(node) => println!("{}: {:#?}", node.0, node.1),
+                        Err(err) => println!("node: failed to read {}: {}", block, err)
+                    }
+                },
                 "find" => {
                     if let Some(arg) = args.next() {
-                        match fs.find_node(arg) {
+                        let root_block = fs.header.1.root;
+                        match fs.find_node(arg, root_block) {
                             Ok(node_option) => match node_option {
                                 Some(node) => println!("{}: {:#?}", node.0, node.1),
                                 None => println!("find: did not find {}", arg)
@@ -59,22 +74,19 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                     }
                 },
                 "ls" => {
-                    let mut blocks = Vec::new();
-                    for extent in fs.root.1.extents.iter() {
-                        for i in 0 .. extent.length/512 {
-                            blocks.push(extent.block + i);
-                        }
-                    }
-                    for &block in blocks.iter() {
-                        match fs.node(block) {
-                            Ok(node) => println!("{}: {:#?}", block, node),
-                            Err(err) => println!("ls: failed to read {}: {}", block, err)
-                        }
+                    let root_block = fs.header.1.root;
+                    let mut children = Vec::new();
+                    match fs.child_nodes(&mut children, root_block) {
+                        Ok(()) => for node in children.iter() {
+                            println!("{}: {:#?}", node.0, node.1);
+                        },
+                        Err(err) => println!("ls: failed to read {}: {}", root_block, err)
                     }
                 },
                 "mkdir" => {
                     if let Some(arg) = args.next() {
-                        match fs.create_dir(arg) {
+                        let root_block = fs.header.1.root;
+                        match fs.create_node(arg, Node::MODE_DIR, root_block) {
                             Ok(node_option) => match node_option {
                                 Some(node) => println!("{}: {:#?}", node.0, node.1),
                                 None => println!("mkdir: not enough space for {}", arg)
@@ -87,7 +99,8 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                 },
                 "touch" => {
                     if let Some(arg) = args.next() {
-                        match fs.create_file(arg) {
+                        let root_block = fs.header.1.root;
+                        match fs.create_node(arg, Node::MODE_FILE, root_block) {
                             Ok(node_option) => match node_option {
                                 Some(node) => println!("{}: {:#?}", node.0, node.1),
                                 None => println!("touch: not enough space for {}", arg)
@@ -98,7 +111,7 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                         println!("touch <file>");
                     }
                 },
-                _ => println!("commands: exit header node find ls mkdir touch")
+                _ => println!("commands: exit header node root free find ls mkdir touch")
             }
         }
     }

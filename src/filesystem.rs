@@ -1,12 +1,13 @@
 use alloc::boxed::Box;
 
-use super::{Disk, Extent, Header, Node};
+use collections::vec::Vec;
+
+use super::{Disk, ExNode, Extent, Header, Node};
 
 /// A file system
 pub struct FileSystem<E> {
     pub disk: Box<Disk<E>>,
     pub header: (u64, Header),
-    pub root: (u64, Node),
     pub free: (u64, Node)
 }
 
@@ -26,7 +27,6 @@ impl<E> FileSystem<E> {
             Ok(Some(FileSystem {
                 disk: disk,
                 header: header,
-                root: root,
                 free: free
             }))
         }else{
@@ -52,7 +52,6 @@ impl<E> FileSystem<E> {
             Ok(Some(FileSystem {
                 disk: disk,
                 header: header,
-                root: root,
                 free: free
             }))
         } else {
@@ -80,118 +79,120 @@ impl<E> FileSystem<E> {
         Ok(false)
     }
 
-    pub fn node(&mut self, block: u64) -> Result<Node, E> {
+    pub fn node(&mut self, block: u64) -> Result<(u64, Node), E> {
         let mut node = Node::default();
         try!(self.disk.read_at(block, &mut node));
-        Ok(node)
+        Ok((block, node))
     }
 
-    pub fn find_node(&mut self, name: &str) -> Result<Option<(u64, Node)>, E> {
-        let mut parent_node = (self.header.1.root, Node::default());
-        loop {
-            if parent_node.0 > 0 {
-                try!(self.disk.read_at(parent_node.0, &mut parent_node.1));
-            }else{
-                return Ok(None);
+    pub fn ex_node(&mut self, block: u64) -> Result<(u64, ExNode), E> {
+        let mut node = ExNode::default();
+        try!(self.disk.read_at(block, &mut node));
+        Ok((block, node))
+    }
+
+    pub fn child_nodes(&mut self, children: &mut Vec<(u64, Node)>, parent_block: u64) -> Result<(), E> {
+        if parent_block == 0 {
+            return Ok(());
+        }
+
+        let parent = try!(self.node(parent_block));
+        for extent in parent.1.extents.iter() {
+            for i in 0 .. extent.length/512 {
+                children.push(try!(self.node(extent.block + i)));
             }
+        }
 
-            for extent in parent_node.1.extents.iter() {
-                for i in 0 .. extent.length/512 {
-                    let mut child_node = (extent.block + i, Node::default());
-                    try!(self.disk.read_at(child_node.0, &mut child_node.1));
+        self.child_nodes(children, parent.1.next)
+    }
 
-                    let mut matches = false;
-                    if let Ok(child_name) = child_node.1.name() {
-                        if child_name == name {
-                            matches = true;
-                        }
+    pub fn find_node(&mut self, name: &str, parent_block: u64) -> Result<Option<(u64, Node)>, E> {
+        if parent_block == 0 {
+            return Ok(None);
+        }
+
+        let parent = try!(self.node(parent_block));
+        for extent in parent.1.extents.iter() {
+            for i in 0 .. extent.length/512 {
+                let child = try!(self.node(extent.block + i));
+
+                let mut matches = false;
+                if let Ok(child_name) = child.1.name() {
+                    if child_name == name {
+                        matches = true;
                     }
-                    if matches {
-                        return Ok(Some(child_node));
-                    }
+                }
+
+                if matches {
+                    return Ok(Some(child));
+                }
+            }
+        }
+
+        self.find_node(name, parent.1.next)
+    }
+
+    fn insert_block(&mut self, block: u64, parent_block: u64) -> Result<bool, E> {
+        if parent_block == 0 {
+            return Ok(false);
+        }
+
+        let mut inserted = false;
+        let mut parent = try!(self.node(parent_block));
+        for mut extent in parent.1.extents.iter_mut() {
+            if extent.length == 0 {
+                //New extent
+                inserted = true;
+                extent.block = block;
+                extent.length = 512;
+                break;
+            } else if extent.block == block + 1 {
+                //At beginning
+                inserted = true;
+                extent.block = block;
+                extent.length += 512;
+            } else if extent.block + extent.length/512 == block {
+                //At end
+                inserted = true;
+                extent.length += 512;
+                break;
+            }
+        }
+
+        if inserted {
+            try!(self.disk.write_at(parent.0, &parent.1));
+            Ok(true)
+        } else {
+            if parent.1.next == 0 {
+                if let Some(block) = try!(self.allocate()) {
+                    parent.1.next = block;
+                    try!(self.disk.write_at(parent.0, &parent.1));
+                    try!(self.disk.write_at(parent.1.next, &Node::default()));
+                } else {
+                    return Ok(false);
                 }
             }
 
-            parent_node.0 = parent_node.1.next;
-            parent_node.1 = Node::default();
+            self.insert_block(block, parent.1.next)
         }
     }
 
-    fn create_node(&mut self, name: &str, mode: u64) -> Result<Option<(u64, Node)>, E> {
+    pub fn create_node(&mut self, name: &str, mode: u64, parent_block: u64) -> Result<Option<(u64, Node)>, E> {
         if let Some(block) = try!(self.allocate()) {
             let node = (block, Node::new(name, mode));
             try!(self.disk.write_at(node.0, &node.1));
 
-            let mut inserted = false;
-            let mut last_node = (0, Node::default());
-            let mut next_node = (self.header.1.root, Node::default());
-            while ! inserted {
-                if next_node.0 > 0 {
-                    try!(self.disk.read_at(next_node.0, &mut next_node.1));
-                }else{
-                    if let Some(block) = try!(self.allocate()) {
-                        next_node.0 = block;
-                        if last_node.0 > 0 {
-                            last_node.1.next = block;
-                            if last_node.0 == self.root.0 {
-                                self.root.1.next = last_node.1.next;
-                            }
-                            try!(self.disk.write_at(last_node.0, &last_node.1));
-                        } else {
-                            panic!("last_node was 0");
-                        }
-                    } else {
-                        return Ok(None);
-                    }
-                }
-
-                for mut extent in next_node.1.extents.iter_mut() {
-                    if extent.block + extent.length/512 == block {
-                        inserted = true;
-                        extent.length += 512;
-                        break;
-                    } else if extent.length == 0 {
-                        inserted = true;
-                        extent.block = block;
-                        extent.length = 512;
-                        break;
-                    }
-                }
-
-                if inserted {
-                    if next_node.0 == self.root.0 {
-                        self.root.1.extents = next_node.1.extents;
-                    }
-                    try!(self.disk.write_at(next_node.0, &next_node.1));
-                } else {
-                    last_node = next_node;
-                    next_node = (last_node.1.next, Node::default());
-                }
+            if try!(self.insert_block(block, parent_block)) {
+                Ok(Some(node))
+            } else {
+                Ok(None)
             }
-
-            Ok(Some(node))
         } else {
             Ok(None)
         }
     }
 
-    pub fn create_dir(&mut self, name: &str) -> Result<Option<(u64, Node)>, E> {
-        self.create_node(name, Node::MODE_DIR)
-    }
-
-    pub fn create_file(&mut self, name: &str) -> Result<Option<(u64, Node)>, E> {
-        self.create_node(name, Node::MODE_FILE)
-    }
-
-    fn remove_node(&mut self, _name: &str, _mode: u64) -> Result<bool, E> {
+    pub fn remove_node(&mut self, _name: &str, _mode: u64) -> Result<bool, E> {
         Ok(false)
-    }
-
-    pub fn remove_dir(&mut self, name: &str) -> Result<bool, E> {
-        self.remove_node(name, Node::MODE_DIR)
-    }
-
-    pub fn remove_file(&mut self, name: &str) -> Result<bool, E> {
-        self.remove_node(name, Node::MODE_FILE)
     }
 }
