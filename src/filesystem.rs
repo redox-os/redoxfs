@@ -60,19 +60,19 @@ impl<E> FileSystem<E> {
     }
 
     pub fn allocate(&mut self) -> Result<Option<u64>, E> {
-        let mut block = None;
+        let mut block_option = None;
         for mut extent in self.free.1.extents.iter_mut() {
             if extent.length >= 512 {
-                block = Some(extent.block);
+                block_option = Some(extent.block);
                 extent.length -= 512;
                 extent.block += 1;
                 break;
             }
         }
-        if block.is_some() {
+        if block_option.is_some() {
             try!(self.disk.write_at(self.free.0, &self.free.1));
         }
-        Ok(block)
+        Ok(block_option)
     }
 
     pub fn deallocate(&mut self, _block: u64) -> Result<bool, E> {
@@ -178,7 +178,9 @@ impl<E> FileSystem<E> {
     }
 
     pub fn create_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<Option<(u64, Node)>, E> {
-        if let Some(block) = try!(self.allocate()) {
+        if try!(self.find_node(name, parent_block)).is_some() {
+            Ok(None)
+        } else if let Some(block) = try!(self.allocate()) {
             let node = (block, Node::new(mode, name, parent_block));
             try!(self.disk.write_at(node.0, &node.1));
 
@@ -192,7 +194,71 @@ impl<E> FileSystem<E> {
         }
     }
 
-    pub fn remove_node(&mut self, _name: &str) -> Result<bool, E> {
+    fn remove_block(&mut self, block: u64, parent_block: u64) -> Result<bool, E> {
+        if parent_block == 0 {
+            return Ok(false);
+        }
+
+        let mut removed = false;
+        let mut replace_option = None;
+        let mut parent = try!(self.node(parent_block));
+        for mut extent in parent.1.extents.iter_mut() {
+            if block >= extent.block && block < extent.block + extent.length/512 {
+                //Inside
+                removed = true;
+
+                let left = Extent::new(extent.block, (block - extent.block) * 512);
+                let right = Extent::new(block + 1, ((extent.block + extent.length/512) - (block + 1)) * 512);
+
+                if left.length > 0 {
+                    *extent = left;
+
+                    if right.length > 0 {
+                        replace_option = Some(right);
+                    }
+                } else if right.length > 0 {
+                    *extent = right;
+                } else {
+                    *extent = Extent::default();
+                }
+
+                break;
+            }
+        }
+
+        if let Some(_replace) = replace_option {
+            //do it!
+        }
+
+        if removed {
+            try!(self.disk.write_at(parent.0, &parent.1));
+            Ok(true)
+        } else {
+            if parent.1.next == 0 {
+                if let Some(block) = try!(self.allocate()) {
+                    parent.1.next = block;
+                    try!(self.disk.write_at(parent.0, &parent.1));
+                    try!(self.disk.write_at(parent.1.next, &Node::default()));
+                } else {
+                    return Ok(false);
+                }
+            }
+
+            self.remove_block(block, parent.1.next)
+        }
+    }
+
+    pub fn remove_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<bool, E> {
+        if let Some(mut node) = try!(self.find_node(name, parent_block)) {
+            if node.1.mode & Node::MODE_TYPE == mode {
+                if try!(self.remove_block(node.0, parent_block)) {
+                    node.1 = Node::default();
+                    try!(self.disk.write_at(node.0, &node.1));
+
+                    return Ok(true);
+                }
+            }
+        }
         Ok(false)
     }
 }

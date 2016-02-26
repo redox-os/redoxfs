@@ -7,6 +7,13 @@ pub struct Extent {
 }
 
 impl Extent {
+    pub fn default() -> Extent {
+        Extent {
+            block: 0,
+            length: 0
+        }
+    }
+
     pub fn new(block: u64, length: u64) -> Extent {
         Extent {
             block: block,

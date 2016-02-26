@@ -137,6 +137,19 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                         Err(err) => println!("ls: failed to read {}: {}", block, err)
                     }
                 },
+                "mk" => {
+                    if let Some(arg) = args.next() {
+                        match fs.create_node(Node::MODE_FILE, arg, block) {
+                            Ok(node_option) => match node_option {
+                                Some(node) => println!("{}: {:#?}", node.0, node.1),
+                                None => println!("mk: not enough space for {}", arg)
+                            },
+                            Err(err) => println!("mk: failed to create {}: {}", arg, err)
+                        }
+                    } else {
+                        println!("mk <file>");
+                    }
+                },
                 "mkdir" => {
                     if let Some(arg) = args.next() {
                         match fs.create_node(Node::MODE_DIR, arg, block) {
@@ -147,23 +160,38 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                             Err(err) => println!("mkdir: failed to create {}: {}", arg, err)
                         }
                     } else {
-                        println!("mkdir <file>");
+                        println!("mkdir <dir>");
                     }
                 },
-                "touch" => {
+                "rm" => {
                     if let Some(arg) = args.next() {
-                        match fs.create_node(Node::MODE_FILE, arg, block) {
-                            Ok(node_option) => match node_option {
-                                Some(node) => println!("{}: {:#?}", node.0, node.1),
-                                None => println!("touch: not enough space for {}", arg)
+                        match fs.remove_node(Node::MODE_FILE, arg, block) {
+                            Ok(found) => if found {
+                                println!("rm {}", arg);
+                            }else{
+                                println!("rm: did not find {}", arg);
                             },
-                            Err(err) => println!("touch: failed to create {}: {}", arg, err)
+                            Err(err) => println!("rm: failed to remove {}: {}", arg, err)
                         }
                     } else {
-                        println!("touch <file>");
+                        println!("rm <file>");
                     }
                 },
-                _ => println!("commands: exit header node root free find ls mkdir touch")
+                "rmdir" => {
+                    if let Some(arg) = args.next() {
+                        match fs.remove_node(Node::MODE_DIR, arg, block) {
+                            Ok(found) => if found {
+                                println!("rmdir {}", arg);
+                            }else{
+                                println!("rmdir: did not find {}", arg);
+                            },
+                            Err(err) => println!("rmdir: failed to remove {}: {}", arg, err)
+                        }
+                    } else {
+                        println!("rmdir <dir>");
+                    }
+                },
+                _ => println!("commands: exit header node root free find ls mk mkdir rm rmdir")
             }
         }
     }
