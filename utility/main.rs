@@ -97,6 +97,24 @@ fn shell<E: Display>(mut fs: FileSystem<E>){
                         println!("cd <path>");
                     }
                 },
+                "ed" => {
+                    if let Some(arg) = args.next() {
+                        let mut data = String::new();
+                        loop {
+                            let mut line = String::new();
+                            stdin.read_line(&mut line).unwrap();
+
+                            if line.is_empty() || line == ".\n" {
+                                break;
+                            } else {
+                                data.push_str(&line);
+                            }
+                        }
+                        println!("{}:\n{}", arg, data);
+                    } else {
+                        println!("ed <path>");
+                    }
+                },
                 "find" => {
                     if let Some(arg) = args.next() {
                         match fs.find_node(arg, block) {
