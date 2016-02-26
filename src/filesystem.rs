@@ -7,8 +7,7 @@ use super::{Disk, ExNode, Extent, Header, Node};
 /// A file system
 pub struct FileSystem<E> {
     pub disk: Box<Disk<E>>,
-    pub header: (u64, Header),
-    pub free: (u64, Node)
+    pub header: (u64, Header)
 }
 
 impl<E> FileSystem<E> {
@@ -26,8 +25,7 @@ impl<E> FileSystem<E> {
 
             Ok(Some(FileSystem {
                 disk: disk,
-                header: header,
-                free: free
+                header: header
             }))
         }else{
             Ok(None)
@@ -51,8 +49,7 @@ impl<E> FileSystem<E> {
 
             Ok(Some(FileSystem {
                 disk: disk,
-                header: header,
-                free: free
+                header: header
             }))
         } else {
             Ok(None)
@@ -60,8 +57,10 @@ impl<E> FileSystem<E> {
     }
 
     pub fn allocate(&mut self) -> Result<Option<u64>, E> {
+        let free_block = self.header.1.free;
+        let mut free = try!(self.node(free_block));
         let mut block_option = None;
-        for mut extent in self.free.1.extents.iter_mut() {
+        for mut extent in free.1.extents.iter_mut() {
             if extent.length >= 512 {
                 block_option = Some(extent.block);
                 extent.length -= 512;
@@ -70,13 +69,14 @@ impl<E> FileSystem<E> {
             }
         }
         if block_option.is_some() {
-            try!(self.disk.write_at(self.free.0, &self.free.1));
+            try!(self.disk.write_at(free.0, &free.1));
         }
         Ok(block_option)
     }
 
-    pub fn deallocate(&mut self, _block: u64) -> Result<bool, E> {
-        Ok(false)
+    pub fn deallocate(&mut self, block: u64) -> Result<bool, E> {
+        let free_block = self.header.1.free;
+        self.insert_block(block, free_block)
     }
 
     pub fn node(&mut self, block: u64) -> Result<(u64, Node), E> {
@@ -151,6 +151,7 @@ impl<E> FileSystem<E> {
                 inserted = true;
                 extent.block = block;
                 extent.length += 512;
+                break;
             } else if extent.block + extent.length/512 == block {
                 //At end
                 inserted = true;
@@ -229,16 +230,15 @@ impl<E> FileSystem<E> {
         if removed {
             try!(self.disk.write_at(parent.0, &parent.1));
 
-
             if let Some(replace) = replace_option {
                 for i in 0..replace.length/512 {
                     let block = replace.block + i;
                     //TODO: Check error
-                    if ! try!(self.insert_block(block, parent_block)) {
-                        return Ok(false);
-                    }
+                    try!(self.insert_block(block, parent_block));
                 }
             }
+
+            try!(self.deallocate(block));
 
             Ok(true)
         } else {
