@@ -226,12 +226,20 @@ impl<E> FileSystem<E> {
             }
         }
 
-        if let Some(_replace) = replace_option {
-            //do it!
-        }
-
         if removed {
             try!(self.disk.write_at(parent.0, &parent.1));
+
+
+            if let Some(replace) = replace_option {
+                for i in 0..replace.length/512 {
+                    let block = replace.block + i;
+                    //TODO: Check error
+                    if ! try!(self.insert_block(block, parent_block)) {
+                        return Ok(false);
+                    }
+                }
+            }
+
             Ok(true)
         } else {
             if parent.1.next == 0 {
