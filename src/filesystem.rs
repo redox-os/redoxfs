@@ -259,6 +259,13 @@ impl<E> FileSystem<E> {
     pub fn remove_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<bool, E> {
         if let Some(mut node) = try!(self.find_node(name, parent_block)) {
             if node.1.mode & Node::MODE_TYPE == mode {
+                if node.1.is_dir() {
+                    let mut children = Vec::new();
+                    try!(self.child_nodes(&mut children, node.0));
+                    if ! children.is_empty() {
+                        return Ok(false);
+                    }
+                }
                 if try!(self.remove_block(node.0, parent_block)) {
                     node.1 = Node::default();
                     try!(self.disk.write_at(node.0, &node.1));
