@@ -11,7 +11,7 @@ use std::mem::size_of;
 
 use image::Image;
 
-use redoxfs::FileSystem;
+use redoxfs::{FileSystem, Node};
 
 use system::error::{Error, Result, ENOENT, EBADF, EINVAL};
 use system::scheme::{Packet, Scheme};
@@ -26,10 +26,10 @@ struct FileResource {
 }
 
 impl FileResource {
-    fn new(path: &str) -> FileResource {
+    fn new(path: &str, data: Vec<u8>) -> FileResource {
         FileResource {
             path: path.to_string(),
-            data: Vec::new(),
+            data: data,
             seek: 0,
         }
     }
@@ -105,17 +105,47 @@ impl FileScheme {
             files: BTreeMap::new()
         }
     }
+
+    fn path_node(&mut self, path: &str) -> Result<(u64, Node)> {
+        let mut block = self.fs.header.1.root;
+        for part in path.split('/') {
+            if ! part.is_empty() {
+                let next = try!(self.fs.find_node(part, block));
+                block = next.0;
+            }
+        }
+
+        self.fs.node(block)
+    }
 }
 
 impl Scheme for FileScheme {
-    fn open(&mut self, path: &str, flags: usize, mode: usize) -> Result<usize> {
-        println!("open {:X} = {}, {:X}, {:X}", path.as_ptr() as usize, path, flags, mode);
+    fn open(&mut self, url: &str, flags: usize, mode: usize) -> Result<usize> {
+        let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
+        let node = try!(self.path_node(path));
+
+        let mut data = Vec::new();
+        if node.1.is_dir() {
+            let mut children = Vec::new();
+            try!(self.fs.child_nodes(&mut children, node.0));
+            for child in children.iter() {
+                if let Ok(name) = child.1.name() {
+                    if ! data.is_empty() {
+                        data.push('\n' as u8);
+                    }
+                    data.extend_from_slice(&name.as_bytes());
+                }
+            }
+        } else {
+            data.extend_from_slice(&format!("{:#?}", node).as_bytes());
+        }
+
         let id = self.next_id as usize;
         self.next_id += 1;
         if self.next_id < 0 {
             self.next_id = 1;
         }
-        self.files.insert(id, FileResource::new(path));
+        self.files.insert(id, FileResource::new(url, data));
         Ok(id)
     }
 
@@ -134,7 +164,6 @@ impl Scheme for FileScheme {
     /* Resource operations */
     #[allow(unused_variables)]
     fn read(&mut self, id: usize, buf: &mut [u8]) -> Result<usize> {
-        println!("read {}, {:X}, {}", id, buf.as_mut_ptr() as usize, buf.len());
         if let Some(mut file) = self.files.get_mut(&id) {
             file.read(buf)
         } else {
@@ -144,7 +173,6 @@ impl Scheme for FileScheme {
 
     #[allow(unused_variables)]
     fn write(&mut self, id: usize, buf: &[u8]) -> Result<usize> {
-        println!("write {}, {:X}, {}", id, buf.as_ptr() as usize, buf.len());
         if let Some(mut file) = self.files.get_mut(&id) {
             file.write(buf)
         } else {
@@ -154,7 +182,6 @@ impl Scheme for FileScheme {
 
     #[allow(unused_variables)]
     fn seek(&mut self, id: usize, pos: usize, whence: usize) -> Result<usize> {
-        println!("seek {}, {}, {}", id, pos, whence);
         if let Some(mut file) = self.files.get_mut(&id) {
             file.seek(pos, whence)
         } else {
@@ -164,7 +191,6 @@ impl Scheme for FileScheme {
 
     #[allow(unused_variables)]
     fn fpath(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
-        println!("fpath {}, {:X}, {}", id, buf.as_mut_ptr() as usize, buf.len());
         if let Some(file) = self.files.get(&id) {
             file.path(buf)
         } else {
@@ -199,7 +225,6 @@ impl Scheme for FileScheme {
     }
 
     fn close(&mut self, id: usize) -> Result<usize> {
-        println!("close {}", id);
         if self.files.remove(&id).is_some() {
             Ok(0)
         } else {
