@@ -13,9 +13,9 @@ use image::Image;
 
 use redoxfs::{FileSystem, Node};
 
-use system::error::{Error, Result, ENOENT, EBADF, EINVAL};
+use system::error::{Error, Result, EISDIR, EPERM, ENOENT, EBADF, EINVAL};
 use system::scheme::{Packet, Scheme};
-use system::syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END};
+use system::syscall::{Stat, O_CREAT, SEEK_SET, SEEK_CUR, SEEK_END};
 
 pub mod image;
 
@@ -106,39 +106,75 @@ impl FileScheme {
         }
     }
 
-    fn path_node(&mut self, path: &str) -> Result<(u64, Node)> {
+    fn path_nodes(&mut self, path: &str, nodes: &mut Vec<(u64, Node)>) -> Result<(u64, Node)> {
         let mut block = self.fs.header.1.root;
+        nodes.push(try!(self.fs.node(block)));
+
         for part in path.split('/') {
             if ! part.is_empty() {
-                let next = try!(self.fs.find_node(part, block));
-                block = next.0;
+                let node = try!(self.fs.find_node(part, block));
+                block = node.0;
+                nodes.push(node);
             }
         }
 
-        self.fs.node(block)
+        Ok(nodes.pop().unwrap())
     }
 }
 
 impl Scheme for FileScheme {
     fn open(&mut self, url: &str, flags: usize, mode: usize) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
-        let node = try!(self.path_node(path));
+
+        let mut nodes = Vec::new();
+        let node_result = self.path_nodes(path, &mut nodes);
 
         let mut data = Vec::new();
-        if node.1.is_dir() {
-            let mut children = Vec::new();
-            try!(self.fs.child_nodes(&mut children, node.0));
-            for child in children.iter() {
-                if let Ok(name) = child.1.name() {
-                    if ! data.is_empty() {
-                        data.push('\n' as u8);
+        match node_result {
+            Ok(node) => if node.1.is_dir() {
+                let mut children = Vec::new();
+                try!(self.fs.child_nodes(&mut children, node.0));
+                for child in children.iter() {
+                    if let Ok(name) = child.1.name() {
+                        if ! data.is_empty() {
+                            data.push('\n' as u8);
+                        }
+                        data.extend_from_slice(&name.as_bytes());
                     }
-                    data.extend_from_slice(&name.as_bytes());
                 }
+            } else {
+                data.extend_from_slice(&format!("{:#?}", node).as_bytes());
+            },
+            Err(err) => if err.errno == ENOENT && flags & O_CREAT == O_CREAT {
+                let mut last_part = String::new();
+                for part in path.split('/') {
+                    if ! part.is_empty() {
+                        last_part = part.to_string();
+                    }
+                }
+                if ! last_part.is_empty() {
+                    if let Some(parent) = nodes.last() {
+                        try!(self.fs.create_node(Node::MODE_FILE, &last_part, parent.0));
+                    } else {
+                        return Err(Error::new(EPERM));
+                    }
+                } else {
+                    return Err(Error::new(EPERM));
+                }
+            } else {
+                return Err(err);
+            }
+        }
+        /*
+        if let Some(arg) = args.next() {
+            match  {
+                Ok(node) => println!("{}: {:#?}", node.0, node.1),
+                Err(err) => println!("mk: failed to create {}: {}", arg, err)
             }
         } else {
-            data.extend_from_slice(&format!("{:#?}", node).as_bytes());
+            println!("mk <file>");
         }
+        */
 
         let id = self.next_id as usize;
         self.next_id += 1;
@@ -149,16 +185,35 @@ impl Scheme for FileScheme {
         Ok(id)
     }
 
-    #[allow(unused_variables)]
-    fn unlink(&mut self, path: &str) -> Result<usize> {
-        println!("unlink {}", path);
-        Err(Error::new(ENOENT))
-    }
-
-    #[allow(unused_variables)]
     fn mkdir(&mut self, path: &str, mode: usize) -> Result<usize> {
         println!("mkdir {}, {:X}", path, mode);
         Err(Error::new(ENOENT))
+    }
+
+    /*
+    fn rmdir(&mut self, path: &str) -> Result<usize> {
+        println!("rmdir {}", path);
+        Err(Error::new(ENOENT))
+    }
+    */
+
+    fn unlink(&mut self, url: &str) -> Result<usize> {
+        let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
+        let mut nodes = Vec::new();
+        let child = try!(self.path_nodes(path, &mut nodes));
+        if let Some(parent) = nodes.last() {
+            if ! child.1.is_dir() {
+                if let Ok(child_name) = child.1.name() {
+                    self.fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
+                } else {
+                    Err(Error::new(ENOENT))
+                }
+            } else {
+                Err(Error::new(EISDIR))
+            }
+        } else {
+            Err(Error::new(EPERM))
+        }
     }
 
     /* Resource operations */
@@ -171,7 +226,6 @@ impl Scheme for FileScheme {
         }
     }
 
-    #[allow(unused_variables)]
     fn write(&mut self, id: usize, buf: &[u8]) -> Result<usize> {
         if let Some(mut file) = self.files.get_mut(&id) {
             file.write(buf)
@@ -180,7 +234,6 @@ impl Scheme for FileScheme {
         }
     }
 
-    #[allow(unused_variables)]
     fn seek(&mut self, id: usize, pos: usize, whence: usize) -> Result<usize> {
         if let Some(mut file) = self.files.get_mut(&id) {
             file.seek(pos, whence)
@@ -189,7 +242,6 @@ impl Scheme for FileScheme {
         }
     }
 
-    #[allow(unused_variables)]
     fn fpath(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
         if let Some(file) = self.files.get(&id) {
             file.path(buf)
@@ -198,7 +250,6 @@ impl Scheme for FileScheme {
         }
     }
 
-    #[allow(unused_variables)]
     fn fstat(&self, id: usize, stat: &mut Stat) -> Result<usize> {
         println!("fstat {}, {:X}", id, stat as *mut Stat as usize);
         if let Some(file) = self.files.get(&id) {
@@ -208,7 +259,6 @@ impl Scheme for FileScheme {
         }
     }
 
-    #[allow(unused_variables)]
     fn fsync(&mut self, id: usize) -> Result<usize> {
         println!("fsync {}", id);
         if let Some(mut file) = self.files.get_mut(&id) {
@@ -218,7 +268,6 @@ impl Scheme for FileScheme {
         }
     }
 
-    #[allow(unused_variables)]
     fn ftruncate(&mut self, id: usize, len: usize) -> Result<usize> {
         println!("ftruncate {}, {}", id, len);
         Err(Error::new(EBADF))
