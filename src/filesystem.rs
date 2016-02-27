@@ -2,17 +2,19 @@ use alloc::boxed::Box;
 
 use collections::vec::Vec;
 
+use system::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
+
 use super::{Disk, ExNode, Extent, Header, Node};
 
 /// A file system
-pub struct FileSystem<E> {
-    pub disk: Box<Disk<E>>,
+pub struct FileSystem {
+    pub disk: Box<Disk>,
     pub header: (u64, Header)
 }
 
-impl<E> FileSystem<E> {
+impl FileSystem {
     /// Open a file system on a disk
-    pub fn open(mut disk: Box<Disk<E>>) -> Result<Option<Self>, E> {
+    pub fn open(mut disk: Box<Disk>) -> Result<Self> {
         let mut header = (1, Header::default());
         try!(disk.read_at(header.0, &mut header.1));
 
@@ -23,17 +25,17 @@ impl<E> FileSystem<E> {
             let mut free = (header.1.free, Node::default());
             try!(disk.read_at(free.0, &mut free.1));
 
-            Ok(Some(FileSystem {
+            Ok(FileSystem {
                 disk: disk,
                 header: header
-            }))
+            })
         }else{
-            Ok(None)
+            Err(Error::new(ENOENT))
         }
     }
 
     /// Create a file system on a disk
-    pub fn create(mut disk: Box<Disk<E>>) -> Result<Option<Self>, E> {
+    pub fn create(mut disk: Box<Disk>) -> Result<Self> {
         let size = try!(disk.size());
 
         if size >= 4 * 512 {
@@ -47,16 +49,17 @@ impl<E> FileSystem<E> {
             let header = (1, Header::new(size, root.0, free.0));
             try!(disk.write_at(header.0, &header.1));
 
-            Ok(Some(FileSystem {
+            Ok(FileSystem {
                 disk: disk,
                 header: header
-            }))
+            })
         } else {
-            Ok(None)
+            Err(Error::new(ENOSPC))
         }
     }
 
-    pub fn allocate(&mut self) -> Result<Option<u64>, E> {
+    pub fn allocate(&mut self) -> Result<u64> {
+        //TODO: traverse next pointer
         let free_block = self.header.1.free;
         let mut free = try!(self.node(free_block));
         let mut block_option = None;
@@ -68,30 +71,32 @@ impl<E> FileSystem<E> {
                 break;
             }
         }
-        if block_option.is_some() {
+        if let Some(block) = block_option {
             try!(self.disk.write_at(free.0, &free.1));
+            Ok(block)
+        } else {
+            Err(Error::new(ENOSPC))
         }
-        Ok(block_option)
     }
 
-    pub fn deallocate(&mut self, block: u64) -> Result<bool, E> {
+    pub fn deallocate(&mut self, block: u64) -> Result<()> {
         let free_block = self.header.1.free;
         self.insert_block(block, free_block)
     }
 
-    pub fn node(&mut self, block: u64) -> Result<(u64, Node), E> {
+    pub fn node(&mut self, block: u64) -> Result<(u64, Node)> {
         let mut node = Node::default();
         try!(self.disk.read_at(block, &mut node));
         Ok((block, node))
     }
 
-    pub fn ex_node(&mut self, block: u64) -> Result<(u64, ExNode), E> {
+    pub fn ex_node(&mut self, block: u64) -> Result<(u64, ExNode)> {
         let mut node = ExNode::default();
         try!(self.disk.read_at(block, &mut node));
         Ok((block, node))
     }
 
-    pub fn child_nodes(&mut self, children: &mut Vec<(u64, Node)>, parent_block: u64) -> Result<(), E> {
+    pub fn child_nodes(&mut self, children: &mut Vec<(u64, Node)>, parent_block: u64) -> Result<()> {
         if parent_block == 0 {
             return Ok(());
         }
@@ -106,9 +111,9 @@ impl<E> FileSystem<E> {
         self.child_nodes(children, parent.1.next)
     }
 
-    pub fn find_node(&mut self, name: &str, parent_block: u64) -> Result<Option<(u64, Node)>, E> {
+    pub fn find_node(&mut self, name: &str, parent_block: u64) -> Result<(u64, Node)> {
         if parent_block == 0 {
-            return Ok(None);
+            return Err(Error::new(ENOENT));
         }
 
         let parent = try!(self.node(parent_block));
@@ -124,7 +129,7 @@ impl<E> FileSystem<E> {
                 }
 
                 if matches {
-                    return Ok(Some(child));
+                    return Ok(child);
                 }
             }
         }
@@ -132,9 +137,9 @@ impl<E> FileSystem<E> {
         self.find_node(name, parent.1.next)
     }
 
-    fn insert_block(&mut self, block: u64, parent_block: u64) -> Result<bool, E> {
+    fn insert_block(&mut self, block: u64, parent_block: u64) -> Result<()> {
         if parent_block == 0 {
-            return Ok(false);
+            return Err(Error::new(ENOSPC));
         }
 
         let mut inserted = false;
@@ -162,42 +167,34 @@ impl<E> FileSystem<E> {
 
         if inserted {
             try!(self.disk.write_at(parent.0, &parent.1));
-            Ok(true)
+            Ok(())
         } else {
             if parent.1.next == 0 {
-                if let Some(block) = try!(self.allocate()) {
-                    parent.1.next = block;
-                    try!(self.disk.write_at(parent.0, &parent.1));
-                    try!(self.disk.write_at(parent.1.next, &Node::default()));
-                } else {
-                    return Ok(false);
-                }
+                parent.1.next = try!(self.allocate());
+                try!(self.disk.write_at(parent.0, &parent.1));
+                try!(self.disk.write_at(parent.1.next, &Node::default()));
             }
 
             self.insert_block(block, parent.1.next)
         }
     }
 
-    pub fn create_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<Option<(u64, Node)>, E> {
-        if try!(self.find_node(name, parent_block)).is_some() {
-            Ok(None)
-        } else if let Some(block) = try!(self.allocate()) {
-            let node = (block, Node::new(mode, name, parent_block));
+    pub fn create_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<(u64, Node)> {
+        if self.find_node(name, parent_block).is_ok() {
+            Err(Error::new(EEXIST))
+        } else {
+            let node = (try!(self.allocate()), Node::new(mode, name, parent_block));
             try!(self.disk.write_at(node.0, &node.1));
 
-            if try!(self.insert_block(block, parent_block)) {
-                Ok(Some(node))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
+            try!(self.insert_block(node.0, parent_block));
+
+            Ok(node)
         }
     }
 
-    fn remove_block(&mut self, block: u64, parent_block: u64) -> Result<bool, E> {
+    fn remove_block(&mut self, block: u64, parent_block: u64) -> Result<()> {
         if parent_block == 0 {
-            return Ok(false);
+            return Err(Error::new(ENOENT));
         }
 
         let mut removed = false;
@@ -240,40 +237,37 @@ impl<E> FileSystem<E> {
 
             try!(self.deallocate(block));
 
-            Ok(true)
+            Ok(())
         } else {
             if parent.1.next == 0 {
-                if let Some(block) = try!(self.allocate()) {
-                    parent.1.next = block;
-                    try!(self.disk.write_at(parent.0, &parent.1));
-                    try!(self.disk.write_at(parent.1.next, &Node::default()));
-                } else {
-                    return Ok(false);
-                }
+                parent.1.next = try!(self.allocate());
+                try!(self.disk.write_at(parent.0, &parent.1));
+                try!(self.disk.write_at(parent.1.next, &Node::default()));
             }
 
             self.remove_block(block, parent.1.next)
         }
     }
 
-    pub fn remove_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<bool, E> {
-        if let Some(mut node) = try!(self.find_node(name, parent_block)) {
-            if node.1.mode & Node::MODE_TYPE == mode {
-                if node.1.is_dir() {
-                    let mut children = Vec::new();
-                    try!(self.child_nodes(&mut children, node.0));
-                    if ! children.is_empty() {
-                        return Ok(false);
-                    }
-                }
-                if try!(self.remove_block(node.0, parent_block)) {
-                    node.1 = Node::default();
-                    try!(self.disk.write_at(node.0, &node.1));
-
-                    return Ok(true);
+    pub fn remove_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<()> {
+        let node = try!(self.find_node(name, parent_block));
+        if node.1.mode & Node::MODE_TYPE == mode {
+            if node.1.is_dir() {
+                let mut children = Vec::new();
+                try!(self.child_nodes(&mut children, node.0));
+                if ! children.is_empty() {
+                    return Err(Error::new(ENOTEMPTY));
                 }
             }
+
+            try!(self.remove_block(node.0, parent_block));
+            try!(self.disk.write_at(node.0, &Node::default()));
+
+            Ok(())
+        } else if node.1.is_dir() {
+            Err(Error::new(EISDIR))
+        } else {
+            Err(Error::new(ENOTDIR))
         }
-        Ok(false)
     }
 }

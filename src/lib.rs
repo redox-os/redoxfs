@@ -13,6 +13,8 @@ extern crate alloc;
 #[macro_use]
 extern crate collections;
 
+extern crate system;
+
 pub use self::disk::Disk;
 pub use self::ex_node::ExNode;
 pub use self::extent::Extent;
