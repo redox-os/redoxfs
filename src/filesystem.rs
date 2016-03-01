@@ -36,11 +36,11 @@ impl FileSystem {
 
     /// Create a file system on a disk
     pub fn create(mut disk: Box<Disk>) -> Result<Self> {
-        let size = try!(disk.size());
+        let size = try!(disk.size())/512;
 
-        if size >= 4 * 512 {
+        if size >= 4 {
             let mut free = (3, Node::new(Node::MODE_FILE, "free", 0));
-            free.1.extents[0] = Extent::new(4, (size - 4 * 512));
+            free.1.extents[0] = Extent::new(4, size - 4);
             try!(disk.write_at(free.0, &free.1));
 
             let root = (2, Node::new(Node::MODE_DIR, "root", 0));
@@ -58,16 +58,16 @@ impl FileSystem {
         }
     }
 
-    pub fn allocate(&mut self) -> Result<u64> {
+    pub fn allocate(&mut self, length: u64) -> Result<u64> {
         //TODO: traverse next pointer
         let free_block = self.header.1.free;
         let mut free = try!(self.node(free_block));
         let mut block_option = None;
         for mut extent in free.1.extents.iter_mut() {
-            if extent.length >= 512 {
+            if extent.length >= length {
                 block_option = Some(extent.block);
-                extent.length -= 512;
-                extent.block += 1;
+                extent.length -= length;
+                extent.block += length;
                 break;
             }
         }
@@ -79,9 +79,9 @@ impl FileSystem {
         }
     }
 
-    pub fn deallocate(&mut self, block: u64) -> Result<()> {
+    pub fn deallocate(&mut self, block: u64, length: u64) -> Result<()> {
         let free_block = self.header.1.free;
-        self.insert_block(block, free_block)
+        self.insert_blocks(block, length, free_block)
     }
 
     pub fn node(&mut self, block: u64) -> Result<(u64, Node)> {
@@ -103,7 +103,7 @@ impl FileSystem {
 
         let parent = try!(self.node(parent_block));
         for extent in parent.1.extents.iter() {
-            for i in 0 .. extent.length/512 {
+            for i in 0 .. extent.length {
                 children.push(try!(self.node(extent.block + i)));
             }
         }
@@ -118,7 +118,7 @@ impl FileSystem {
 
         let parent = try!(self.node(parent_block));
         for extent in parent.1.extents.iter() {
-            for i in 0 .. extent.length/512 {
+            for i in 0 .. extent.length {
                 let child = try!(self.node(extent.block + i));
 
                 let mut matches = false;
@@ -137,7 +137,7 @@ impl FileSystem {
         self.find_node(name, parent.1.next)
     }
 
-    fn insert_block(&mut self, block: u64, parent_block: u64) -> Result<()> {
+    fn insert_blocks(&mut self, block: u64, length: u64, parent_block: u64) -> Result<()> {
         if parent_block == 0 {
             return Err(Error::new(ENOSPC));
         }
@@ -149,18 +149,18 @@ impl FileSystem {
                 //New extent
                 inserted = true;
                 extent.block = block;
-                extent.length = 512;
+                extent.length = length;
                 break;
-            } else if extent.block == block + 1 {
+            } else if extent.block == block + length {
                 //At beginning
                 inserted = true;
                 extent.block = block;
-                extent.length += 512;
+                extent.length += length;
                 break;
-            } else if extent.block + extent.length/512 == block {
+            } else if extent.block + extent.length == block {
                 //At end
                 inserted = true;
-                extent.length += 512;
+                extent.length += length;
                 break;
             }
         }
@@ -170,12 +170,12 @@ impl FileSystem {
             Ok(())
         } else {
             if parent.1.next == 0 {
-                parent.1.next = try!(self.allocate());
+                parent.1.next = try!(self.allocate(1));
                 try!(self.disk.write_at(parent.0, &parent.1));
                 try!(self.disk.write_at(parent.1.next, &Node::default()));
             }
 
-            self.insert_block(block, parent.1.next)
+            self.insert_blocks(block, length, parent.1.next)
         }
     }
 
@@ -183,16 +183,16 @@ impl FileSystem {
         if self.find_node(name, parent_block).is_ok() {
             Err(Error::new(EEXIST))
         } else {
-            let node = (try!(self.allocate()), Node::new(mode, name, parent_block));
+            let node = (try!(self.allocate(1)), Node::new(mode, name, parent_block));
             try!(self.disk.write_at(node.0, &node.1));
 
-            try!(self.insert_block(node.0, parent_block));
+            try!(self.insert_blocks(node.0, 1, parent_block));
 
             Ok(node)
         }
     }
 
-    fn remove_block(&mut self, block: u64, parent_block: u64) -> Result<()> {
+    fn remove_blocks(&mut self, block: u64, length: u64, parent_block: u64) -> Result<()> {
         if parent_block == 0 {
             return Err(Error::new(ENOENT));
         }
@@ -201,12 +201,12 @@ impl FileSystem {
         let mut replace_option = None;
         let mut parent = try!(self.node(parent_block));
         for mut extent in parent.1.extents.iter_mut() {
-            if block >= extent.block && block < extent.block + extent.length/512 {
+            if block >= extent.block && block + length <= extent.block + extent.length {
                 //Inside
                 removed = true;
 
-                let left = Extent::new(extent.block, (block - extent.block) * 512);
-                let right = Extent::new(block + 1, ((extent.block + extent.length/512) - (block + 1)) * 512);
+                let left = Extent::new(extent.block, block - extent.block);
+                let right = Extent::new(block + length, (extent.block + extent.length) - (block + length));
 
                 if left.length > 0 {
                     *extent = left;
@@ -228,24 +228,17 @@ impl FileSystem {
             try!(self.disk.write_at(parent.0, &parent.1));
 
             if let Some(replace) = replace_option {
-                for i in 0..replace.length/512 {
+                for i in 0..replace.length {
                     let block = replace.block + i;
-                    //TODO: Check error
-                    try!(self.insert_block(block, parent_block));
+                    try!(self.insert_blocks(block, 1, parent_block));
                 }
             }
 
-            try!(self.deallocate(block));
+            try!(self.deallocate(block, 1));
 
             Ok(())
         } else {
-            if parent.1.next == 0 {
-                parent.1.next = try!(self.allocate());
-                try!(self.disk.write_at(parent.0, &parent.1));
-                try!(self.disk.write_at(parent.1.next, &Node::default()));
-            }
-
-            self.remove_block(block, parent.1.next)
+            self.remove_blocks(block, length, parent.1.next)
         }
     }
 
@@ -260,7 +253,7 @@ impl FileSystem {
                 }
             }
 
-            try!(self.remove_block(node.0, parent_block));
+            try!(self.remove_blocks(node.0, 1, parent_block));
             try!(self.disk.write_at(node.0, &Node::default()));
 
             Ok(())
@@ -269,5 +262,99 @@ impl FileSystem {
         } else {
             Err(Error::new(ENOTDIR))
         }
+    }
+
+    fn node_ensure_len(&mut self, block: u64, mut length: u64) -> Result<()> {
+        if block == 0 {
+            return Err(Error::new(ENOENT));
+        }
+
+        let node = try!(self.node(block));
+        for extent in node.1.extents.iter() {
+            if extent.length >= length {
+                length = 0;
+                break;
+            } else {
+                length -= extent.length;
+            }
+        }
+
+        if length > 0 {
+            if node.1.next > 0 {
+                self.node_ensure_len(node.1.next, length)
+            } else {
+                let new_block = try!(self.allocate(length));
+                try!(self.insert_blocks(new_block, length, block));
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn node_blocks(&mut self, block: u64, mut offset: usize, mut len: usize, blocks: &mut Vec<u64>) -> Result<()> {
+        if block == 0 {
+            return Err(Error::new(ENOENT));
+        }
+
+        let node = try!(self.node(block));
+        for extent in node.1.extents.iter() {
+            for i in 0 .. extent.length {
+                if offset == 0 {
+                    if len > 0 {
+                        blocks.push(extent.block + i);
+                        len -= 1;
+                    } else {
+                        return Ok(())
+                    }
+                } else {
+                    offset -= 1;
+                }
+            }
+        }
+
+        if offset > 0 || len > 0 {
+            self.node_blocks(node.1.next, offset, len, blocks)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn read_node(&mut self, block: u64, offset: usize, buf: &mut [u8]) -> Result<usize> {
+        let block_offset = offset / 512;
+        let byte_offset = offset % 512;
+        let block_len = (buf.len() + byte_offset + 511)/512;
+
+        let mut blocks = Vec::new();
+        try!(self.node_blocks(block, block_offset, block_len, &mut blocks));
+
+        let mut i = 0;
+        for &block in blocks.iter() {
+            let mut sector = ['r' as u8; 512];
+            try!(self.disk.read_at(block, &mut sector));
+            i += 512;
+        }
+
+        Ok(i)
+    }
+
+    pub fn write_node(&mut self, block: u64, offset: usize, buf: &[u8]) -> Result<usize> {
+        let block_offset = offset / 512;
+        let byte_offset = offset % 512;
+        let block_len = (buf.len() + byte_offset + 511)/512;
+
+        try!(self.node_ensure_len(block, (block_offset + block_len) as u64));
+
+        let mut blocks = Vec::new();
+        try!(self.node_blocks(block, block_offset, block_len, &mut blocks));
+
+        let mut i = 0;
+        for &block in blocks.iter() {
+            let sector = ['w' as u8; 512];
+            try!(self.disk.write_at(block, &sector));
+            i += 512;
+        }
+
+        Ok(i)
     }
 }

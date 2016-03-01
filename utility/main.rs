@@ -91,18 +91,30 @@ fn shell(mut fs: FileSystem){
                 },
                 "ed" => {
                     if let Some(arg) = args.next() {
-                        let mut data = String::new();
-                        loop {
-                            let mut line = String::new();
-                            stdin.read_line(&mut line).unwrap();
+                        match fs.create_node(Node::MODE_FILE, arg, block) {
+                            Ok(node) => {
+                                println!("{}: {:#?}", node.0, node.1);
 
-                            if line.is_empty() || line == ".\n" {
-                                break;
-                            } else {
-                                data.push_str(&line);
+                                let mut data = String::new();
+                                loop {
+                                    let mut line = String::new();
+                                    stdin.read_line(&mut line).unwrap();
+
+                                    if line.is_empty() || line == ".\n" {
+                                        break;
+                                    } else {
+                                        data.push_str(&line);
+                                    }
+                                }
+                                println!("{}:\n{}", arg, data);
+
+                                match fs.write_node(node.0, 0, &data.as_bytes()) {
+                                    Ok(count) => println!("ed: wrote {} bytes", count),
+                                    Err(err) => println!("ed: failed to write {}: {}", node.0, err)
+                                }
                             }
+                            Err(err) => println!("ed: failed to create {}: {}", arg, err)
                         }
-                        println!("{}:\n{}", arg, data);
                     } else {
                         println!("ed <path>");
                     }
