@@ -11,9 +11,13 @@ ed b_file
 B FILE
 .
 
+cat b_file
+
 ed c_file
 C FILE
 .
+
+cat c_file
 
 exit
 

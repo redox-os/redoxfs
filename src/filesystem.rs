@@ -322,7 +322,7 @@ impl FileSystem {
 
     pub fn read_node(&mut self, block: u64, offset: usize, buf: &mut [u8]) -> Result<usize> {
         let block_offset = offset / 512;
-        let byte_offset = offset % 512;
+        let mut byte_offset = offset % 512;
         let block_len = (buf.len() + byte_offset + 511)/512;
 
         let mut blocks = Vec::new();
@@ -330,9 +330,15 @@ impl FileSystem {
 
         let mut i = 0;
         for &block in blocks.iter() {
-            let mut sector = ['r' as u8; 512];
+            let mut sector = [0; 512];
             try!(self.disk.read_at(block, &mut sector));
-            i += 512;
+
+            for (s_b, mut b) in sector.iter().skip(byte_offset).zip((&mut buf[i..]).iter_mut()) {
+                *b = *s_b;
+                i += 1;
+            }
+
+            byte_offset = 0;
         }
 
         Ok(i)
@@ -340,7 +346,7 @@ impl FileSystem {
 
     pub fn write_node(&mut self, block: u64, offset: usize, buf: &[u8]) -> Result<usize> {
         let block_offset = offset / 512;
-        let byte_offset = offset % 512;
+        let mut byte_offset = offset % 512;
         let block_len = (buf.len() + byte_offset + 511)/512;
 
         try!(self.node_ensure_len(block, (block_offset + block_len) as u64));
@@ -350,11 +356,38 @@ impl FileSystem {
 
         let mut i = 0;
         for &block in blocks.iter() {
-            let sector = ['w' as u8; 512];
+            let mut sector = [0; 512];
+
+            for (mut s_b, b) in sector.iter_mut().skip(byte_offset).zip(buf[i..].iter()) {
+                *s_b = *b;
+                i += 1;
+            }
+
             try!(self.disk.write_at(block, &sector));
-            i += 512;
+
+            byte_offset = 0;
         }
 
         Ok(i)
+    }
+
+    pub fn node_len(&mut self, block: u64) -> Result<u64> {
+        if block == 0 {
+            return Err(Error::new(ENOENT));
+        }
+
+        let mut size = 0;
+
+        let node = try!(self.node(block));
+        for extent in node.1.extents.iter() {
+            size += extent.length;
+        }
+
+        if node.1.next > 0 {
+            size += try!(self.node_len(node.1.next));
+            Ok(size)
+        } else {
+            Ok(size)
+        }
     }
 }

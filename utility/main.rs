@@ -7,6 +7,7 @@ extern crate system;
 use std::env;
 use std::io::{self, Write};
 use std::path::Path;
+use std::str;
 
 use redoxfs::{FileSystem, Node};
 
@@ -58,6 +59,24 @@ fn shell(mut fs: FileSystem){
                     match fs.node(block) {
                         Ok(node) => println!("{}: {:#?}", node.0, node.1),
                         Err(err) => println!("node: failed to read {}: {}", block, err)
+                    }
+                },
+                "cat" => {
+                    if let Some(arg) = args.next() {
+                        match fs.find_node(arg, block) {
+                            Ok(node) => {
+                                println!("{}: {:#?}", node.0, node.1);
+
+                                let mut data = [0; 512];
+                                match fs.read_node(node.0, 0, &mut data) {
+                                    Ok(count) => println!("cat: read {} bytes\n{}", count, unsafe { str::from_utf8_unchecked(&data) }),
+                                    Err(err) => println!("cat: failed to read {}: {}", node.0, err)
+                                }
+                            }
+                            Err(err) => println!("cat: failed to create {}: {}", arg, err)
+                        }
+                    } else {
+                        println!("cat <path>");
                     }
                 },
                 "cd" => {
@@ -178,7 +197,7 @@ fn shell(mut fs: FileSystem){
                         println!("rmdir <dir>");
                     }
                 },
-                _ => println!("commands: exit header node root free find ls mk mkdir rm rmdir")
+                _ => println!("commands: exit header node root free cat ed find ls mk mkdir rm rmdir")
             }
         }
     }

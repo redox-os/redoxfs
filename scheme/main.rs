@@ -123,7 +123,7 @@ impl FileScheme {
 }
 
 impl Scheme for FileScheme {
-    fn open(&mut self, url: &str, flags: usize, mode: usize) -> Result<usize> {
+    fn open(&mut self, url: &str, flags: usize, _mode: usize) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
         let mut nodes = Vec::new();
@@ -143,7 +143,11 @@ impl Scheme for FileScheme {
                     }
                 }
             } else {
-                data.extend_from_slice(&format!("{:#?}", node).as_bytes());
+                for i in 0..try!(self.fs.node_len(node.0)) {
+                    let mut sector = [0; 512];
+                    try!(self.fs.read_node(node.0, i as usize * 512, &mut sector));
+                    data.extend_from_slice(&sector);
+                }
             },
             Err(err) => if err.errno == ENOENT && flags & O_CREAT == O_CREAT {
                 let mut last_part = String::new();
