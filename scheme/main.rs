@@ -89,6 +89,10 @@ impl FileResource {
     fn sync(&mut self) -> Result<usize> {
         Ok(0)
     }
+
+    fn truncate(&mut self, len: usize) -> Result<usize> {
+        Ok(0)
+    }
 }
 
 struct FileScheme {
@@ -140,6 +144,9 @@ impl Scheme for FileScheme {
                             data.push('\n' as u8);
                         }
                         data.extend_from_slice(&name.as_bytes());
+                        if child.1.is_dir() {
+                            data.push(b'/');
+                        }
                     }
                 }
             } else {
@@ -189,7 +196,7 @@ impl Scheme for FileScheme {
         Ok(id)
     }
 
-    fn mkdir(&mut self, url: &str, mode: usize) -> Result<usize> {
+    fn mkdir(&mut self, url: &str, _mode: usize) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
         let mut nodes = Vec::new();
@@ -239,6 +246,7 @@ impl Scheme for FileScheme {
 
     fn unlink(&mut self, url: &str) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
+
         let mut nodes = Vec::new();
         let child = try!(self.path_nodes(path, &mut nodes));
         if let Some(parent) = nodes.last() {
@@ -300,7 +308,6 @@ impl Scheme for FileScheme {
     }
 
     fn fsync(&mut self, id: usize) -> Result<usize> {
-        println!("fsync {}", id);
         if let Some(mut file) = self.files.get_mut(&id) {
             file.sync()
         } else {
@@ -309,8 +316,11 @@ impl Scheme for FileScheme {
     }
 
     fn ftruncate(&mut self, id: usize, len: usize) -> Result<usize> {
-        println!("ftruncate {}, {}", id, len);
-        Err(Error::new(EBADF))
+        if let Some(mut file) = self.files.get_mut(&id) {
+            file.truncate(len)
+        } else {
+            Err(Error::new(EBADF))
+        }
     }
 
     fn close(&mut self, id: usize) -> Result<usize> {
