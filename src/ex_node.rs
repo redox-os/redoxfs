@@ -56,5 +56,5 @@ impl ops::DerefMut for ExNode {
 
 #[test]
 fn ex_node_size_test(){
-    assert!(mem::size_of::<ExNode>() <= 512);
+    assert_eq!(mem::size_of::<ExNode>(), 512);
 }
