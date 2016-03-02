@@ -8,10 +8,13 @@ use super::Extent;
 #[repr(packed)]
 pub struct Node {
     pub mode: u16,
-    pub name: [u8; 254],
+    pub user: u16,
+    pub group: u16,
+    pub size: u64,
+    pub name: [u8; 258],
     pub parent: u64,
     pub next: u64,
-    pub extents: [Extent; 15],
+    pub extents: [Extent; 14],
 }
 
 impl Node {
@@ -24,25 +27,31 @@ impl Node {
     pub fn default() -> Node {
         Node {
             mode: 0,
-            name: [0; 254],
+            user: 0,
+            group: 0,
+            size: 0,
+            name: [0; 258],
             parent: 0,
             next: 0,
-            extents: [Extent::default(); 15]
+            extents: [Extent::default(); 14],
         }
     }
 
     pub fn new(mode: u16, name: &str, parent: u64) -> Node {
-        let mut bytes = [0; 254];
+        let mut bytes = [0; 258];
         for (mut b, c) in bytes.iter_mut().zip(name.bytes()) {
             *b = c;
         }
 
         Node {
             mode: mode,
+            user: 0,
+            group: 0,
+            size: 0,
             name: bytes,
             parent: parent,
             next: 0,
-            extents: [Extent::default(); 15]
+            extents: [Extent::default(); 14],
         }
     }
 
@@ -76,8 +85,11 @@ impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let extents: Vec<&Extent> = self.extents.iter().filter(|extent| -> bool { extent.length > 0 }).collect();
         f.debug_struct("Node")
-            .field("name", &self.name())
             .field("mode", &self.mode)
+            .field("user", &self.user)
+            .field("group", &self.group)
+            .field("size", &self.size)
+            .field("name", &self.name())
             .field("next", &self.next)
             .field("extents", &extents)
             .finish()
@@ -103,5 +115,5 @@ impl ops::DerefMut for Node {
 
 #[test]
 fn node_size_test(){
-    assert!(mem::size_of::<Node>() <= 512);
+    assert_eq!(mem::size_of::<Node>(), 512);
 }
