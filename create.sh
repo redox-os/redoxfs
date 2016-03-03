@@ -19,6 +19,8 @@ C FILE
 
 cat c_file
 
+ls
+
 exit
 
 EOF

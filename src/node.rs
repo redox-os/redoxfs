@@ -10,11 +10,10 @@ pub struct Node {
     pub mode: u16,
     pub user: u16,
     pub group: u16,
-    pub size: u64,
-    pub name: [u8; 258],
+    pub name: [u8; 250],
     pub parent: u64,
     pub next: u64,
-    pub extents: [Extent; 14],
+    pub extents: [Extent; 15],
 }
 
 impl Node {
@@ -29,16 +28,15 @@ impl Node {
             mode: 0,
             user: 0,
             group: 0,
-            size: 0,
-            name: [0; 258],
+            name: [0; 250],
             parent: 0,
             next: 0,
-            extents: [Extent::default(); 14],
+            extents: [Extent::default(); 15],
         }
     }
 
     pub fn new(mode: u16, name: &str, parent: u64) -> Node {
-        let mut bytes = [0; 258];
+        let mut bytes = [0; 250];
         for (mut b, c) in bytes.iter_mut().zip(name.bytes()) {
             *b = c;
         }
@@ -47,11 +45,10 @@ impl Node {
             mode: mode,
             user: 0,
             group: 0,
-            size: 0,
             name: bytes,
             parent: parent,
             next: 0,
-            extents: [Extent::default(); 14],
+            extents: [Extent::default(); 15],
         }
     }
 
@@ -88,7 +85,6 @@ impl fmt::Debug for Node {
             .field("mode", &self.mode)
             .field("user", &self.user)
             .field("group", &self.group)
-            .field("size", &self.size)
             .field("name", &self.name())
             .field("next", &self.next)
             .field("extents", &extents)

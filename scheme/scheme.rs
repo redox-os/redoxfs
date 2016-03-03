@@ -63,9 +63,9 @@ impl Scheme for FileScheme {
                     }
                 }
             } else {
-                for i in 0..try!(self.fs.node_len(node.0)) {
+                for i in 0..(try!(self.fs.node_len(node.0)) + 511)/512 {
                     let mut sector = [0; 512];
-                    try!(self.fs.read_node(node.0, i as usize * 512, &mut sector));
+                    try!(self.fs.read_node(node.0, i as u64 * 512, &mut sector));
                     data.extend_from_slice(&sector);
                 }
             },

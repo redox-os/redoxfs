@@ -15,7 +15,6 @@ extern crate collections;
 
 extern crate system;
 
-pub use self::collection::Collection;
 pub use self::disk::Disk;
 pub use self::ex_node::ExNode;
 pub use self::extent::Extent;
@@ -23,7 +22,6 @@ pub use self::filesystem::FileSystem;
 pub use self::header::Header;
 pub use self::node::Node;
 
-pub mod collection;
 pub mod disk;
 pub mod ex_node;
 pub mod extent;
