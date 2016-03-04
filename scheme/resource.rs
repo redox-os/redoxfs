@@ -30,8 +30,12 @@ impl FileResource {
 
     pub fn write(&mut self, buf: &[u8]) -> Result<usize> {
         let mut i = 0;
-        while i < buf.len() && self.seek < self.data.len() {
-            self.data[self.seek] = buf[i];
+        while i < buf.len() {
+            if self.seek < self.data.len() {
+                self.data[self.seek] = buf[i];
+            } else {
+                self.data.push(buf[i]);
+            }
             i += 1;
             self.seek += 1;
         }
