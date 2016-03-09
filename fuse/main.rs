@@ -9,7 +9,7 @@ use image::Image;
 use std::env;
 use std::path::Path;
 use time::Timespec;
-use fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyCreate, ReplyDirectory, ReplyEmpty, ReplyWrite};
+use fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyCreate, ReplyDirectory, ReplyEmpty, ReplyStatfs, ReplyWrite};
 
 pub mod image;
 
@@ -260,6 +260,21 @@ impl Filesystem for RedoxFS {
         match self.fs.remove_node(redoxfs::Node::MODE_FILE, name.to_str().unwrap(), parent_block) {
             Ok(()) => {
                 reply.ok();
+            },
+            Err(err) => {
+                reply.error(err.errno as i32);
+            }
+        }
+    }
+
+    fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
+        let free = self.fs.header.1.free;
+        match self.fs.node_len(free) {
+            Ok(free_size) => {
+                let bsize = 512;
+                let blocks = self.fs.header.1.size/bsize;
+                let bfree = free_size/bsize;
+                reply.statfs(blocks, bfree, bfree, 0, 0, bsize as u32, 256, 0);
             },
             Err(err) => {
                 reply.error(err.errno as i32);
