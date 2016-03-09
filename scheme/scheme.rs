@@ -96,17 +96,70 @@ impl Scheme for FileScheme {
 
     fn mkdir(&mut self, url: &str, _mode: usize) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
-        self.fs.mkdir(path)
+
+        let mut nodes = Vec::new();
+        match self.path_nodes(path, &mut nodes) {
+            Ok(_node) => Err(Error::new(EEXIST)),
+            Err(err) => if err.errno == ENOENT {
+                let mut last_part = String::new();
+                for part in path.split('/') {
+                    if ! part.is_empty() {
+                        last_part = part.to_owned();
+                    }
+                }
+                if ! last_part.is_empty() {
+                    if let Some(parent) = nodes.last() {
+                        self.create_node(Node::MODE_DIR, &last_part, parent.0).and(Ok(0))
+                    } else {
+                        Err(Error::new(EPERM))
+                    }
+                } else {
+                    Err(Error::new(EPERM))
+                }
+            } else {
+                Err(err)
+            }
+        }
     }
 
     fn rmdir(&mut self, url: &str) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
-        self.fs.rmdir(path)
+
+        let mut nodes = Vec::new();
+        let child = try!(self.path_nodes(path, &mut nodes));
+        if let Some(parent) = nodes.last() {
+            if child.1.is_dir() {
+                if let Ok(child_name) = child.1.name() {
+                    self.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
+                } else {
+                    Err(Error::new(ENOENT))
+                }
+            } else {
+                Err(Error::new(ENOTDIR))
+            }
+        } else {
+            Err(Error::new(EPERM))
+        }
     }
 
     fn unlink(&mut self, url: &str) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
-        self.fs.unlink(path)
+
+        let mut nodes = Vec::new();
+        let child = try!(self.path_nodes(path, &mut nodes));
+        if let Some(parent) = nodes.last() {
+            if ! child.1.is_dir() {
+                if let Ok(child_name) = child.1.name() {
+                    self.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
+                } else {
+                    Err(Error::new(ENOENT))
+                }
+            } else {
+                Err(Error::new(EISDIR))
+            }
+        } else {
+            Err(Error::new(EPERM))
+        }
     }
 
     /* Resource operations */

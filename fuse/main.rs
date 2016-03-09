@@ -9,8 +9,7 @@ use image::Image;
 use std::env;
 use std::path::Path;
 use time::Timespec;
-use fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyDirectory};
-use system::error::ENOENT;
+use fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyCreate, ReplyDirectory, ReplyEmpty, ReplyWrite};
 
 pub mod image;
 
@@ -23,12 +22,10 @@ struct RedoxFS {
 }
 
 impl Filesystem for RedoxFS {
-    fn lookup (&mut self, _req: &Request, ino: u64, name: &Path, reply: ReplyEntry) {
+    fn lookup(&mut self, _req: &Request, ino: u64, name: &Path, reply: ReplyEntry) {
         let parent_block = self.fs.header.0 + ino;
-        println!("lookup: {} {:?}", parent_block, name);
         match self.fs.find_node(name.to_str().unwrap(), parent_block) {
             Ok(node) => {
-                println!("lookup: {:?}", node);
                 reply.entry(&TTL, &FileAttr {
                     ino: node.0 - self.fs.header.0,
                     size: node.1.extents[0].length,
@@ -48,21 +45,18 @@ impl Filesystem for RedoxFS {
                     gid: 0,
                     rdev: 0,
                     flags: 0,
-                }, 0)
+                }, 0);
             },
             Err(err) => {
-                println!("lookup: {}", err);
                 reply.error(err.errno as i32);
             }
         }
     }
 
-    fn getattr (&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+    fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         let block = self.fs.header.0 + ino;
-        println!("getattr: {}", block);
         match self.fs.node(block) {
             Ok(node) => {
-                println!("getattr: {:?}", node);
                 reply.attr(&TTL, &FileAttr {
                     ino: node.0 - self.fs.header.0,
                     size: node.1.extents[0].length,
@@ -85,15 +79,49 @@ impl Filesystem for RedoxFS {
                 });
             },
             Err(err) => {
-                println!("getattr: {}", err);
                 reply.error(err.errno as i32);
             }
         }
     }
 
-    fn read (&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, size: u32, reply: ReplyData) {
+    fn setattr(&mut self, _req: &Request, ino: u64, _mode: Option<u32>,
+                _uid: Option<u32>, _gid: Option<u32>, _size: Option<u64>,
+                _atime: Option<Timespec>, _mtime: Option<Timespec>, _fh: Option<u64>,
+                _crtime: Option<Timespec>, _chgtime: Option<Timespec>, _bkuptime: Option<Timespec>,
+                _flags: Option<u32>, reply: ReplyAttr) {
+        //TODO: Implement truncate
         let block = self.fs.header.0 + ino;
-        println!("read: {} at {}, size {}", block, offset, size);
+        match self.fs.node(block) {
+            Ok(node) => {
+                reply.attr(&TTL, &FileAttr {
+                    ino: node.0 - self.fs.header.0,
+                    size: node.1.extents[0].length,
+                    blocks: (node.1.extents[0].length + 511)/512,
+                    atime: CREATE_TIME,
+                    mtime: CREATE_TIME,
+                    ctime: CREATE_TIME,
+                    crtime: CREATE_TIME,
+                    kind: if node.1.is_dir() {
+                        FileType::Directory
+                    } else {
+                        FileType::RegularFile
+                    },
+                    perm: 0o777,
+                    nlink: 1,
+                    uid: 0,
+                    gid: 0,
+                    rdev: 0,
+                    flags: 0,
+                });
+            },
+            Err(err) => {
+                reply.error(err.errno as i32);
+            }
+        }
+    }
+
+    fn read(&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, size: u32, reply: ReplyData) {
+        let block = self.fs.header.0 + ino;
         let mut data = vec![0; size as usize];
         match self.fs.read_node(block, offset, &mut data) {
             Ok(count) => {
@@ -105,9 +133,28 @@ impl Filesystem for RedoxFS {
         }
     }
 
-    fn readdir (&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, mut reply: ReplyDirectory) {
+    fn write(&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, data: &[u8], _flags: u32, reply: ReplyWrite) {
+        let block = self.fs.header.0 + ino;
+        match self.fs.write_node(block, offset, &data) {
+            Ok(count) => {
+                reply.written(count as u32);
+            },
+            Err(err) => {
+                reply.error(err.errno as i32);
+            }
+        }
+    }
+
+    fn flush(&mut self, _req: &Request, _ino: u64, _fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
+        reply.ok();
+    }
+
+    fn fsync(&mut self, _req: &Request, _ino: u64, _fh: u64, _datasync: bool, reply: ReplyEmpty) {
+        reply.ok();
+    }
+
+    fn readdir(&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, mut reply: ReplyDirectory) {
         let parent_block = self.fs.header.0 + ino;
-        println!("readdir: {}", parent_block);
         let mut children = Vec::new();
         match self.fs.child_nodes(&mut children, parent_block) {
             Ok(()) => {
@@ -129,14 +176,99 @@ impl Filesystem for RedoxFS {
                 reply.ok();
             },
             Err(err) => {
-                println!("readdir: {}", err);
+                reply.error(err.errno as i32);
+            }
+        }
+    }
+
+    fn create(&mut self, _req: &Request, ino: u64, name: &Path, _mode: u32, flags: u32, reply: ReplyCreate) {
+        let parent_block = self.fs.header.0 + ino;
+        match self.fs.create_node(redoxfs::Node::MODE_FILE, name.to_str().unwrap(), parent_block) {
+            Ok(node) => {
+                reply.created(&TTL, &FileAttr {
+                    ino: node.0 - self.fs.header.0,
+                    size: node.1.extents[0].length,
+                    blocks: (node.1.extents[0].length + 511)/512,
+                    atime: CREATE_TIME,
+                    mtime: CREATE_TIME,
+                    ctime: CREATE_TIME,
+                    crtime: CREATE_TIME,
+                    kind: if node.1.is_dir() {
+                        FileType::Directory
+                    } else {
+                        FileType::RegularFile
+                    },
+                    perm: 0o777,
+                    nlink: 1,
+                    uid: 0,
+                    gid: 0,
+                    rdev: 0,
+                    flags: 0,
+                }, 0, 0, flags);
+            },
+            Err(error) => {
+                reply.error(error.errno as i32);
+            }
+        }
+    }
+
+    fn mkdir(&mut self, _req: &Request, ino: u64, name: &Path, _mode: u32, reply: ReplyEntry) {
+        let parent_block = self.fs.header.0 + ino;
+        match self.fs.create_node(redoxfs::Node::MODE_DIR, name.to_str().unwrap(), parent_block) {
+            Ok(node) => {
+                reply.entry(&TTL, &FileAttr {
+                    ino: node.0 - self.fs.header.0,
+                    size: node.1.extents[0].length,
+                    blocks: (node.1.extents[0].length + 511)/512,
+                    atime: CREATE_TIME,
+                    mtime: CREATE_TIME,
+                    ctime: CREATE_TIME,
+                    crtime: CREATE_TIME,
+                    kind: if node.1.is_dir() {
+                        FileType::Directory
+                    } else {
+                        FileType::RegularFile
+                    },
+                    perm: 0o777,
+                    nlink: 1,
+                    uid: 0,
+                    gid: 0,
+                    rdev: 0,
+                    flags: 0,
+                }, 0);
+            },
+            Err(error) => {
+                reply.error(error.errno as i32);
+            }
+        }
+    }
+
+    fn rmdir(&mut self, _req: &Request, ino: u64, name: &Path, reply: ReplyEmpty) {
+        let parent_block = self.fs.header.0 + ino;
+        match self.fs.remove_node(redoxfs::Node::MODE_DIR, name.to_str().unwrap(), parent_block) {
+            Ok(()) => {
+                reply.ok();
+            },
+            Err(err) => {
+                reply.error(err.errno as i32);
+            }
+        }
+    }
+
+    fn unlink(&mut self, _req: &Request, ino: u64, name: &Path, reply: ReplyEmpty) {
+        let parent_block = self.fs.header.0 + ino;
+        match self.fs.remove_node(redoxfs::Node::MODE_FILE, name.to_str().unwrap(), parent_block) {
+            Ok(()) => {
+                reply.ok();
+            },
+            Err(err) => {
                 reply.error(err.errno as i32);
             }
         }
     }
 }
 
-fn main () {
+fn main() {
     if let Some(path) = env::args().nth(1) {
         //Open an existing image
         match Image::open(&path) {
