@@ -18,8 +18,6 @@ const TTL: Timespec = Timespec { sec: 1, nsec: 0 };                 // 1 second
 
 const CREATE_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
 
-const HELLO_TXT_CONTENT: &'static str = "Hello World!\n";
-
 struct RedoxFS {
     fs: redoxfs::FileSystem,
 }
@@ -93,11 +91,17 @@ impl Filesystem for RedoxFS {
         }
     }
 
-    fn read (&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, _size: u32, reply: ReplyData) {
-        if ino == 2 {
-            reply.data(&HELLO_TXT_CONTENT.as_bytes()[offset as usize..]);
-        } else {
-            reply.error(ENOENT as i32);
+    fn read (&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, size: u32, reply: ReplyData) {
+        let block = self.fs.header.0 + ino;
+        println!("read: {} at {}, size {}", block, offset, size);
+        let mut data = vec![0; size as usize];
+        match self.fs.read_node(block, offset, &mut data) {
+            Ok(count) => {
+                reply.data(&data[..count]);
+            },
+            Err(err) => {
+                reply.error(err.errno as i32);
+            }
         }
     }
 
