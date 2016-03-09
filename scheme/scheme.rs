@@ -29,7 +29,7 @@ impl Scheme for FileScheme {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
         let mut nodes = Vec::new();
-        let node_result = self.path_nodes(path, &mut nodes);
+        let node_result = self.fs.path_nodes(path, &mut nodes);
 
         let mut data = Vec::new();
         match node_result {
@@ -98,7 +98,7 @@ impl Scheme for FileScheme {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
         let mut nodes = Vec::new();
-        match self.path_nodes(path, &mut nodes) {
+        match self.fs.path_nodes(path, &mut nodes) {
             Ok(_node) => Err(Error::new(EEXIST)),
             Err(err) => if err.errno == ENOENT {
                 let mut last_part = String::new();
@@ -109,7 +109,7 @@ impl Scheme for FileScheme {
                 }
                 if ! last_part.is_empty() {
                     if let Some(parent) = nodes.last() {
-                        self.create_node(Node::MODE_DIR, &last_part, parent.0).and(Ok(0))
+                        self.fs.create_node(Node::MODE_DIR, &last_part, parent.0).and(Ok(0))
                     } else {
                         Err(Error::new(EPERM))
                     }
@@ -126,11 +126,11 @@ impl Scheme for FileScheme {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
         let mut nodes = Vec::new();
-        let child = try!(self.path_nodes(path, &mut nodes));
+        let child = try!(self.fs.path_nodes(path, &mut nodes));
         if let Some(parent) = nodes.last() {
             if child.1.is_dir() {
                 if let Ok(child_name) = child.1.name() {
-                    self.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
+                    self.fs.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
                 } else {
                     Err(Error::new(ENOENT))
                 }
@@ -146,11 +146,11 @@ impl Scheme for FileScheme {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
         let mut nodes = Vec::new();
-        let child = try!(self.path_nodes(path, &mut nodes));
+        let child = try!(self.fs.path_nodes(path, &mut nodes));
         if let Some(parent) = nodes.last() {
             if ! child.1.is_dir() {
                 if let Ok(child_name) = child.1.name() {
-                    self.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
+                    self.fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
                 } else {
                     Err(Error::new(ENOENT))
                 }
