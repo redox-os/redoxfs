@@ -1,8 +1,9 @@
 use alloc::boxed::Box;
 
-use collections::vec::Vec;
+use collections::{String, Vec};
+use collections::borrow::ToOwned;
 
-use system::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
+use system::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EPERM};
 
 use super::{Disk, ExNode, Extent, Header, Node};
 
@@ -139,6 +140,21 @@ impl FileSystem {
         }
 
         self.find_node(name, parent.1.next)
+    }
+
+    fn path_nodes(&mut self, path: &str, nodes: &mut Vec<(u64, Node)>) -> Result<(u64, Node)> {
+        let mut block = self.header.1.root;
+        nodes.push(try!(self.node(block)));
+
+        for part in path.split('/') {
+            if ! part.is_empty() {
+                let node = try!(self.find_node(part, block));
+                block = node.0;
+                nodes.push(node);
+            }
+        }
+
+        Ok(nodes.pop().unwrap())
     }
 
     fn insert_blocks(&mut self, block: u64, length: u64, parent_block: u64) -> Result<()> {
@@ -405,6 +421,68 @@ impl FileSystem {
             Ok(size)
         } else {
             Ok(size)
+        }
+    }
+
+    pub fn mkdir(&mut self, path: &str) -> Result<usize> {
+        let mut nodes = Vec::new();
+        match self.path_nodes(path, &mut nodes) {
+            Ok(_node) => Err(Error::new(EEXIST)),
+            Err(err) => if err.errno == ENOENT {
+                let mut last_part = String::new();
+                for part in path.split('/') {
+                    if ! part.is_empty() {
+                        last_part = part.to_owned();
+                    }
+                }
+                if ! last_part.is_empty() {
+                    if let Some(parent) = nodes.last() {
+                        self.create_node(Node::MODE_DIR, &last_part, parent.0).and(Ok(0))
+                    } else {
+                        Err(Error::new(EPERM))
+                    }
+                } else {
+                    Err(Error::new(EPERM))
+                }
+            } else {
+                Err(err)
+            }
+        }
+    }
+
+    pub fn rmdir(&mut self, path: &str) -> Result<usize> {
+        let mut nodes = Vec::new();
+        let child = try!(self.path_nodes(path, &mut nodes));
+        if let Some(parent) = nodes.last() {
+            if child.1.is_dir() {
+                if let Ok(child_name) = child.1.name() {
+                    self.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
+                } else {
+                    Err(Error::new(ENOENT))
+                }
+            } else {
+                Err(Error::new(ENOTDIR))
+            }
+        } else {
+            Err(Error::new(EPERM))
+        }
+    }
+
+    pub fn unlink(&mut self, path: &str) -> Result<usize> {
+        let mut nodes = Vec::new();
+        let child = try!(self.path_nodes(path, &mut nodes));
+        if let Some(parent) = nodes.last() {
+            if ! child.1.is_dir() {
+                if let Ok(child_name) = child.1.name() {
+                    self.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
+                } else {
+                    Err(Error::new(ENOENT))
+                }
+            } else {
+                Err(Error::new(EISDIR))
+            }
+        } else {
+            Err(Error::new(EPERM))
         }
     }
 }

@@ -22,21 +22,6 @@ impl FileScheme {
             files: BTreeMap::new()
         }
     }
-
-    fn path_nodes(&mut self, path: &str, nodes: &mut Vec<(u64, Node)>) -> Result<(u64, Node)> {
-        let mut block = self.fs.header.1.root;
-        nodes.push(try!(self.fs.node(block)));
-
-        for part in path.split('/') {
-            if ! part.is_empty() {
-                let node = try!(self.fs.find_node(part, block));
-                block = node.0;
-                nodes.push(node);
-            }
-        }
-
-        Ok(nodes.pop().unwrap())
-    }
 }
 
 impl Scheme for FileScheme {
@@ -111,70 +96,17 @@ impl Scheme for FileScheme {
 
     fn mkdir(&mut self, url: &str, _mode: usize) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
-
-        let mut nodes = Vec::new();
-        match self.path_nodes(path, &mut nodes) {
-            Ok(_node) => Err(Error::new(EEXIST)),
-            Err(err) => if err.errno == ENOENT {
-                let mut last_part = String::new();
-                for part in path.split('/') {
-                    if ! part.is_empty() {
-                        last_part = part.to_string();
-                    }
-                }
-                if ! last_part.is_empty() {
-                    if let Some(parent) = nodes.last() {
-                        self.fs.create_node(Node::MODE_DIR, &last_part, parent.0).and(Ok(0))
-                    } else {
-                        Err(Error::new(EPERM))
-                    }
-                } else {
-                    Err(Error::new(EPERM))
-                }
-            } else {
-                Err(err)
-            }
-        }
+        self.fs.mkdir(path)
     }
 
     fn rmdir(&mut self, url: &str) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
-
-        let mut nodes = Vec::new();
-        let child = try!(self.path_nodes(path, &mut nodes));
-        if let Some(parent) = nodes.last() {
-            if child.1.is_dir() {
-                if let Ok(child_name) = child.1.name() {
-                    self.fs.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
-                } else {
-                    Err(Error::new(ENOENT))
-                }
-            } else {
-                Err(Error::new(ENOTDIR))
-            }
-        } else {
-            Err(Error::new(EPERM))
-        }
+        self.fs.rmdir(path)
     }
 
     fn unlink(&mut self, url: &str) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
-
-        let mut nodes = Vec::new();
-        let child = try!(self.path_nodes(path, &mut nodes));
-        if let Some(parent) = nodes.last() {
-            if ! child.1.is_dir() {
-                if let Ok(child_name) = child.1.name() {
-                    self.fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
-                } else {
-                    Err(Error::new(ENOENT))
-                }
-            } else {
-                Err(Error::new(EISDIR))
-            }
-        } else {
-            Err(Error::new(EPERM))
-        }
+        self.fs.unlink(path)
     }
 
     /* Resource operations */

@@ -11,9 +11,16 @@ authors = ["Jeremy Soller <jackpot51@gmail.com>"]
 name = "redoxfs"
 path = "src/lib.rs"
 
+
+[[bin]]
+name = "redoxfs-fuse"
+path = "fuse/main.rs"
+
 [[bin]]
 name = "redoxfs-utility"
 path = "utility/main.rs"
 
 [dependencies]
 redox-system = {path = "../system/"}
+fuse = "0.2"
+time = "*"
