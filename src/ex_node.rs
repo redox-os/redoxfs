@@ -1,6 +1,4 @@
-use collections::Vec;
-
-use core::{fmt, mem, ops, slice};
+use std::{fmt, mem, ops, slice};
 
 use super::Extent;
 

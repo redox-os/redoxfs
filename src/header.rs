@@ -1,11 +1,10 @@
-use core::{mem, slice};
-use core::ops::{Deref, DerefMut};
+use std::{fmt, mem, slice};
+use std::ops::{Deref, DerefMut};
 
 /// The header of the filesystem
-#[derive(Debug)]
 #[repr(packed)]
 pub struct Header {
-    /// Signature, should be b"REDOXFS\0"
+    /// Signature, should be b"RedoxFS\0"
     pub signature: [u8; 8],
     /// Version, should be 1
     pub version: u64,
@@ -17,6 +16,8 @@ pub struct Header {
     pub root: u64,
     /// Block of free space node
     pub free: u64,
+    /// Padding
+    pub padding: [u8; 456]
 }
 
 impl Header {
@@ -31,6 +32,7 @@ impl Header {
             size: 0,
             root: 0,
             free: 0,
+            padding: [0; 456]
         }
     }
 
@@ -42,11 +44,25 @@ impl Header {
             size: size,
             root: root,
             free: free,
+            padding: [0; 456]
         }
     }
 
     pub fn valid(&self) -> bool {
         &self.signature == Header::SIGNATURE && self.version == Header::VERSION
+    }
+}
+
+impl fmt::Debug for Header {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Header")
+            .field("signature", &self.signature)
+            .field("version", &self.version)
+            .field("uuid", &self.uuid)
+            .field("size", &self.size)
+            .field("root", &self.root)
+            .field("free", &self.free)
+            .finish()
     }
 }
 
@@ -69,5 +85,5 @@ impl DerefMut for Header {
 
 #[test]
 fn header_size_test(){
-    assert!(mem::size_of::<Header>() <= 512);
+    assert_eq!(mem::size_of::<Header>(), 512);
 }

@@ -1,7 +1,3 @@
-use alloc::boxed::Box;
-
-use collections::Vec;
-
 use system::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
 
 use super::{Disk, ExNode, Extent, Header, Node};
@@ -145,7 +141,7 @@ impl FileSystem {
         let mut block = self.header.1.root;
         nodes.push(try!(self.node(block)));
 
-        for part in path.split('/') {
+        for part in path.split(':') {
             if ! part.is_empty() {
                 let node = try!(self.find_node(part, block));
                 block = node.0;

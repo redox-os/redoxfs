@@ -1,17 +1,8 @@
 #![crate_name="redoxfs"]
 #![crate_type="lib"]
-#![feature(alloc)]
 #![feature(associated_consts)]
-#![feature(collections)]
-#![no_std]
 
 #![deny(warnings)]
-
-#[macro_use]
-extern crate alloc;
-
-#[macro_use]
-extern crate collections;
 
 extern crate system;
 
