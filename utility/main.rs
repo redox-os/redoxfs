@@ -219,8 +219,8 @@ fn main() {
                 Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
             }
         }else{
-            //Create a 4 MB disk image
-            let size = 4 * 1024 * 1024;
+            //Create a 128 MB disk image
+            let size = 128 * 1024 * 1024;
             match Image::create(&path, size) {
                 Ok(disk) => match FileSystem::create(Box::new(disk)) {
                     Ok(filesystem) => {

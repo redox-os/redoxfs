@@ -22,7 +22,7 @@ pub struct Header {
 
 impl Header {
     pub const SIGNATURE: &'static [u8; 8] = b"RedoxFS\0";
-    pub const VERSION: u64 = 0xFFFFFFFFFFFFFFFF;
+    pub const VERSION: u64 = 1;
 
     pub fn default() -> Header {
         Header {

@@ -5,29 +5,39 @@ use super::{Disk, ExNode, Extent, Header, Node};
 /// A file system
 pub struct FileSystem {
     pub disk: Box<Disk>,
+    pub block: u64,
     pub header: (u64, Header)
 }
 
 impl FileSystem {
     /// Open a file system on a disk
     pub fn open(mut disk: Box<Disk>) -> Result<Self> {
-        let mut header = (1, Header::default());
-        try!(disk.read_at(header.0, &mut header.1));
+        for block in 0..4096 {
+            let mut header = (0, Header::default());
+            try!(disk.read_at(block + header.0, &mut header.1));
 
-        if header.1.valid() {
-            let mut root = (header.1.root, Node::default());
-            try!(disk.read_at(root.0, &mut root.1));
+            if header.1.valid() {
+                println!("{:?}", header);
 
-            let mut free = (header.1.free, Node::default());
-            try!(disk.read_at(free.0, &mut free.1));
+                let mut root = (header.1.root, Node::default());
+                try!(disk.read_at(block + root.0, &mut root.1));
 
-            Ok(FileSystem {
-                disk: disk,
-                header: header
-            })
-        }else{
-            Err(Error::new(ENOENT))
+                println!("{:?}", root);
+
+                let mut free = (header.1.free, Node::default());
+                try!(disk.read_at(block + free.0, &mut free.1));
+
+                println!("{:?}", free);
+
+                return Ok(FileSystem {
+                    disk: disk,
+                    block: block,
+                    header: header
+                });
+            }
         }
+
+        Err(Error::new(ENOENT))
     }
 
     /// Create a file system on a disk
@@ -35,23 +45,32 @@ impl FileSystem {
         let size = try!(disk.size());
 
         if size >= 4 * 512 {
-            let mut free = (3, Node::new(Node::MODE_FILE, "free", 0));
+            let mut free = (2, Node::new(Node::MODE_FILE, "free", 0));
             free.1.extents[0] = Extent::new(4, size - 4 * 512);
             try!(disk.write_at(free.0, &free.1));
 
-            let root = (2, Node::new(Node::MODE_DIR, "root", 0));
+            let root = (1, Node::new(Node::MODE_DIR, "root", 0));
             try!(disk.write_at(root.0, &root.1));
 
-            let header = (1, Header::new(size, root.0, free.0));
+            let header = (0, Header::new(size, root.0, free.0));
             try!(disk.write_at(header.0, &header.1));
 
             Ok(FileSystem {
                 disk: disk,
+                block: 0,
                 header: header
             })
         } else {
             Err(Error::new(ENOSPC))
         }
+    }
+
+    fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+        self.disk.read_at(self.block + block, buffer)
+    }
+
+    fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+        self.disk.write_at(self.block + block, buffer)
     }
 
     pub fn allocate(&mut self, length: u64) -> Result<u64> {
@@ -68,7 +87,7 @@ impl FileSystem {
             }
         }
         if let Some(block) = block_option {
-            try!(self.disk.write_at(free.0, &free.1));
+            try!(self.write_at(free.0, &free.1));
             Ok(block)
         } else {
             Err(Error::new(ENOSPC))
@@ -82,13 +101,13 @@ impl FileSystem {
 
     pub fn node(&mut self, block: u64) -> Result<(u64, Node)> {
         let mut node = Node::default();
-        try!(self.disk.read_at(block, &mut node));
+        try!(self.read_at(block, &mut node));
         Ok((block, node))
     }
 
     pub fn ex_node(&mut self, block: u64) -> Result<(u64, ExNode)> {
         let mut node = ExNode::default();
-        try!(self.disk.read_at(block, &mut node));
+        try!(self.read_at(block, &mut node));
         Ok((block, node))
     }
 
@@ -141,7 +160,7 @@ impl FileSystem {
         let mut block = self.header.1.root;
         nodes.push(try!(self.node(block)));
 
-        for part in path.split(':') {
+        for part in path.split('/') {
             if ! part.is_empty() {
                 let node = try!(self.find_node(part, block));
                 block = node.0;
@@ -181,13 +200,13 @@ impl FileSystem {
         }
 
         if inserted {
-            try!(self.disk.write_at(parent.0, &parent.1));
+            try!(self.write_at(parent.0, &parent.1));
             Ok(())
         } else {
             if parent.1.next == 0 {
                 parent.1.next = try!(self.allocate(1));
-                try!(self.disk.write_at(parent.0, &parent.1));
-                try!(self.disk.write_at(parent.1.next, &Node::default()));
+                try!(self.write_at(parent.0, &parent.1));
+                try!(self.write_at(parent.1.next, &Node::default()));
             }
 
             self.insert_blocks(block, length, parent.1.next)
@@ -199,7 +218,7 @@ impl FileSystem {
             Err(Error::new(EEXIST))
         } else {
             let node = (try!(self.allocate(1)), Node::new(mode, name, parent_block));
-            try!(self.disk.write_at(node.0, &node.1));
+            try!(self.write_at(node.0, &node.1));
 
             try!(self.insert_blocks(node.0, 512, parent_block));
 
@@ -240,7 +259,7 @@ impl FileSystem {
         }
 
         if removed {
-            try!(self.disk.write_at(parent.0, &parent.1));
+            try!(self.write_at(parent.0, &parent.1));
 
             if let Some(replace) = replace_option {
                 try!(self.insert_blocks(replace.block, replace.length, parent_block));
@@ -266,7 +285,7 @@ impl FileSystem {
             }
 
             try!(self.remove_blocks(node.0, 1, parent_block));
-            try!(self.disk.write_at(node.0, &Node::default()));
+            try!(self.write_at(node.0, &Node::default()));
 
             Ok(())
         } else if node.1.is_dir() {
@@ -357,7 +376,7 @@ impl FileSystem {
         for extent in extents.iter() {
             for (block, size) in extent.blocks() {
                 let mut sector = [0; 512];
-                try!(self.disk.read_at(block, &mut sector));
+                try!(self.read_at(block, &mut sector));
 
                 for (s_b, mut b) in sector[byte_offset..size].iter().zip(buf[i..].iter_mut()) {
                     *b = *s_b;
@@ -390,7 +409,7 @@ impl FileSystem {
                     i += 1;
                 }
 
-                try!(self.disk.write_at(block, &sector));
+                try!(self.write_at(block, &sector));
 
                 byte_offset = 0;
             }
