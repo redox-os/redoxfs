@@ -28,7 +28,7 @@ impl Scheme for FileScheme {
     fn open(&mut self, url: &str, flags: usize, _mode: usize) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
-        println!("Open '{}' {:X}", path, flags);
+        // println!("Open '{}' {:X}", path, flags);
 
         let mut nodes = Vec::new();
         let node_result = self.fs.path_nodes(path, &mut nodes);
@@ -99,7 +99,7 @@ impl Scheme for FileScheme {
     fn mkdir(&mut self, url: &str, _mode: usize) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
-        println!("Mkdir '{}'", path);
+        // println!("Mkdir '{}'", path);
 
         let mut nodes = Vec::new();
         match self.fs.path_nodes(path, &mut nodes) {
@@ -129,7 +129,7 @@ impl Scheme for FileScheme {
     fn rmdir(&mut self, url: &str) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
-        println!("Rmdir '{}'", path);
+        // println!("Rmdir '{}'", path);
 
         let mut nodes = Vec::new();
         let child = try!(self.fs.path_nodes(path, &mut nodes));
@@ -151,7 +151,7 @@ impl Scheme for FileScheme {
     fn unlink(&mut self, url: &str) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
-        println!("Unlink '{}'", path);
+        // println!("Unlink '{}'", path);
 
         let mut nodes = Vec::new();
         let child = try!(self.fs.path_nodes(path, &mut nodes));
@@ -173,7 +173,7 @@ impl Scheme for FileScheme {
     /* Resource operations */
     #[allow(unused_variables)]
     fn read(&mut self, id: usize, buf: &mut [u8]) -> Result<usize> {
-        println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
+        // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
 
         if let Some(mut file) = self.files.get_mut(&id) {
             file.read(buf)
@@ -183,7 +183,7 @@ impl Scheme for FileScheme {
     }
 
     fn write(&mut self, id: usize, buf: &[u8]) -> Result<usize> {
-        println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
+        // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         if let Some(mut file) = self.files.get_mut(&id) {
             file.write(buf)
         } else {
@@ -192,7 +192,7 @@ impl Scheme for FileScheme {
     }
 
     fn seek(&mut self, id: usize, pos: usize, whence: usize) -> Result<usize> {
-        println!("Seek {}, {} {}", id, pos, whence);
+        // println!("Seek {}, {} {}", id, pos, whence);
         if let Some(mut file) = self.files.get_mut(&id) {
             file.seek(pos, whence)
         } else {
@@ -201,7 +201,7 @@ impl Scheme for FileScheme {
     }
 
     fn fpath(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
-        println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
+        // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         if let Some(file) = self.files.get(&id) {
             file.path(buf)
         } else {
@@ -210,7 +210,7 @@ impl Scheme for FileScheme {
     }
 
     fn fstat(&self, id: usize, stat: &mut Stat) -> Result<usize> {
-        println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
+        // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
         if let Some(file) = self.files.get(&id) {
             file.stat(stat)
         } else {
@@ -219,7 +219,7 @@ impl Scheme for FileScheme {
     }
 
     fn fsync(&mut self, id: usize) -> Result<usize> {
-        println!("Fsync {}", id);
+        // println!("Fsync {}", id);
         if let Some(mut file) = self.files.get_mut(&id) {
             file.sync()
         } else {
@@ -228,7 +228,7 @@ impl Scheme for FileScheme {
     }
 
     fn ftruncate(&mut self, id: usize, len: usize) -> Result<usize> {
-        println!("Ftruncate {}, {}", id, len);
+        // println!("Ftruncate {}, {}", id, len);
         if let Some(mut file) = self.files.get_mut(&id) {
             file.truncate(len)
         } else {
@@ -237,7 +237,7 @@ impl Scheme for FileScheme {
     }
 
     fn close(&mut self, id: usize) -> Result<usize> {
-        println!("Close {}", id);
+        // println!("Close {}", id);
         if self.files.remove(&id).is_some() {
             Ok(0)
         } else {
