@@ -21,13 +21,23 @@ struct RedoxFS {
     fs: redoxfs::FileSystem,
 }
 
+impl RedoxFS {
+    fn inode_block(&self, ino: u64) -> u64 {
+        self.fs.header.1.root + ino - 1
+    }
+
+    fn block_inode(&self, block: u64) -> u64 {
+        block + 1 - self.fs.header.1.root
+    }
+}
+
 impl Filesystem for RedoxFS {
     fn lookup(&mut self, _req: &Request, ino: u64, name: &Path, reply: ReplyEntry) {
-        let parent_block = self.fs.header.0 + ino;
+        let parent_block = self.inode_block(ino);
         match self.fs.find_node(name.to_str().unwrap(), parent_block) {
             Ok(node) => {
                 reply.entry(&TTL, &FileAttr {
-                    ino: node.0 - self.fs.header.0,
+                    ino: self.block_inode(node.0),
                     size: node.1.extents[0].length,
                     blocks: (node.1.extents[0].length + 511)/512,
                     atime: CREATE_TIME,
@@ -54,11 +64,11 @@ impl Filesystem for RedoxFS {
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
-        let block = self.fs.header.0 + ino;
+        let block = self.inode_block(ino);
         match self.fs.node(block) {
             Ok(node) => {
                 reply.attr(&TTL, &FileAttr {
-                    ino: node.0 - self.fs.header.0,
+                    ino: self.block_inode(node.0),
                     size: node.1.extents[0].length,
                     blocks: (node.1.extents[0].length + 511)/512,
                     atime: CREATE_TIME,
@@ -90,11 +100,11 @@ impl Filesystem for RedoxFS {
                 _crtime: Option<Timespec>, _chgtime: Option<Timespec>, _bkuptime: Option<Timespec>,
                 _flags: Option<u32>, reply: ReplyAttr) {
         //TODO: Implement truncate
-        let block = self.fs.header.0 + ino;
+        let block = self.inode_block(ino);
         match self.fs.node(block) {
             Ok(node) => {
                 reply.attr(&TTL, &FileAttr {
-                    ino: node.0 - self.fs.header.0,
+                    ino: self.block_inode(node.0),
                     size: node.1.extents[0].length,
                     blocks: (node.1.extents[0].length + 511)/512,
                     atime: CREATE_TIME,
@@ -121,7 +131,7 @@ impl Filesystem for RedoxFS {
     }
 
     fn read(&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, size: u32, reply: ReplyData) {
-        let block = self.fs.header.0 + ino;
+        let block = self.inode_block(ino);
         let mut data = vec![0; size as usize];
         match self.fs.read_node(block, offset, &mut data) {
             Ok(count) => {
@@ -134,7 +144,7 @@ impl Filesystem for RedoxFS {
     }
 
     fn write(&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, data: &[u8], _flags: u32, reply: ReplyWrite) {
-        let block = self.fs.header.0 + ino;
+        let block = self.inode_block(ino);
         match self.fs.write_node(block, offset, &data) {
             Ok(count) => {
                 reply.written(count as u32);
@@ -154,7 +164,7 @@ impl Filesystem for RedoxFS {
     }
 
     fn readdir(&mut self, _req: &Request, ino: u64, _fh: u64, offset: u64, mut reply: ReplyDirectory) {
-        let parent_block = self.fs.header.0 + ino;
+        let parent_block = self.inode_block(ino);
         let mut children = Vec::new();
         match self.fs.child_nodes(&mut children, parent_block) {
             Ok(()) => {
@@ -182,11 +192,11 @@ impl Filesystem for RedoxFS {
     }
 
     fn create(&mut self, _req: &Request, ino: u64, name: &Path, _mode: u32, flags: u32, reply: ReplyCreate) {
-        let parent_block = self.fs.header.0 + ino;
+        let parent_block = self.inode_block(ino);
         match self.fs.create_node(redoxfs::Node::MODE_FILE, name.to_str().unwrap(), parent_block) {
             Ok(node) => {
                 reply.created(&TTL, &FileAttr {
-                    ino: node.0 - self.fs.header.0,
+                    ino: self.block_inode(node.0),
                     size: node.1.extents[0].length,
                     blocks: (node.1.extents[0].length + 511)/512,
                     atime: CREATE_TIME,
@@ -213,11 +223,11 @@ impl Filesystem for RedoxFS {
     }
 
     fn mkdir(&mut self, _req: &Request, ino: u64, name: &Path, _mode: u32, reply: ReplyEntry) {
-        let parent_block = self.fs.header.0 + ino;
+        let parent_block = self.inode_block(ino);
         match self.fs.create_node(redoxfs::Node::MODE_DIR, name.to_str().unwrap(), parent_block) {
             Ok(node) => {
                 reply.entry(&TTL, &FileAttr {
-                    ino: node.0 - self.fs.header.0,
+                    ino: self.block_inode(node.0),
                     size: node.1.extents[0].length,
                     blocks: (node.1.extents[0].length + 511)/512,
                     atime: CREATE_TIME,
@@ -244,7 +254,7 @@ impl Filesystem for RedoxFS {
     }
 
     fn rmdir(&mut self, _req: &Request, ino: u64, name: &Path, reply: ReplyEmpty) {
-        let parent_block = self.fs.header.0 + ino;
+        let parent_block = self.inode_block(ino);
         match self.fs.remove_node(redoxfs::Node::MODE_DIR, name.to_str().unwrap(), parent_block) {
             Ok(()) => {
                 reply.ok();
@@ -256,7 +266,7 @@ impl Filesystem for RedoxFS {
     }
 
     fn unlink(&mut self, _req: &Request, ino: u64, name: &Path, reply: ReplyEmpty) {
-        let parent_block = self.fs.header.0 + ino;
+        let parent_block = self.inode_block(ino);
         match self.fs.remove_node(redoxfs::Node::MODE_FILE, name.to_str().unwrap(), parent_block) {
             Ok(()) => {
                 reply.ok();
