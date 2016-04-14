@@ -9,6 +9,7 @@ use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use cache::Cache;
 use image::Image;
 use scheme::FileScheme;
 
@@ -16,6 +17,7 @@ use redoxfs::FileSystem;
 
 use system::scheme::{Packet, Scheme};
 
+pub mod cache;
 pub mod image;
 pub mod resource;
 pub mod scheme;
@@ -32,7 +34,7 @@ fn main() {
 
         let status_daemon = status_mutex.clone();
         thread::spawn(move || {
-            match Image::open(&path) {
+            match Image::open(&path).map(|image| Cache::new(image)) {
                 Ok(disk) => match FileSystem::open(Box::new(disk)) {
                     Ok(fs) => match File::create(":file") {
                         Ok(mut socket) => {

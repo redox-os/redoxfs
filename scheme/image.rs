@@ -21,6 +21,7 @@ pub struct Image {
 
 impl Image {
     pub fn open(path: &str) -> Result<Image> {
+        println!("Image open: {}", path);
         let file = try_disk!(File::open(path));
         Ok(Image {
             file: file
@@ -30,14 +31,14 @@ impl Image {
 
 impl Disk for Image {
     fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
-        //println!("Image read at {}", block);
+        println!("Image read at {}", block);
         try_disk!(self.file.seek(SeekFrom::Start(block * 512)));
         let count = try_disk!(self.file.read(buffer));
         Ok(count)
     }
 
     fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
-        //println!("Image write at {}", block);
+        println!("Image write at {}", block);
         try_disk!(self.file.seek(SeekFrom::Start(block * 512)));
         let count = try_disk!(self.file.write(buffer));
         Ok(count)

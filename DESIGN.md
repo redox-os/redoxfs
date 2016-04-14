@@ -26,7 +26,7 @@ The root and free block pointers point to a Node that identifies
 
 ### Node
 
-```
+```rust
 #[repr(packed)]
 pub struct Node {
     pub name: [u8; 256],
