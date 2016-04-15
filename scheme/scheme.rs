@@ -1,4 +1,4 @@
-use resource::FileResource;
+use resource::{Resource, DirResource, FileResource};
 
 use redoxfs::{FileSystem, Node};
 
@@ -11,7 +11,7 @@ use system::syscall::{Stat, O_CREAT};
 pub struct FileScheme {
     fs: FileSystem,
     next_id: isize,
-    files: BTreeMap<usize, FileResource>
+    files: BTreeMap<usize, Box<Resource>>
 }
 
 impl FileScheme {
@@ -22,26 +22,22 @@ impl FileScheme {
             files: BTreeMap::new()
         }
     }
-}
 
-impl Scheme for FileScheme {
-    fn open(&mut self, url: &str, flags: usize, _mode: usize) -> Result<usize> {
+    fn open_inner(&mut self, url: &str, flags: usize) -> Result<Box<Resource>> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
-
-        // println!("Open '{}' {:X}", path, flags);
 
         let mut nodes = Vec::new();
         let node_result = self.fs.path_nodes(path, &mut nodes);
 
-        let mut data = Vec::new();
         match node_result {
             Ok(node) => if node.1.is_dir() {
+                let mut data = Vec::new();
                 let mut children = Vec::new();
                 try!(self.fs.child_nodes(&mut children, node.0));
                 for child in children.iter() {
                     if let Ok(name) = child.1.name() {
                         if ! data.is_empty() {
-                            data.push('\n' as u8);
+                            data.push(b'\n');
                         }
                         data.extend_from_slice(&name.as_bytes());
                         if child.1.is_dir() {
@@ -49,12 +45,10 @@ impl Scheme for FileScheme {
                         }
                     }
                 }
+                return Ok(Box::new(DirResource::new(url, data)));
             } else {
-                for i in 0..(try!(self.fs.node_len(node.0)) + 511)/512 {
-                    let mut sector = [0; 512];
-                    try!(self.fs.read_node(node.0, i as u64 * 512, &mut sector));
-                    data.extend_from_slice(&sector);
-                }
+                let size = try!(self.fs.node_len(node.0));
+                return Ok(Box::new(FileResource::new(url, node.0, size)));
             },
             Err(err) => if err.errno == ENOENT && flags & O_CREAT == O_CREAT {
                 let mut last_part = String::new();
@@ -65,7 +59,8 @@ impl Scheme for FileScheme {
                 }
                 if ! last_part.is_empty() {
                     if let Some(parent) = nodes.last() {
-                        try!(self.fs.create_node(Node::MODE_FILE, &last_part, parent.0));
+                        let node = try!(self.fs.create_node(Node::MODE_FILE, &last_part, parent.0));
+                        return Ok(Box::new(FileResource::new(url, node.0, 0)));
                     } else {
                         return Err(Error::new(EPERM));
                     }
@@ -76,23 +71,23 @@ impl Scheme for FileScheme {
                 return Err(err);
             }
         }
-        /*
-        if let Some(arg) = args.next() {
-            match  {
-                Ok(node) => println!("{}: {:#?}", node.0, node.1),
-                Err(err) => println!("mk: failed to create {}: {}", arg, err)
-            }
-        } else {
-            println!("mk <file>");
-        }
-        */
+    }
+}
+
+impl Scheme for FileScheme {
+    fn open(&mut self, url: &str, flags: usize, _mode: usize) -> Result<usize> {
+        // println!("Open '{}' {:X}", path, flags);
+
+        let resource = try!(self.open_inner(url, flags));
 
         let id = self.next_id as usize;
         self.next_id += 1;
         if self.next_id < 0 {
             self.next_id = 1;
         }
-        self.files.insert(id, FileResource::new(url, data));
+
+        self.files.insert(id, resource);
+
         Ok(id)
     }
 
@@ -176,7 +171,7 @@ impl Scheme for FileScheme {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
 
         if let Some(mut file) = self.files.get_mut(&id) {
-            file.read(buf)
+            file.read(buf, &mut self.fs)
         } else {
             Err(Error::new(EBADF))
         }
@@ -185,7 +180,7 @@ impl Scheme for FileScheme {
     fn write(&mut self, id: usize, buf: &[u8]) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         if let Some(mut file) = self.files.get_mut(&id) {
-            file.write(buf)
+            file.write(buf, &mut self.fs)
         } else {
             Err(Error::new(EBADF))
         }

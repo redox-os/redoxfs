@@ -378,9 +378,11 @@ impl FileSystem {
                 let mut sector = [0; 512];
                 try!(self.read_at(block, &mut sector));
 
-                for (s_b, mut b) in sector[byte_offset..size].iter().zip(buf[i..].iter_mut()) {
-                    *b = *s_b;
-                    i += 1;
+                if byte_offset < size && i < buf.len() {
+                    for (s_b, mut b) in sector[byte_offset..size].iter().zip(buf[i..].iter_mut()) {
+                        *b = *s_b;
+                        i += 1;
+                    }
                 }
 
                 byte_offset = 0;
@@ -404,12 +406,14 @@ impl FileSystem {
             for (block, size) in extent.blocks() {
                 let mut sector = [0; 512];
 
-                for (mut s_b, b) in sector[byte_offset..size].iter_mut().zip(buf[i..].iter()) {
-                    *s_b = *b;
-                    i += 1;
-                }
+                if byte_offset < size && i < buf.len() {
+                    for (mut s_b, b) in sector[byte_offset..size].iter_mut().zip(buf[i..].iter()) {
+                        *s_b = *b;
+                        i += 1;
+                    }
 
-                try!(self.write_at(block, &sector));
+                    try!(self.write_at(block, &sector));
+                }
 
                 byte_offset = 0;
             }
