@@ -143,6 +143,11 @@ impl Scheme for FileScheme {
         }
     }
 
+    fn stat(&mut self, url: &str, stat: &mut Stat) -> Result<usize> {
+        let resource = try!(self.open_inner(url, 0));
+        resource.stat(stat)
+    }
+
     fn unlink(&mut self, url: &str) -> Result<usize> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
