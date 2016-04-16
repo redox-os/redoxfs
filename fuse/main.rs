@@ -87,9 +87,12 @@ impl Filesystem for RedoxFS {
                 _atime: Option<Timespec>, _mtime: Option<Timespec>, _fh: Option<u64>,
                 _crtime: Option<Timespec>, _chgtime: Option<Timespec>, _bkuptime: Option<Timespec>,
                 _flags: Option<u32>, reply: ReplyAttr) {
-        /*if let Some(truncate_size) = size {
-            try!(self.fs.node_set_len(truncate_size));
-        }*/
+        if let Some(truncate_size) = size {
+            if let Err(err) = self.fs.node_set_len(block, truncate_size) {
+                reply.error(err.errno as i32);
+                return;
+            }
+        }
         match self.fs.node(block) {
             Ok(node) => {
                 reply.attr(&TTL, &FileAttr {
