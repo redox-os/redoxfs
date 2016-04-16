@@ -18,7 +18,7 @@ pub trait Resource {
 
     fn sync(&mut self) -> Result<usize>;
 
-    fn truncate(&mut self, len: usize) -> Result<usize>;
+    fn truncate(&mut self, len: usize, fs: &mut FileSystem) -> Result<usize>;
 }
 
 pub struct DirResource {
@@ -82,7 +82,7 @@ impl Resource for DirResource {
         Err(Error::new(EINVAL))
     }
 
-    fn truncate(&mut self, _len: usize) -> Result<usize> {
+    fn truncate(&mut self, _len: usize, _fs: &mut FileSystem) -> Result<usize> {
         Err(Error::new(EINVAL))
     }
 }
@@ -152,7 +152,7 @@ impl Resource for FileResource {
         Ok(0)
     }
 
-    fn truncate(&mut self, len: usize) -> Result<usize> {
-        Ok(0)
+    fn truncate(&mut self, len: usize, fs: &mut FileSystem) -> Result<usize> {
+        fs.node_set_len(self.block, len as u64).and(Ok(0))
     }
 }

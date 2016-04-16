@@ -230,7 +230,7 @@ impl Scheme for FileScheme {
     fn ftruncate(&mut self, id: usize, len: usize) -> Result<usize> {
         // println!("Ftruncate {}, {}", id, len);
         if let Some(mut file) = self.files.get_mut(&id) {
-            file.truncate(len)
+            file.truncate(len, &mut self.fs)
         } else {
             Err(Error::new(EBADF))
         }

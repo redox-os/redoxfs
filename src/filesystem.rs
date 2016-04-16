@@ -323,6 +323,36 @@ impl FileSystem {
         }
     }
 
+    pub fn node_set_len(&mut self, block: u64, mut length: u64) -> Result<()> {
+        if block == 0 {
+            return Err(Error::new(ENOENT));
+        }
+
+        let mut changed = false;
+
+        let mut node = try!(self.node(block));
+        for mut extent in node.1.extents.iter_mut() {
+            if extent.length > length {
+                //TODO: try!(self.deallocate(block, 512));
+                extent.length = length;
+                changed = true;
+                length = 0;
+            } else {
+                length -= extent.length;
+            }
+        }
+
+        if changed {
+            try!(self.write_at(node.0, &node.1));
+        }
+
+        if node.1.next > 0 {
+            self.node_set_len(node.1.next, length)
+        } else {
+            Ok(())
+        }
+    }
+
     fn node_extents(&mut self, block: u64, mut offset: u64, mut len: usize, extents: &mut Vec<Extent>) -> Result<()> {
         if block == 0 {
             return Ok(());
