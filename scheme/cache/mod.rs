@@ -35,6 +35,7 @@ impl<T: Disk> Disk for Cache<T> {
         // println!("Cache read at {}", block);
 
         let mut read = 0;
+        let mut failed = false;
         for i in 0..(buffer.len() + 511)/512 {
             let block_i = block + i as u64;
 
@@ -42,18 +43,27 @@ impl<T: Disk> Disk for Cache<T> {
             let buffer_j = cmp::min(buffer_i + 512, buffer.len());
             let buffer_slice = &mut buffer[buffer_i .. buffer_j];
 
-            //Just to fix the borrow checker in the else
-            let mut failed = false;
             if let Some(cache_buf) = self.cache.get_mut(&block_i) {
                 read += copy_memory(cache_buf, buffer_slice);
             }else{
                 failed = true;
+                break;
             }
+        }
 
-            if failed {
+        if failed {
+            try!(self.inner.read_at(block, buffer));
+
+            read = 0;
+            for i in 0..(buffer.len() + 511)/512 {
+                let block_i = block + i as u64;
+
+                let buffer_i = i * 512;
+                let buffer_j = cmp::min(buffer_i + 512, buffer.len());
+                let buffer_slice = &buffer[buffer_i .. buffer_j];
+
                 let mut cache_buf = [0; 512];
-                try!(self.inner.read_at(block_i, &mut cache_buf));
-                read += copy_memory(&cache_buf, buffer_slice);
+                read += copy_memory(buffer_slice, &mut cache_buf);
                 self.cache.insert(block_i, cache_buf);
             }
         }
@@ -64,7 +74,7 @@ impl<T: Disk> Disk for Cache<T> {
     fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         // println!("Cache write at {}", block);
 
-        try!(self.inner.write_at(block, &buffer));
+        try!(self.inner.write_at(block, buffer));
 
         let mut written = 0;
         for i in 0..(buffer.len() + 511)/512 {
