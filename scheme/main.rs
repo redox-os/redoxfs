@@ -1,3 +1,5 @@
+#![deny(warnings)]
+
 extern crate redoxfs;
 
 extern crate system;
