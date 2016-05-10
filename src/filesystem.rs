@@ -17,17 +17,11 @@ impl FileSystem {
             try!(disk.read_at(block + header.0, &mut header.1));
 
             if header.1.valid() {
-                println!("{:?}", header);
-
                 let mut root = (header.1.root, Node::default());
                 try!(disk.read_at(block + root.0, &mut root.1));
 
-                println!("{:?}", root);
-
                 let mut free = (header.1.free, Node::default());
                 try!(disk.read_at(block + free.0, &mut free.1));
-
-                println!("{:?}", free);
 
                 return Ok(FileSystem {
                     disk: disk,
