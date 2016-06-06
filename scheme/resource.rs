@@ -6,6 +6,8 @@ use system::error::{Error, Result, EINVAL};
 use system::syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END, MODE_DIR, MODE_FILE};
 
 pub trait Resource {
+    fn dup(&self) -> Result<Box<Resource>>;
+
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize>;
 
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem) -> Result<usize>;
@@ -38,6 +40,14 @@ impl DirResource {
 }
 
 impl Resource for DirResource {
+    fn dup(&self) -> Result<Box<Resource>> {
+        Ok(Box::new(DirResource {
+            path: self.path.clone(),
+            data: self.data.clone(),
+            seek: self.seek
+        }))
+    }
+
     fn read(&mut self, buf: &mut [u8], _fs: &mut FileSystem) -> Result<usize> {
         let mut i = 0;
         while i < buf.len() && self.seek < self.data.len() {
@@ -106,6 +116,15 @@ impl FileResource {
 }
 
 impl Resource for FileResource {
+    fn dup(&self) -> Result<Box<Resource>> {
+        Ok(Box::new(FileResource {
+            path: self.path.clone(),
+            block: self.block,
+            seek: self.seek,
+            size: self.size
+        }))
+    }
+
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize> {
         let count = try!(fs.read_node(self.block, self.seek, buf));
         self.seek += count as u64;

@@ -172,6 +172,23 @@ impl Scheme for FileScheme {
 
     /* Resource operations */
     #[allow(unused_variables)]
+    fn dup(&mut self, id: usize) -> Result<usize> {
+        // println!("Dup {}, {:X} {}", id);
+
+        let resource = try!(try!(self.files.get(&id).ok_or(Error::new(EBADF))).dup());
+
+        let id = self.next_id as usize;
+        self.next_id += 1;
+        if self.next_id < 0 {
+            self.next_id = 1;
+        }
+
+        self.files.insert(id, resource);
+
+        Ok(id)
+    }
+
+    #[allow(unused_variables)]
     fn read(&mut self, id: usize, buf: &mut [u8]) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
 
