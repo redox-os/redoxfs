@@ -76,7 +76,7 @@ impl FileScheme {
 
 impl Scheme for FileScheme {
     fn open(&mut self, url: &str, flags: usize, _mode: usize) -> Result<usize> {
-        // println!("Open '{}' {:X}", path, flags);
+        // println!("Open '{}' {:X}", url, flags);
 
         let resource = try!(self.open_inner(url, flags));
 
@@ -191,7 +191,6 @@ impl Scheme for FileScheme {
     #[allow(unused_variables)]
     fn read(&mut self, id: usize, buf: &mut [u8]) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-
         if let Some(mut file) = self.files.get_mut(&id) {
             file.read(buf, &mut self.fs)
         } else {

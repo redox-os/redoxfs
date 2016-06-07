@@ -7,19 +7,12 @@ use system::syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END, MODE_DIR, MODE_FILE};
 
 pub trait Resource {
     fn dup(&self) -> Result<Box<Resource>>;
-
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize>;
-
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem) -> Result<usize>;
-
     fn seek(&mut self, offset: usize, whence: usize) -> Result<usize>;
-
     fn path(&self, buf: &mut [u8]) -> Result<usize>;
-
     fn stat(&self, _stat: &mut Stat) -> Result<usize>;
-
     fn sync(&mut self) -> Result<usize>;
-
     fn truncate(&mut self, len: usize, fs: &mut FileSystem) -> Result<usize>;
 }
 
