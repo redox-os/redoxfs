@@ -48,9 +48,7 @@ fn main() {
                             loop {
                                 let mut packet = Packet::default();
                                 while socket.read(&mut packet).unwrap() == size_of::<Packet>() {
-                                    // println!("Read {:?}", packet);
                                     scheme.handle(&mut packet);
-                                    // println!("Write {:?}", packet);
                                     socket.write(&packet).unwrap();
                                 }
                             }

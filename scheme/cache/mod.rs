@@ -22,7 +22,6 @@ pub struct Cache<T> {
 
 impl<T: Disk> Cache<T> {
     pub fn new(inner: T) -> Self {
-        println!("Creating cache");
         Cache {
             inner: inner,
             cache: LruCache::new(65536) // 32 MB cache

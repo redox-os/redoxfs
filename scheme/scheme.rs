@@ -26,6 +26,8 @@ impl FileScheme {
     fn open_inner(&mut self, url: &str, flags: usize) -> Result<Box<Resource>> {
         let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
 
+        // println!("Open '{}' {:X}", path, flags);
+
         let mut nodes = Vec::new();
         let node_result = self.fs.path_nodes(path, &mut nodes);
 
@@ -76,8 +78,6 @@ impl FileScheme {
 
 impl Scheme for FileScheme {
     fn open(&mut self, url: &str, flags: usize, _mode: usize) -> Result<usize> {
-        // println!("Open '{}' {:X}", url, flags);
-
         let resource = try!(self.open_inner(url, flags));
 
         let id = self.next_id as usize;
