@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use system::error::{Error, Result, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF};
 use system::scheme::Scheme;
-use system::syscall::{Stat, O_CREAT};
+use system::syscall::{Stat, O_CREAT, O_TRUNC};
 
 pub struct FileScheme {
     fs: FileSystem,
@@ -49,6 +49,10 @@ impl FileScheme {
                 }
                 return Ok(Box::new(DirResource::new(url, data)));
             } else {
+                if flags & O_TRUNC == O_TRUNC {
+                    // println!("Truncate {}", path);
+                    try!(self.fs.node_set_len(node.0, 0));
+                }
                 let size = try!(self.fs.node_len(node.0));
                 return Ok(Box::new(FileResource::new(url, node.0, size)));
             },
@@ -226,7 +230,7 @@ impl Scheme for FileScheme {
     }
 
     fn fstat(&self, id: usize, stat: &mut Stat) -> Result<usize> {
-        // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
+        println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
         if let Some(file) = self.files.get(&id) {
             file.stat(stat)
         } else {
