@@ -165,6 +165,11 @@ impl Resource for FileResource {
     }
 
     fn truncate(&mut self, len: usize, fs: &mut FileSystem) -> Result<usize> {
-        fs.node_set_len(self.block, len as u64).and(Ok(0))
+        if let Err(err) = fs.node_set_len(self.block, len as u64) {
+            Err(err)
+        } else {
+            self.size = len as u64;
+            Ok(0)
+        }
     }
 }
