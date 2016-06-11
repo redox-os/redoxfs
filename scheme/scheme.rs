@@ -230,7 +230,7 @@ impl Scheme for FileScheme {
     }
 
     fn fstat(&self, id: usize, stat: &mut Stat) -> Result<usize> {
-        println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
+        // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
         if let Some(file) = self.files.get(&id) {
             file.stat(stat)
         } else {
