@@ -461,20 +461,55 @@ impl FileSystem {
 
         let mut i = 0;
         for extent in extents.iter() {
-            for (block, size) in extent.blocks() {
+            let mut block = extent.block;
+            let mut length = extent.length;
+
+            if byte_offset > 0 && length > 0 {
                 let mut sector = [0; 512];
+                try!(self.read_at(block, &mut sector));
 
-                if byte_offset < size && i < buf.len() {
-                    for (mut s_b, b) in sector[byte_offset..size].iter_mut().zip(buf[i..].iter()) {
-                        *s_b = *b;
-                        i += 1;
-                    }
-
-                    try!(self.write_at(block, &sector));
+                let sector_size = min(sector.len() as u64, length) as usize;
+                for (mut s_b, b) in sector[byte_offset..sector_size].iter_mut().zip(buf[i..].iter()) {
+                    *s_b = *b;
+                    i += 1;
                 }
+
+                try!(self.write_at(block, &sector));
+
+                block += 1;
+                length -= sector_size as u64;
 
                 byte_offset = 0;
             }
+
+            let length_aligned = ((min(length, (buf.len() - i) as u64)/512) * 512) as usize;
+
+            if length_aligned > 0 {
+                let extent_buf = &buf[i..i + length_aligned];
+                try!(self.write_at(block, extent_buf));
+                i += length_aligned;
+                block += (length_aligned as u64)/512;
+                length -= length_aligned as u64;
+            }
+
+            if length > 0 {
+                let mut sector = [0; 512];
+                try!(self.read_at(block, &mut sector));
+
+                let sector_size = min(sector.len() as u64, length) as usize;
+                for (mut s_b, b) in sector[..sector_size].iter_mut().zip(buf[i..].iter()) {
+                    *s_b = *b;
+                    i += 1;
+                }
+
+                try!(self.write_at(block, &sector));
+
+                block += 1;
+                length -= sector_size as u64;
+            }
+
+            assert_eq!(length, 0);
+            assert_eq!(block, extent.block + (extent.length + 511)/512);
         }
 
         Ok(i)
