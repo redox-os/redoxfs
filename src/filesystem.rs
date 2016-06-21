@@ -474,8 +474,6 @@ impl FileSystem {
         let mut extents = Vec::new();
         try!(self.node_extents(block, block_offset, byte_offset + buf.len(), &mut extents));
 
-        println!("{:?}", extents);
-
         let mut i = 0;
         for extent in extents.iter() {
             let mut block = extent.block;
