@@ -296,14 +296,29 @@ impl FileSystem {
             return Err(Error::new(ENOENT));
         }
 
-        let node = try!(self.node(block));
-        for extent in node.1.extents.iter() {
+        let mut changed = false;
+
+        let mut node = try!(self.node(block));
+        for mut extent in node.1.extents.iter_mut() {
             if extent.length >= length {
                 length = 0;
                 break;
             } else {
-                length -= extent.length;
+                changed = true;
+                let allocated = ((extent.length + 511)/512) * 512;
+                if allocated >= length {
+                    extent.length = length;
+                    length = 0;
+                    break;
+                } else {
+                    extent.length = allocated;
+                    length -= allocated;
+                }
             }
+        }
+
+        if changed {
+            try!(self.write_at(node.0, &node.1));
         }
 
         if length > 0 {
@@ -458,6 +473,8 @@ impl FileSystem {
 
         let mut extents = Vec::new();
         try!(self.node_extents(block, block_offset, byte_offset + buf.len(), &mut extents));
+
+        println!("{:?}", extents);
 
         let mut i = 0;
         for extent in extents.iter() {
