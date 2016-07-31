@@ -10,6 +10,7 @@ use std::io::{Read, Write};
 use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use cache::Cache;
 use image::Image;
@@ -70,7 +71,7 @@ fn main() {
                 Status::Stopping => break 'waiting,
             }
 
-            thread::sleep_ms(30);
+            thread::sleep(Duration::new(0, 30000000));
         }
     } else {
         println!("redoxfs: no disk image provided");
