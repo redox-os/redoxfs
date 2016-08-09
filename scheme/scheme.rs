@@ -81,7 +81,7 @@ impl FileScheme {
 }
 
 impl Scheme for FileScheme {
-    fn open(&mut self, url: &str, flags: usize, _mode: usize) -> Result<usize> {
+    fn open(&mut self, url: &str, flags: usize) -> Result<usize> {
         let resource = try!(self.open_inner(url, flags));
 
         let id = self.next_id as usize;
