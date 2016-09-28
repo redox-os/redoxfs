@@ -7,7 +7,6 @@ extern crate syscall;
 use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::mem::size_of;
 use std::sync::Arc;
 use std::thread;
 use spin::Mutex;
