@@ -44,13 +44,11 @@ fn main() {
 
                             *status_daemon.lock() = Status::Running;
 
-                            let scheme = FileScheme::new(fs);
+                            let scheme = FileScheme::new("file", fs);
                             loop {
                                 let mut packet = Packet::default();
                                 socket.read(&mut packet).unwrap();
-                                println!("file: {:?}", packet);
                                 scheme.handle(&mut packet);
-                                println!("file: ={}", packet.a);
                                 socket.write(&packet).unwrap();
                             }
                         },

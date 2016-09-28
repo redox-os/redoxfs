@@ -12,14 +12,16 @@ use syscall::scheme::Scheme;
 use syscall::{Stat, O_CREAT, O_TRUNC};
 
 pub struct FileScheme {
+    name: &'static str,
     fs: RefCell<FileSystem>,
     next_id: AtomicUsize,
     files: Mutex<BTreeMap<usize, Box<Resource>>>
 }
 
 impl FileScheme {
-    pub fn new(fs: FileSystem) -> FileScheme {
+    pub fn new(name: &'static str, fs: FileSystem) -> FileScheme {
         FileScheme {
+            name: name,
             fs: RefCell::new(fs),
             next_id: AtomicUsize::new(1),
             files: Mutex::new(BTreeMap::new())
@@ -29,7 +31,7 @@ impl FileScheme {
     fn open_inner(&self, url: &[u8], flags: usize) -> Result<Box<Resource>> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
-        // println!("Open '{}' {:X}", path, flags);
+        //println!("Open '{}' {:X}", path, flags);
 
         let mut fs = self.fs.borrow_mut();
 
@@ -47,12 +49,9 @@ impl FileScheme {
                             data.push(b'\n');
                         }
                         data.extend_from_slice(&name.as_bytes());
-                        if child.1.is_dir() {
-                            data.push(b'/');
-                        }
                     }
                 }
-                return Ok(Box::new(DirResource::new(url, data)));
+                return Ok(Box::new(DirResource::new(path.as_bytes(), data)));
             } else {
                 if flags & O_TRUNC == O_TRUNC {
                     // println!("Truncate {}", path);
@@ -71,7 +70,7 @@ impl FileScheme {
                 if ! last_part.is_empty() {
                     if let Some(parent) = nodes.last() {
                         let node = try!(fs.create_node(Node::MODE_FILE, &last_part, parent.0));
-                        return Ok(Box::new(FileResource::new(url, node.0, 0)));
+                        return Ok(Box::new(FileResource::new(path.as_bytes(), node.0, 0)));
                     } else {
                         return Err(Error::new(EPERM));
                     }
@@ -181,7 +180,11 @@ impl Scheme for FileScheme {
         // println!("Dup {}", old_id);
 
         let mut files = self.files.lock();
-        let resource = try!(try!(files.get(&old_id).ok_or(Error::new(EBADF))).dup());
+        let resource = if let Some(old_resource) = files.get(&old_id) {
+            try!(old_resource.dup())
+        } else {
+            return Err(Error::new(EBADF));
+        };
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         files.insert(id, resource);
@@ -224,7 +227,20 @@ impl Scheme for FileScheme {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let files = self.files.lock();
         if let Some(file) = files.get(&id) {
-            file.path(buf)
+            let name = self.name.as_bytes();
+            let mut i = 0;
+            while i < buf.len() && i < name.len() {
+                buf[i] = name[i];
+                i += 1;
+            }
+            if i < buf.len() {
+                buf[i] = b':';
+                i += 1;
+            }
+            match file.path(&mut buf[i..]) {
+                Ok(count) => Ok(i + count),
+                Err(err) => Err(err)
+            }
         } else {
             Err(Error::new(EBADF))
         }
