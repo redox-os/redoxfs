@@ -2,8 +2,8 @@ use redoxfs::FileSystem;
 
 use std::cmp::{min, max};
 
-use system::error::{Error, Result, EINVAL};
-use system::syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END, MODE_DIR, MODE_FILE};
+use syscall::error::{Error, Result, EINVAL};
+use syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END, MODE_DIR, MODE_FILE};
 
 pub trait Resource {
     fn dup(&self) -> Result<Box<Resource>>;
@@ -17,15 +17,15 @@ pub trait Resource {
 }
 
 pub struct DirResource {
-    path: String,
+    path: Vec<u8>,
     data: Vec<u8>,
     seek: usize,
 }
 
 impl DirResource {
-    pub fn new(path: &str, data: Vec<u8>) -> DirResource {
+    pub fn new(path: &[u8], data: Vec<u8>) -> DirResource {
         DirResource {
-            path: path.to_string(),
+            path: path.to_vec(),
             data: data,
             seek: 0,
         }
@@ -67,9 +67,8 @@ impl Resource for DirResource {
 
     fn path(&self, buf: &mut [u8]) -> Result<usize> {
         let mut i = 0;
-        let path = self.path.as_bytes();
-        while i < buf.len() && i < path.len() {
-            buf[i] = path[i];
+        while i < buf.len() && i < self.path.len() {
+            buf[i] = self.path[i];
             i += 1;
         }
         Ok(i)
@@ -91,16 +90,16 @@ impl Resource for DirResource {
 }
 
 pub struct FileResource {
-    path: String,
+    path: Vec<u8>,
     block: u64,
     seek: u64,
     size: u64,
 }
 
 impl FileResource {
-    pub fn new(path: &str, block: u64, size: u64) -> FileResource {
+    pub fn new(path: &[u8], block: u64, size: u64) -> FileResource {
         FileResource {
-            path: path.to_string(),
+            path: path.to_vec(),
             block: block,
             seek: 0,
             size: size,
@@ -146,9 +145,8 @@ impl Resource for FileResource {
 
     fn path(&self, buf: &mut [u8]) -> Result<usize> {
         let mut i = 0;
-        let path = self.path.as_bytes();
-        while i < buf.len() && i < path.len() {
-            buf[i] = path[i];
+        while i < buf.len() && i < self.path.len() {
+            buf[i] = self.path[i];
             i += 1;
         }
         Ok(i)

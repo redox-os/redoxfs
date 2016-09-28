@@ -1,6 +1,6 @@
 use std::cmp::min;
 
-use system::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
+use syscall::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
 
 use super::{Disk, ExNode, Extent, Header, Node};
 

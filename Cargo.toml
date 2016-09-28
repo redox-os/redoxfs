@@ -12,6 +12,10 @@ name = "redoxfs"
 path = "src/lib.rs"
 
 [[bin]]
+name = "redoxfs"
+path = "scheme/main.rs"
+
+[[bin]]
 name = "redoxfs-fuse"
 path = "fuse/main.rs"
 
@@ -20,6 +24,9 @@ name = "redoxfs-utility"
 path = "utility/main.rs"
 
 [dependencies]
-redox-system = {path = "../system/"}
+spin = "*"
+syscall = {path = "../../syscall/"}
+
+[target.'cfg(unix)'.dependencies]
 fuse = "0.2"
 time = "*"
