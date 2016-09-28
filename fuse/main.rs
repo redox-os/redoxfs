@@ -2,7 +2,7 @@
 
 extern crate fuse;
 extern crate redoxfs;
-extern crate system;
+extern crate syscall;
 extern crate time;
 
 use image::Image;

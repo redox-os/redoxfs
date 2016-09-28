@@ -1,8 +1,7 @@
 #![deny(warnings)]
 
 extern crate redoxfs;
-
-extern crate system;
+extern crate syscall;
 
 use std::env;
 use std::io::{self, Write};

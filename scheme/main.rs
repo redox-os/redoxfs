@@ -48,10 +48,11 @@ fn main() {
                             let scheme = FileScheme::new(fs);
                             loop {
                                 let mut packet = Packet::default();
-                                while socket.read(&mut packet).unwrap() == size_of::<Packet>() {
-                                    scheme.handle(&mut packet);
-                                    socket.write(&packet).unwrap();
-                                }
+                                socket.read(&mut packet).unwrap();
+                                println!("file: {:?}", packet);
+                                scheme.handle(&mut packet);
+                                println!("file: ={}", packet.a);
+                                socket.write(&packet).unwrap();
                             }
                         },
                         Err(err) => println!("redoxfs: failed to create file scheme: {}", err)

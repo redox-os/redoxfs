@@ -14,7 +14,7 @@ pub struct FileSystem {
 impl FileSystem {
     /// Open a file system on a disk
     pub fn open(mut disk: Box<Disk>) -> Result<Self> {
-        for block in 0..8192 {
+        for block in 0..65536 {
             let mut header = (0, Header::default());
             try!(disk.read_at(block + header.0, &mut header.1));
 
