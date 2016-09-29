@@ -76,7 +76,7 @@ impl Resource for DirResource {
 
     fn stat(&self, stat: &mut Stat) -> Result<usize> {
         stat.st_mode = MODE_DIR;
-        stat.st_size = self.data.len() as u32;
+        stat.st_size = self.data.len() as u64;
         Ok(0)
     }
 
@@ -154,7 +154,7 @@ impl Resource for FileResource {
 
     fn stat(&self, stat: &mut Stat) -> Result<usize> {
         stat.st_mode = MODE_FILE;
-        stat.st_size = self.size as u32;
+        stat.st_size = self.size as u64;
         Ok(0)
     }
 
