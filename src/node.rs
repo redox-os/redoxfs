@@ -6,9 +6,9 @@ use super::Extent;
 #[repr(packed)]
 pub struct Node {
     pub mode: u16,
-    pub user: u16,
-    pub group: u16,
-    pub name: [u8; 250],
+    pub uid: u32,
+    pub gid: u32,
+    pub name: [u8; 246],
     pub parent: u64,
     pub next: u64,
     pub extents: [Extent; 15],
@@ -24,9 +24,9 @@ impl Node {
     pub fn default() -> Node {
         Node {
             mode: 0,
-            user: 0,
-            group: 0,
-            name: [0; 250],
+            uid: 0,
+            gid: 0,
+            name: [0; 246],
             parent: 0,
             next: 0,
             extents: [Extent::default(); 15],
@@ -34,15 +34,15 @@ impl Node {
     }
 
     pub fn new(mode: u16, name: &str, parent: u64) -> Node {
-        let mut bytes = [0; 250];
+        let mut bytes = [0; 246];
         for (mut b, c) in bytes.iter_mut().zip(name.bytes()) {
             *b = c;
         }
 
         Node {
             mode: mode,
-            user: 0,
-            group: 0,
+            uid: 0,
+            gid: 0,
             name: bytes,
             parent: parent,
             next: 0,
@@ -81,8 +81,8 @@ impl fmt::Debug for Node {
         let extents: Vec<&Extent> = self.extents.iter().filter(|extent| -> bool { extent.length > 0 }).collect();
         f.debug_struct("Node")
             .field("mode", &self.mode)
-            .field("user", &self.user)
-            .field("group", &self.group)
+            .field("uid", &self.uid)
+            .field("gid", &self.gid)
             .field("name", &self.name())
             .field("next", &self.next)
             .field("extents", &extents)

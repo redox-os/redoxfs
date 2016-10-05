@@ -61,11 +61,11 @@ impl FileSystem {
         }
     }
 
-    fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    pub fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         self.disk.read_at(self.block + block, buffer)
     }
 
-    fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    pub fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         self.disk.write_at(self.block + block, buffer)
     }
 

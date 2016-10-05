@@ -21,30 +21,34 @@ struct RedoxFS {
     fs: redoxfs::FileSystem,
 }
 
+fn node_attr(node: &(u64, redoxfs::Node)) -> FileAttr {
+    FileAttr {
+        ino: node.0,
+        size: node.1.extents[0].length,
+        blocks: (node.1.extents[0].length + 511)/512,
+        atime: CREATE_TIME,
+        mtime: CREATE_TIME,
+        ctime: CREATE_TIME,
+        crtime: CREATE_TIME,
+        kind: if node.1.is_dir() {
+            FileType::Directory
+        } else {
+            FileType::RegularFile
+        },
+        perm: node.1.mode & redoxfs::Node::MODE_PERM,
+        nlink: 1,
+        uid: node.1.uid,
+        gid: node.1.gid,
+        rdev: 0,
+        flags: 0,
+    }
+}
+
 impl Filesystem for RedoxFS {
     fn lookup(&mut self, _req: &Request, parent_block: u64, name: &Path, reply: ReplyEntry) {
         match self.fs.find_node(name.to_str().unwrap(), parent_block) {
             Ok(node) => {
-                reply.entry(&TTL, &FileAttr {
-                    ino: node.0,
-                    size: node.1.extents[0].length,
-                    blocks: (node.1.extents[0].length + 511)/512,
-                    atime: CREATE_TIME,
-                    mtime: CREATE_TIME,
-                    ctime: CREATE_TIME,
-                    crtime: CREATE_TIME,
-                    kind: if node.1.is_dir() {
-                        FileType::Directory
-                    } else {
-                        FileType::RegularFile
-                    },
-                    perm: 0o777,
-                    nlink: 1,
-                    uid: 0,
-                    gid: 0,
-                    rdev: 0,
-                    flags: 0,
-                }, 0);
+                reply.entry(&TTL, &node_attr(&node), 0);
             },
             Err(err) => {
                 reply.error(err.errno as i32);
@@ -55,26 +59,7 @@ impl Filesystem for RedoxFS {
     fn getattr(&mut self, _req: &Request, block: u64, reply: ReplyAttr) {
         match self.fs.node(block) {
             Ok(node) => {
-                reply.attr(&TTL, &FileAttr {
-                    ino: node.0,
-                    size: node.1.extents[0].length,
-                    blocks: (node.1.extents[0].length + 511)/512,
-                    atime: CREATE_TIME,
-                    mtime: CREATE_TIME,
-                    ctime: CREATE_TIME,
-                    crtime: CREATE_TIME,
-                    kind: if node.1.is_dir() {
-                        FileType::Directory
-                    } else {
-                        FileType::RegularFile
-                    },
-                    perm: 0o777,
-                    nlink: 1,
-                    uid: 0,
-                    gid: 0,
-                    rdev: 0,
-                    flags: 0,
-                });
+                reply.attr(&TTL, &node_attr(&node));
             },
             Err(err) => {
                 reply.error(err.errno as i32);
@@ -82,39 +67,69 @@ impl Filesystem for RedoxFS {
         }
     }
 
-    fn setattr(&mut self, _req: &Request, block: u64, _mode: Option<u32>,
-                _uid: Option<u32>, _gid: Option<u32>, size: Option<u64>,
+    fn setattr(&mut self, _req: &Request, block: u64, mode: Option<u32>,
+                uid: Option<u32>, gid: Option<u32>, size: Option<u64>,
                 _atime: Option<Timespec>, _mtime: Option<Timespec>, _fh: Option<u64>,
                 _crtime: Option<Timespec>, _chgtime: Option<Timespec>, _bkuptime: Option<Timespec>,
                 _flags: Option<u32>, reply: ReplyAttr) {
+        if let Some(mode) = mode {
+            match self.fs.node(block) {
+                Ok(mut node) => if node.1.mode & redoxfs::Node::MODE_PERM != mode as u16 & redoxfs::Node::MODE_PERM {
+                    node.1.mode = (node.1.mode & ! redoxfs::Node::MODE_PERM) | (mode as u16 & redoxfs::Node::MODE_PERM);
+                    if let Err(err) = self.fs.write_at(node.0, &node.1) {
+                        reply.error(err.errno as i32);
+                        return;
+                    }
+                },
+                Err(err) => {
+                    reply.error(err.errno as i32);
+                    return;
+                }
+            }
+        }
+
+        if let Some(uid) = uid {
+            match self.fs.node(block) {
+                Ok(mut node) => if node.1.uid != uid {
+                    node.1.uid = uid;
+                    if let Err(err) = self.fs.write_at(node.0, &node.1) {
+                        reply.error(err.errno as i32);
+                        return;
+                    }
+                },
+                Err(err) => {
+                    reply.error(err.errno as i32);
+                    return;
+                }
+            }
+        }
+
+        if let Some(gid) = gid {
+            match self.fs.node(block) {
+                Ok(mut node) => if node.1.gid != gid {
+                    node.1.gid = gid;
+                    if let Err(err) = self.fs.write_at(node.0, &node.1) {
+                        reply.error(err.errno as i32);
+                        return;
+                    }
+                },
+                Err(err) => {
+                    reply.error(err.errno as i32);
+                    return;
+                }
+            }
+        }
+
         if let Some(truncate_size) = size {
             if let Err(err) = self.fs.node_set_len(block, truncate_size) {
                 reply.error(err.errno as i32);
                 return;
             }
         }
+
         match self.fs.node(block) {
             Ok(node) => {
-                reply.attr(&TTL, &FileAttr {
-                    ino: node.0,
-                    size: node.1.extents[0].length,
-                    blocks: (node.1.extents[0].length + 511)/512,
-                    atime: CREATE_TIME,
-                    mtime: CREATE_TIME,
-                    ctime: CREATE_TIME,
-                    crtime: CREATE_TIME,
-                    kind: if node.1.is_dir() {
-                        FileType::Directory
-                    } else {
-                        FileType::RegularFile
-                    },
-                    perm: 0o777,
-                    nlink: 1,
-                    uid: 0,
-                    gid: 0,
-                    rdev: 0,
-                    flags: 0,
-                });
+                reply.attr(&TTL, &node_attr(&node));
             },
             Err(err) => {
                 reply.error(err.errno as i32);
@@ -180,29 +195,11 @@ impl Filesystem for RedoxFS {
         }
     }
 
-    fn create(&mut self, _req: &Request, parent_block: u64, name: &Path, _mode: u32, flags: u32, reply: ReplyCreate) {
-        match self.fs.create_node(redoxfs::Node::MODE_FILE, name.to_str().unwrap(), parent_block) {
+    fn create(&mut self, _req: &Request, parent_block: u64, name: &Path, mode: u32, flags: u32, reply: ReplyCreate) {
+        match self.fs.create_node(redoxfs::Node::MODE_FILE | (mode as u16 & redoxfs::Node::MODE_PERM), name.to_str().unwrap(), parent_block) {
             Ok(node) => {
-                reply.created(&TTL, &FileAttr {
-                    ino: node.0,
-                    size: node.1.extents[0].length,
-                    blocks: (node.1.extents[0].length + 511)/512,
-                    atime: CREATE_TIME,
-                    mtime: CREATE_TIME,
-                    ctime: CREATE_TIME,
-                    crtime: CREATE_TIME,
-                    kind: if node.1.is_dir() {
-                        FileType::Directory
-                    } else {
-                        FileType::RegularFile
-                    },
-                    perm: 0o777,
-                    nlink: 1,
-                    uid: 0,
-                    gid: 0,
-                    rdev: 0,
-                    flags: 0,
-                }, 0, 0, flags);
+                println!("Create {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
+                reply.created(&TTL, &node_attr(&node), 0, 0, flags);
             },
             Err(error) => {
                 reply.error(error.errno as i32);
@@ -210,29 +207,11 @@ impl Filesystem for RedoxFS {
         }
     }
 
-    fn mkdir(&mut self, _req: &Request, parent_block: u64, name: &Path, _mode: u32, reply: ReplyEntry) {
-        match self.fs.create_node(redoxfs::Node::MODE_DIR, name.to_str().unwrap(), parent_block) {
+    fn mkdir(&mut self, _req: &Request, parent_block: u64, name: &Path, mode: u32, reply: ReplyEntry) {
+        match self.fs.create_node(redoxfs::Node::MODE_DIR | (mode as u16 & redoxfs::Node::MODE_PERM), name.to_str().unwrap(), parent_block) {
             Ok(node) => {
-                reply.entry(&TTL, &FileAttr {
-                    ino: node.0,
-                    size: node.1.extents[0].length,
-                    blocks: (node.1.extents[0].length + 511)/512,
-                    atime: CREATE_TIME,
-                    mtime: CREATE_TIME,
-                    ctime: CREATE_TIME,
-                    crtime: CREATE_TIME,
-                    kind: if node.1.is_dir() {
-                        FileType::Directory
-                    } else {
-                        FileType::RegularFile
-                    },
-                    perm: 0o777,
-                    nlink: 1,
-                    uid: 0,
-                    gid: 0,
-                    rdev: 0,
-                    flags: 0,
-                }, 0);
+                println!("Mkdir {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
+                reply.entry(&TTL, &node_attr(&node), 0);
             },
             Err(error) => {
                 reply.error(error.errno as i32);
