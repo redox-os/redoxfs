@@ -198,7 +198,7 @@ impl Filesystem for RedoxFS {
     fn create(&mut self, _req: &Request, parent_block: u64, name: &Path, mode: u32, flags: u32, reply: ReplyCreate) {
         match self.fs.create_node(redoxfs::Node::MODE_FILE | (mode as u16 & redoxfs::Node::MODE_PERM), name.to_str().unwrap(), parent_block) {
             Ok(node) => {
-                println!("Create {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
+                //println!("Create {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
                 reply.created(&TTL, &node_attr(&node), 0, 0, flags);
             },
             Err(error) => {
@@ -210,7 +210,7 @@ impl Filesystem for RedoxFS {
     fn mkdir(&mut self, _req: &Request, parent_block: u64, name: &Path, mode: u32, reply: ReplyEntry) {
         match self.fs.create_node(redoxfs::Node::MODE_DIR | (mode as u16 & redoxfs::Node::MODE_PERM), name.to_str().unwrap(), parent_block) {
             Ok(node) => {
-                println!("Mkdir {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
+                //println!("Mkdir {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
                 reply.entry(&TTL, &node_attr(&node), 0);
             },
             Err(error) => {

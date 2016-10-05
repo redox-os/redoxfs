@@ -51,14 +51,13 @@ impl FileScheme {
                         data.extend_from_slice(&name.as_bytes());
                     }
                 }
-                return Ok(Box::new(DirResource::new(path.as_bytes(), data)));
+                return Ok(Box::new(DirResource::new(path.to_string(), node.0, data)));
             } else {
                 if flags & O_TRUNC == O_TRUNC {
                     // println!("Truncate {}", path);
                     try!(fs.node_set_len(node.0, 0));
                 }
-                let size = try!(fs.node_len(node.0));
-                return Ok(Box::new(FileResource::new(url, node.0, size)));
+                return Ok(Box::new(FileResource::new(path.to_string(), node.0)));
             },
             Err(err) => if err.errno == ENOENT && flags & O_CREAT == O_CREAT {
                 let mut last_part = String::new();
@@ -70,7 +69,7 @@ impl FileScheme {
                 if ! last_part.is_empty() {
                     if let Some(parent) = nodes.last() {
                         let node = try!(fs.create_node(Node::MODE_FILE, &last_part, parent.0));
-                        return Ok(Box::new(FileResource::new(path.as_bytes(), node.0, 0)));
+                        return Ok(Box::new(FileResource::new(path.to_string(), node.0)));
                     } else {
                         return Err(Error::new(EPERM));
                     }
@@ -217,7 +216,7 @@ impl Scheme for FileScheme {
         // println!("Seek {}, {} {}", id, pos, whence);
         let mut files = self.files.lock();
         if let Some(mut file) = files.get_mut(&id) {
-            file.seek(pos, whence)
+            file.seek(pos, whence, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
@@ -228,6 +227,7 @@ impl Scheme for FileScheme {
         let files = self.files.lock();
         if let Some(file) = files.get(&id) {
             let name = self.name.as_bytes();
+
             let mut i = 0;
             while i < buf.len() && i < name.len() {
                 buf[i] = name[i];
@@ -237,10 +237,8 @@ impl Scheme for FileScheme {
                 buf[i] = b':';
                 i += 1;
             }
-            match file.path(&mut buf[i..]) {
-                Ok(count) => Ok(i + count),
-                Err(err) => Err(err)
-            }
+            
+            file.path(&mut buf[i..]).map(|count| i + count)
         } else {
             Err(Error::new(EBADF))
         }
@@ -250,7 +248,7 @@ impl Scheme for FileScheme {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
         let files = self.files.lock();
         if let Some(file) = files.get(&id) {
-            file.stat(stat)
+            file.stat(stat, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
