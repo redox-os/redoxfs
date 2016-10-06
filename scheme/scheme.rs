@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use syscall::error::{Error, Result, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF};
+use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF};
 use syscall::scheme::Scheme;
 use syscall::{Stat, O_CREAT, O_TRUNC};
 
@@ -27,8 +27,10 @@ impl FileScheme {
             files: Mutex::new(BTreeMap::new())
         }
     }
+}
 
-    fn open_inner(&self, url: &[u8], flags: usize) -> Result<Box<Resource>> {
+impl Scheme for FileScheme {
+    fn open(&self, url: &[u8], flags: usize, uid: u32, gid: u32) -> Result<usize> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         //println!("Open '{}' {:X}", path, flags);
@@ -37,9 +39,20 @@ impl FileScheme {
 
         let mut nodes = Vec::new();
         let node_result = fs.path_nodes(path, &mut nodes);
+        for node in nodes.iter() {
+            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                // println!("dir not executable {:o}", node.1.mode);
+                return Err(Error::new(EACCES));
+            }
+        }
 
-        match node_result {
+        let resource: Box<Resource> = match node_result {
             Ok(node) => if node.1.is_dir() {
+                if ! node.1.permission(uid, gid, Node::MODE_READ) {
+                    // println!("dir not readable {:o}", node.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
                 let mut data = Vec::new();
                 let mut children = Vec::new();
                 try!(fs.child_nodes(&mut children, node.0));
@@ -51,13 +64,24 @@ impl FileScheme {
                         data.extend_from_slice(&name.as_bytes());
                     }
                 }
-                return Ok(Box::new(DirResource::new(path.to_string(), node.0, data)));
+
+                Box::new(DirResource::new(path.to_string(), node.0, data))
             } else {
+                if ! node.1.permission(uid, gid, Node::MODE_READ) {
+                    // println!("file not readable {:o}", node.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
                 if flags & O_TRUNC == O_TRUNC {
-                    // println!("Truncate {}", path);
+                    if ! node.1.permission(uid, gid, Node::MODE_WRITE) {
+                        // println!("file not writable {:o}", node.1.mode);
+                        return Err(Error::new(EACCES));
+                    }
+
                     try!(fs.node_set_len(node.0, 0));
                 }
-                return Ok(Box::new(FileResource::new(path.to_string(), node.0)));
+
+                Box::new(FileResource::new(path.to_string(), node.0))
             },
             Err(err) => if err.errno == ENOENT && flags & O_CREAT == O_CREAT {
                 let mut last_part = String::new();
@@ -68,8 +92,16 @@ impl FileScheme {
                 }
                 if ! last_part.is_empty() {
                     if let Some(parent) = nodes.last() {
-                        let node = try!(fs.create_node(Node::MODE_FILE, &last_part, parent.0));
-                        return Ok(Box::new(FileResource::new(path.to_string(), node.0)));
+                        if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
+                            // println!("dir not writable {:o}", parent.1.mode);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        let mut node = try!(fs.create_node(Node::MODE_FILE | (flags as u16 & Node::MODE_PERM), &last_part, parent.0));
+                        node.1.uid = uid;
+                        node.1.gid = gid;
+                        try!(fs.write_at(node.0, &node.1));
+                        Box::new(FileResource::new(path.to_string(), node.0))
                     } else {
                         return Err(Error::new(EPERM));
                     }
@@ -79,13 +111,7 @@ impl FileScheme {
             } else {
                 return Err(err);
             }
-        }
-    }
-}
-
-impl Scheme for FileScheme {
-    fn open(&self, url: &[u8], flags: usize) -> Result<usize> {
-        let resource = try!(self.open_inner(url, flags));
+        };
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.files.lock().insert(id, resource);
@@ -93,7 +119,7 @@ impl Scheme for FileScheme {
         Ok(id)
     }
 
-    fn mkdir(&self, url: &[u8], _mode: usize) -> Result<usize> {
+    fn mkdir(&self, url: &[u8], mode: u16, uid: u32, gid: u32) -> Result<usize> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Mkdir '{}'", path);
@@ -101,7 +127,15 @@ impl Scheme for FileScheme {
         let mut fs = self.fs.borrow_mut();
 
         let mut nodes = Vec::new();
-        match fs.path_nodes(path, &mut nodes) {
+        let node_result = fs.path_nodes(path, &mut nodes);
+        for node in nodes.iter() {
+            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                // println!("dir not executable {:o}", node.1.mode);
+                return Err(Error::new(EACCES));
+            }
+        }
+
+        match node_result {
             Ok(_node) => Err(Error::new(EEXIST)),
             Err(err) => if err.errno == ENOENT {
                 let mut last_part = String::new();
@@ -112,7 +146,16 @@ impl Scheme for FileScheme {
                 }
                 if ! last_part.is_empty() {
                     if let Some(parent) = nodes.last() {
-                        fs.create_node(Node::MODE_DIR, &last_part, parent.0).and(Ok(0))
+                        if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
+                            // println!("dir not writable {:o}", parent.1.mode);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        let mut node = try!(fs.create_node(Node::MODE_DIR | (mode & Node::MODE_PERM), &last_part, parent.0));
+                        node.1.uid = uid;
+                        node.1.gid = gid;
+                        try!(fs.write_at(node.0, &node.1));
+                        Ok(0)
                     } else {
                         Err(Error::new(EPERM))
                     }
@@ -125,7 +168,7 @@ impl Scheme for FileScheme {
         }
     }
 
-    fn rmdir(&self, url: &[u8]) -> Result<usize> {
+    fn rmdir(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Rmdir '{}'", path);
@@ -134,8 +177,25 @@ impl Scheme for FileScheme {
 
         let mut nodes = Vec::new();
         let child = try!(fs.path_nodes(path, &mut nodes));
+        for node in nodes.iter() {
+            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                // println!("dir not executable {:o}", node.1.mode);
+                return Err(Error::new(EACCES));
+            }
+        }
+
         if let Some(parent) = nodes.last() {
+            if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
             if child.1.is_dir() {
+                if ! child.1.permission(uid, gid, Node::MODE_WRITE) {
+                    // println!("dir not writable {:o}", parent.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
                 if let Ok(child_name) = child.1.name() {
                     fs.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
                 } else {
@@ -149,7 +209,7 @@ impl Scheme for FileScheme {
         }
     }
 
-    fn unlink(&self, url: &[u8]) -> Result<usize> {
+    fn unlink(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Unlink '{}'", path);
@@ -158,8 +218,25 @@ impl Scheme for FileScheme {
 
         let mut nodes = Vec::new();
         let child = try!(fs.path_nodes(path, &mut nodes));
+        for node in nodes.iter() {
+            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                // println!("dir not executable {:o}", node.1.mode);
+                return Err(Error::new(EACCES));
+            }
+        }
+
         if let Some(parent) = nodes.last() {
+            if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
             if ! child.1.is_dir() {
+                if ! child.1.permission(uid, gid, Node::MODE_WRITE) {
+                    // println!("file not writable {:o}", parent.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
                 if let Ok(child_name) = child.1.name() {
                     fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
                 } else {
@@ -237,7 +314,7 @@ impl Scheme for FileScheme {
                 buf[i] = b':';
                 i += 1;
             }
-            
+
             file.path(&mut buf[i..]).map(|count| i + count)
         } else {
             Err(Error::new(EBADF))

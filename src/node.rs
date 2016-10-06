@@ -20,6 +20,9 @@ impl Node {
     pub const MODE_DIR: u16 = 0x4000;
 
     pub const MODE_PERM: u16 = 0x0FFF;
+    pub const MODE_EXEC: u16 = 0o1;
+    pub const MODE_WRITE: u16 = 0o2;
+    pub const MODE_READ: u16 = 0o4;
 
     pub fn default() -> Node {
         Node {
@@ -69,6 +72,20 @@ impl Node {
 
     pub fn is_file(&self) -> bool {
         self.mode & Node::MODE_TYPE == Node::MODE_FILE
+    }
+
+    pub fn permission(&self, uid: u32, gid: u32, op: u16) -> bool {
+        let mut perm = self.mode & 0o7;
+        if self.uid == uid {
+            perm |= (self.mode >> 6) & 0o7;
+        }
+        if self.gid == gid || gid == 0 {
+            perm |= (self.mode >> 3) & 0o7;
+        }
+        if uid == 0 {
+            perm |= 0o7;
+        }
+        perm & op == op
     }
 
     pub fn size(&self) -> u64 {

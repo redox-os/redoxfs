@@ -45,7 +45,7 @@ impl FileSystem {
             free.1.extents[0] = Extent::new(4, size - 4 * 512);
             try!(disk.write_at(free.0, &free.1));
 
-            let root = (1, Node::new(Node::MODE_DIR, "root", 0));
+            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0));
             try!(disk.write_at(root.0, &root.1));
 
             let header = (0, Header::new(size, root.0, free.0));
