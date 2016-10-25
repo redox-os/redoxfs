@@ -252,7 +252,7 @@ impl Scheme for FileScheme {
 
     /* Resource operations */
     #[allow(unused_variables)]
-    fn dup(&self, old_id: usize) -> Result<usize> {
+    fn dup(&self, old_id: usize, _buf: &[u8]) -> Result<usize> {
         // println!("Dup {}", old_id);
 
         let mut files = self.files.lock();
