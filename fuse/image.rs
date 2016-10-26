@@ -2,8 +2,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
 
 use redoxfs::Disk;
-
-use system::error::{Error, Result, EIO};
+use syscall::error::{Error, Result, EIO};
 
 macro_rules! try_disk {
     ($expr:expr) => (match $expr {

@@ -1,60 +1,87 @@
 use resource::{Resource, DirResource, FileResource};
 
 use redoxfs::{FileSystem, Node};
-
+use spin::Mutex;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::str;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use system::error::{Error, Result, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF};
-use system::scheme::Scheme;
-use system::syscall::{Stat, O_CREAT, O_TRUNC};
+use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF};
+use syscall::scheme::Scheme;
+use syscall::{Stat, O_CREAT, O_TRUNC};
 
 pub struct FileScheme {
-    fs: FileSystem,
-    next_id: isize,
-    files: BTreeMap<usize, Box<Resource>>
+    name: &'static str,
+    fs: RefCell<FileSystem>,
+    next_id: AtomicUsize,
+    files: Mutex<BTreeMap<usize, Box<Resource>>>
 }
 
 impl FileScheme {
-    pub fn new(fs: FileSystem) -> FileScheme {
+    pub fn new(name: &'static str, fs: FileSystem) -> FileScheme {
         FileScheme {
-            fs: fs,
-            next_id: 1,
-            files: BTreeMap::new()
+            name: name,
+            fs: RefCell::new(fs),
+            next_id: AtomicUsize::new(1),
+            files: Mutex::new(BTreeMap::new())
         }
     }
+}
 
-    fn open_inner(&mut self, url: &str, flags: usize) -> Result<Box<Resource>> {
-        let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
+impl Scheme for FileScheme {
+    fn open(&self, url: &[u8], flags: usize, uid: u32, gid: u32) -> Result<usize> {
+        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
-        // println!("Open '{}' {:X}", path, flags);
+        //println!("Open '{}' {:X}", path, flags);
+
+        let mut fs = self.fs.borrow_mut();
 
         let mut nodes = Vec::new();
-        let node_result = self.fs.path_nodes(path, &mut nodes);
+        let node_result = fs.path_nodes(path, &mut nodes);
+        for node in nodes.iter() {
+            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                // println!("dir not executable {:o}", node.1.mode);
+                return Err(Error::new(EACCES));
+            }
+        }
 
-        match node_result {
+        let resource: Box<Resource> = match node_result {
             Ok(node) => if node.1.is_dir() {
+                if ! node.1.permission(uid, gid, Node::MODE_READ) {
+                    // println!("dir not readable {:o}", node.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
                 let mut data = Vec::new();
                 let mut children = Vec::new();
-                try!(self.fs.child_nodes(&mut children, node.0));
+                try!(fs.child_nodes(&mut children, node.0));
                 for child in children.iter() {
                     if let Ok(name) = child.1.name() {
                         if ! data.is_empty() {
                             data.push(b'\n');
                         }
                         data.extend_from_slice(&name.as_bytes());
-                        if child.1.is_dir() {
-                            data.push(b'/');
-                        }
                     }
                 }
-                return Ok(Box::new(DirResource::new(url, data)));
+
+                Box::new(DirResource::new(path.to_string(), node.0, data))
             } else {
-                if flags & O_TRUNC == O_TRUNC {
-                    // println!("Truncate {}", path);
-                    try!(self.fs.node_set_len(node.0, 0));
+                if ! node.1.permission(uid, gid, Node::MODE_READ) {
+                    // println!("file not readable {:o}", node.1.mode);
+                    return Err(Error::new(EACCES));
                 }
-                let size = try!(self.fs.node_len(node.0));
-                return Ok(Box::new(FileResource::new(url, node.0, size)));
+
+                if flags & O_TRUNC == O_TRUNC {
+                    if ! node.1.permission(uid, gid, Node::MODE_WRITE) {
+                        // println!("file not writable {:o}", node.1.mode);
+                        return Err(Error::new(EACCES));
+                    }
+
+                    try!(fs.node_set_len(node.0, 0));
+                }
+
+                Box::new(FileResource::new(path.to_string(), node.0))
             },
             Err(err) => if err.errno == ENOENT && flags & O_CREAT == O_CREAT {
                 let mut last_part = String::new();
@@ -65,8 +92,16 @@ impl FileScheme {
                 }
                 if ! last_part.is_empty() {
                     if let Some(parent) = nodes.last() {
-                        let node = try!(self.fs.create_node(Node::MODE_FILE, &last_part, parent.0));
-                        return Ok(Box::new(FileResource::new(url, node.0, 0)));
+                        if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
+                            // println!("dir not writable {:o}", parent.1.mode);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        let mut node = try!(fs.create_node(Node::MODE_FILE | (flags as u16 & Node::MODE_PERM), &last_part, parent.0));
+                        node.1.uid = uid;
+                        node.1.gid = gid;
+                        try!(fs.write_at(node.0, &node.1));
+                        Box::new(FileResource::new(path.to_string(), node.0))
                     } else {
                         return Err(Error::new(EPERM));
                     }
@@ -76,32 +111,31 @@ impl FileScheme {
             } else {
                 return Err(err);
             }
-        }
-    }
-}
+        };
 
-impl Scheme for FileScheme {
-    fn open(&mut self, url: &str, flags: usize) -> Result<usize> {
-        let resource = try!(self.open_inner(url, flags));
-
-        let id = self.next_id as usize;
-        self.next_id += 1;
-        if self.next_id < 0 {
-            self.next_id = 1;
-        }
-
-        self.files.insert(id, resource);
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.files.lock().insert(id, resource);
 
         Ok(id)
     }
 
-    fn mkdir(&mut self, url: &str, _mode: usize) -> Result<usize> {
-        let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
+    fn mkdir(&self, url: &[u8], mode: u16, uid: u32, gid: u32) -> Result<usize> {
+        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Mkdir '{}'", path);
 
+        let mut fs = self.fs.borrow_mut();
+
         let mut nodes = Vec::new();
-        match self.fs.path_nodes(path, &mut nodes) {
+        let node_result = fs.path_nodes(path, &mut nodes);
+        for node in nodes.iter() {
+            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                // println!("dir not executable {:o}", node.1.mode);
+                return Err(Error::new(EACCES));
+            }
+        }
+
+        match node_result {
             Ok(_node) => Err(Error::new(EEXIST)),
             Err(err) => if err.errno == ENOENT {
                 let mut last_part = String::new();
@@ -112,7 +146,16 @@ impl Scheme for FileScheme {
                 }
                 if ! last_part.is_empty() {
                     if let Some(parent) = nodes.last() {
-                        self.fs.create_node(Node::MODE_DIR, &last_part, parent.0).and(Ok(0))
+                        if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
+                            // println!("dir not writable {:o}", parent.1.mode);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        let mut node = try!(fs.create_node(Node::MODE_DIR | (mode & Node::MODE_PERM), &last_part, parent.0));
+                        node.1.uid = uid;
+                        node.1.gid = gid;
+                        try!(fs.write_at(node.0, &node.1));
+                        Ok(0)
                     } else {
                         Err(Error::new(EPERM))
                     }
@@ -125,17 +168,36 @@ impl Scheme for FileScheme {
         }
     }
 
-    fn rmdir(&mut self, url: &str) -> Result<usize> {
-        let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
+    fn rmdir(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
+        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Rmdir '{}'", path);
 
+        let mut fs = self.fs.borrow_mut();
+
         let mut nodes = Vec::new();
-        let child = try!(self.fs.path_nodes(path, &mut nodes));
+        let child = try!(fs.path_nodes(path, &mut nodes));
+        for node in nodes.iter() {
+            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                // println!("dir not executable {:o}", node.1.mode);
+                return Err(Error::new(EACCES));
+            }
+        }
+
         if let Some(parent) = nodes.last() {
+            if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
             if child.1.is_dir() {
+                if ! child.1.permission(uid, gid, Node::MODE_WRITE) {
+                    // println!("dir not writable {:o}", parent.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
                 if let Ok(child_name) = child.1.name() {
-                    self.fs.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
+                    fs.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
                 } else {
                     Err(Error::new(ENOENT))
                 }
@@ -147,22 +209,36 @@ impl Scheme for FileScheme {
         }
     }
 
-    fn stat(&mut self, url: &str, stat: &mut Stat) -> Result<usize> {
-        let resource = try!(self.open_inner(url, 0));
-        resource.stat(stat)
-    }
-
-    fn unlink(&mut self, url: &str) -> Result<usize> {
-        let path = url.split(':').nth(1).unwrap_or("").trim_matches('/');
+    fn unlink(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
+        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Unlink '{}'", path);
 
+        let mut fs = self.fs.borrow_mut();
+
         let mut nodes = Vec::new();
-        let child = try!(self.fs.path_nodes(path, &mut nodes));
+        let child = try!(fs.path_nodes(path, &mut nodes));
+        for node in nodes.iter() {
+            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                // println!("dir not executable {:o}", node.1.mode);
+                return Err(Error::new(EACCES));
+            }
+        }
+
         if let Some(parent) = nodes.last() {
+            if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
             if ! child.1.is_dir() {
+                if ! child.1.permission(uid, gid, Node::MODE_WRITE) {
+                    // println!("file not writable {:o}", parent.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
                 if let Ok(child_name) = child.1.name() {
-                    self.fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
+                    fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
                 } else {
                     Err(Error::new(ENOENT))
                 }
@@ -176,45 +252,48 @@ impl Scheme for FileScheme {
 
     /* Resource operations */
     #[allow(unused_variables)]
-    fn dup(&mut self, old_id: usize) -> Result<usize> {
+    fn dup(&self, old_id: usize, _buf: &[u8]) -> Result<usize> {
         // println!("Dup {}", old_id);
 
-        let resource = try!(try!(self.files.get(&old_id).ok_or(Error::new(EBADF))).dup());
+        let mut files = self.files.lock();
+        let resource = if let Some(old_resource) = files.get(&old_id) {
+            try!(old_resource.dup())
+        } else {
+            return Err(Error::new(EBADF));
+        };
 
-        let id = self.next_id as usize;
-        self.next_id += 1;
-        if self.next_id < 0 {
-            self.next_id = 1;
-        }
-
-        self.files.insert(id, resource);
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        files.insert(id, resource);
 
         Ok(id)
     }
 
     #[allow(unused_variables)]
-    fn read(&mut self, id: usize, buf: &mut [u8]) -> Result<usize> {
+    fn read(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        if let Some(mut file) = self.files.get_mut(&id) {
-            file.read(buf, &mut self.fs)
+        let mut files = self.files.lock();
+        if let Some(mut file) = files.get_mut(&id) {
+            file.read(buf, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
     }
 
-    fn write(&mut self, id: usize, buf: &[u8]) -> Result<usize> {
+    fn write(&self, id: usize, buf: &[u8]) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        if let Some(mut file) = self.files.get_mut(&id) {
-            file.write(buf, &mut self.fs)
+        let mut files = self.files.lock();
+        if let Some(mut file) = files.get_mut(&id) {
+            file.write(buf, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
     }
 
-    fn seek(&mut self, id: usize, pos: usize, whence: usize) -> Result<usize> {
+    fn seek(&self, id: usize, pos: usize, whence: usize) -> Result<usize> {
         // println!("Seek {}, {} {}", id, pos, whence);
-        if let Some(mut file) = self.files.get_mut(&id) {
-            file.seek(pos, whence)
+        let mut files = self.files.lock();
+        if let Some(mut file) = files.get_mut(&id) {
+            file.seek(pos, whence, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
@@ -222,8 +301,21 @@ impl Scheme for FileScheme {
 
     fn fpath(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        if let Some(file) = self.files.get(&id) {
-            file.path(buf)
+        let files = self.files.lock();
+        if let Some(file) = files.get(&id) {
+            let name = self.name.as_bytes();
+
+            let mut i = 0;
+            while i < buf.len() && i < name.len() {
+                buf[i] = name[i];
+                i += 1;
+            }
+            if i < buf.len() {
+                buf[i] = b':';
+                i += 1;
+            }
+
+            file.path(&mut buf[i..]).map(|count| i + count)
         } else {
             Err(Error::new(EBADF))
         }
@@ -231,34 +323,38 @@ impl Scheme for FileScheme {
 
     fn fstat(&self, id: usize, stat: &mut Stat) -> Result<usize> {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
-        if let Some(file) = self.files.get(&id) {
-            file.stat(stat)
+        let files = self.files.lock();
+        if let Some(file) = files.get(&id) {
+            file.stat(stat, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
     }
 
-    fn fsync(&mut self, id: usize) -> Result<usize> {
+    fn fsync(&self, id: usize) -> Result<usize> {
         // println!("Fsync {}", id);
-        if let Some(mut file) = self.files.get_mut(&id) {
+        let mut files = self.files.lock();
+        if let Some(mut file) = files.get_mut(&id) {
             file.sync()
         } else {
             Err(Error::new(EBADF))
         }
     }
 
-    fn ftruncate(&mut self, id: usize, len: usize) -> Result<usize> {
+    fn ftruncate(&self, id: usize, len: usize) -> Result<usize> {
         // println!("Ftruncate {}, {}", id, len);
-        if let Some(mut file) = self.files.get_mut(&id) {
-            file.truncate(len, &mut self.fs)
+        let mut files = self.files.lock();
+        if let Some(mut file) = files.get_mut(&id) {
+            file.truncate(len, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
     }
 
-    fn close(&mut self, id: usize) -> Result<usize> {
+    fn close(&self, id: usize) -> Result<usize> {
         // println!("Close {}", id);
-        if self.files.remove(&id).is_some() {
+        let mut files = self.files.lock();
+        if files.remove(&id).is_some() {
             Ok(0)
         } else {
             Err(Error::new(EBADF))

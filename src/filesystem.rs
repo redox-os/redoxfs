@@ -1,6 +1,6 @@
 use std::cmp::min;
 
-use system::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
+use syscall::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
 
 use super::{Disk, ExNode, Extent, Header, Node};
 
@@ -14,7 +14,7 @@ pub struct FileSystem {
 impl FileSystem {
     /// Open a file system on a disk
     pub fn open(mut disk: Box<Disk>) -> Result<Self> {
-        for block in 0..8192 {
+        for block in 0..65536 {
             let mut header = (0, Header::default());
             try!(disk.read_at(block + header.0, &mut header.1));
 
@@ -45,7 +45,7 @@ impl FileSystem {
             free.1.extents[0] = Extent::new(4, size - 4 * 512);
             try!(disk.write_at(free.0, &free.1));
 
-            let root = (1, Node::new(Node::MODE_DIR, "root", 0));
+            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0));
             try!(disk.write_at(root.0, &root.1));
 
             let header = (0, Header::new(size, root.0, free.0));
@@ -61,11 +61,11 @@ impl FileSystem {
         }
     }
 
-    fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    pub fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         self.disk.read_at(self.block + block, buffer)
     }
 
-    fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    pub fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         self.disk.write_at(self.block + block, buffer)
     }
 

@@ -1,16 +1,15 @@
 #![deny(warnings)]
 
 extern crate redoxfs;
-
-extern crate system;
+extern crate spin;
+extern crate syscall;
 
 use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::mem::size_of;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use spin::Mutex;
 
 use cache::Cache;
 use image::Image;
@@ -18,7 +17,7 @@ use scheme::FileScheme;
 
 use redoxfs::FileSystem;
 
-use system::scheme::{Packet, Scheme};
+use syscall::{Packet, Scheme};
 
 pub mod cache;
 pub mod image;
@@ -43,15 +42,14 @@ fn main() {
                         Ok(mut socket) => {
                             println!("redoxfs: mounted filesystem {} on file:", path);
 
-                            *status_daemon.lock().unwrap() = Status::Running;
+                            *status_daemon.lock() = Status::Running;
 
-                            let mut scheme = FileScheme::new(fs);
+                            let scheme = FileScheme::new("file", fs);
                             loop {
                                 let mut packet = Packet::default();
-                                while socket.read(&mut packet).unwrap() == size_of::<Packet>() {
-                                    scheme.handle(&mut packet);
-                                    socket.write(&packet).unwrap();
-                                }
+                                socket.read(&mut packet).unwrap();
+                                scheme.handle(&mut packet);
+                                socket.write(&packet).unwrap();
                             }
                         },
                         Err(err) => println!("redoxfs: failed to create file scheme: {}", err)
@@ -61,17 +59,17 @@ fn main() {
                 Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
             }
 
-            *status_daemon.lock().unwrap() = Status::Stopping;
+            *status_daemon.lock() = Status::Stopping;
         });
 
         'waiting: loop {
-            match *status_mutex.lock().unwrap() {
+            match *status_mutex.lock() {
                 Status::Starting => (),
                 Status::Running => break 'waiting,
                 Status::Stopping => break 'waiting,
             }
 
-            thread::sleep(Duration::new(0, 30000000));
+            thread::yield_now();
         }
     } else {
         println!("redoxfs: no disk image provided");

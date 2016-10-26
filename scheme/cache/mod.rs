@@ -2,7 +2,7 @@ use std::{cmp, ptr};
 
 use redoxfs::Disk;
 
-use system::error::Result;
+use syscall::error::Result;
 
 use self::lru_cache::LruCache;
 

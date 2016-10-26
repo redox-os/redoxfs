@@ -1,4 +1,4 @@
-use system::error::Result;
+use syscall::error::Result;
 
 /// A disk
 pub trait Disk {

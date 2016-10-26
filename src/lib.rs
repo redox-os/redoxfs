@@ -4,7 +4,7 @@
 
 #![deny(warnings)]
 
-extern crate system;
+extern crate syscall;
 
 pub use self::disk::Disk;
 pub use self::ex_node::ExNode;

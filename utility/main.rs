@@ -1,8 +1,7 @@
 #![deny(warnings)]
 
 extern crate redoxfs;
-
-extern crate system;
+extern crate syscall;
 
 use std::env;
 use std::io::{self, Write};
@@ -218,9 +217,8 @@ fn main() {
                 },
                 Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
             }
-        }else{
-            //Create a 256 MB disk image
-            let size = 256 * 1024 * 1024;
+        }else if let Some(size_str) = args.next() {
+            let size = size_str.parse::<u64>().expect("redoxfs: size is not a valid number") * 1024 * 1024;
             match Image::create(&path, size) {
                 Ok(disk) => match FileSystem::create(Box::new(disk)) {
                     Ok(filesystem) => {
@@ -231,6 +229,8 @@ fn main() {
                 },
                 Err(err) => println!("redoxfs: failed to create image {}: {}", path, err)
             }
+        } else {
+            println!("redoxfs: no size provided");
         }
     } else {
         println!("redoxfs: no disk image provided");

@@ -6,9 +6,9 @@ use super::Extent;
 #[repr(packed)]
 pub struct Node {
     pub mode: u16,
-    pub user: u16,
-    pub group: u16,
-    pub name: [u8; 250],
+    pub uid: u32,
+    pub gid: u32,
+    pub name: [u8; 246],
     pub parent: u64,
     pub next: u64,
     pub extents: [Extent; 15],
@@ -20,13 +20,16 @@ impl Node {
     pub const MODE_DIR: u16 = 0x4000;
 
     pub const MODE_PERM: u16 = 0x0FFF;
+    pub const MODE_EXEC: u16 = 0o1;
+    pub const MODE_WRITE: u16 = 0o2;
+    pub const MODE_READ: u16 = 0o4;
 
     pub fn default() -> Node {
         Node {
             mode: 0,
-            user: 0,
-            group: 0,
-            name: [0; 250],
+            uid: 0,
+            gid: 0,
+            name: [0; 246],
             parent: 0,
             next: 0,
             extents: [Extent::default(); 15],
@@ -34,15 +37,15 @@ impl Node {
     }
 
     pub fn new(mode: u16, name: &str, parent: u64) -> Node {
-        let mut bytes = [0; 250];
+        let mut bytes = [0; 246];
         for (mut b, c) in bytes.iter_mut().zip(name.bytes()) {
             *b = c;
         }
 
         Node {
             mode: mode,
-            user: 0,
-            group: 0,
+            uid: 0,
+            gid: 0,
             name: bytes,
             parent: parent,
             next: 0,
@@ -71,6 +74,20 @@ impl Node {
         self.mode & Node::MODE_TYPE == Node::MODE_FILE
     }
 
+    pub fn permission(&self, uid: u32, gid: u32, op: u16) -> bool {
+        let mut perm = self.mode & 0o7;
+        if self.uid == uid {
+            perm |= (self.mode >> 6) & 0o7;
+        }
+        if self.gid == gid || gid == 0 {
+            perm |= (self.mode >> 3) & 0o7;
+        }
+        if uid == 0 {
+            perm |= 0o7;
+        }
+        perm & op == op
+    }
+
     pub fn size(&self) -> u64 {
         self.extents.iter().fold(0, |size, extent| size + extent.length)
     }
@@ -81,8 +98,8 @@ impl fmt::Debug for Node {
         let extents: Vec<&Extent> = self.extents.iter().filter(|extent| -> bool { extent.length > 0 }).collect();
         f.debug_struct("Node")
             .field("mode", &self.mode)
-            .field("user", &self.user)
-            .field("group", &self.group)
+            .field("uid", &self.uid)
+            .field("gid", &self.gid)
             .field("name", &self.name())
             .field("next", &self.next)
             .field("extents", &extents)
