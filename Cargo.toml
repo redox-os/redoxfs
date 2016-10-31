@@ -25,7 +25,7 @@ path = "utility/main.rs"
 
 [dependencies]
 spin = "*"
-syscall = {path = "../../syscall/"}
+syscall = { git = "https://github.com/redox-os/syscall.git" }
 
 [target.'cfg(unix)'.dependencies]
 fuse = "0.2"
