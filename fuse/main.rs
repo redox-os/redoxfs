@@ -258,7 +258,7 @@ impl Filesystem for RedoxFS {
     }
 }
 
-#[cfg(target_os = "osx")]
+#[cfg(target_os = "macos")]
 fn main() {
     use std::ffi::OsStr;
 
@@ -278,7 +278,7 @@ fn main() {
                             // a filesystem that belongs to `root`, which in turn means that we need to
                             // be `root`, thus that we need to allow `root` to have access.
                             OsStr::new("-o"),
-                            OsStr::new("allow_root"),
+                            OsStr::new("defer_permissions"),
                         ]);
                     } else {
                         println!("redoxfs: no mount point provided");
@@ -293,7 +293,7 @@ fn main() {
     }
 }
 
-#[cfg(not(target_os = "osx"))]
+#[cfg(not(target_os = "macos"))]
 fn main() {
     if let Some(path) = env::args().nth(1) {
         //Open an existing image
