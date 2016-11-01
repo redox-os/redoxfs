@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::thread;
 use spin::Mutex;
 
-use cache::Cache;
+// use cache::Cache;
 use image::Image;
 use scheme::FileScheme;
 
@@ -36,7 +36,7 @@ fn main() {
 
         let status_daemon = status_mutex.clone();
         thread::spawn(move || {
-            match Image::open(&path).map(|image| Cache::new(image)) {
+            match Image::open(&path) /* .map(|image| Cache::new(image)) */ {
                 Ok(disk) => match FileSystem::open(Box::new(disk)) {
                     Ok(fs) => match File::create(":file") {
                         Ok(mut socket) => {
