@@ -7,7 +7,6 @@ extern crate time;
 
 use image::Image;
 use std::env;
-use std::ffi::OsStr;
 use std::path::Path;
 use time::Timespec;
 use fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyCreate, ReplyDirectory, ReplyEmpty, ReplyStatfs, ReplyWrite};
@@ -259,7 +258,10 @@ impl Filesystem for RedoxFS {
     }
 }
 
+#[cfg(target_os = "osx")]
 fn main() {
+    use std::ffi::OsStr;
+
     if let Some(path) = env::args().nth(1) {
         //Open an existing image
         match Image::open(&path) {
@@ -278,6 +280,32 @@ fn main() {
                             OsStr::new("-o"),
                             OsStr::new("allow_root"),
                         ]);
+                    } else {
+                        println!("redoxfs: no mount point provided");
+                    }
+                },
+                Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err)
+            },
+            Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
+        }
+    } else {
+        println!("redoxfs: no disk image provided");
+    }
+}
+
+#[cfg(not(target_os = "osx"))]
+fn main() {
+    if let Some(path) = env::args().nth(1) {
+        //Open an existing image
+        match Image::open(&path) {
+            Ok(disk) => match redoxfs::FileSystem::open(Box::new(disk)) {
+                Ok(filesystem) => {
+                    println!("redoxfs: opened filesystem {}", path);
+
+                    if let Some(mountpoint) = env::args_os().nth(2) {
+                        fuse::mount(RedoxFS {
+                            fs: filesystem
+                        }, &mountpoint, &[]);
                     } else {
                         println!("redoxfs: no mount point provided");
                     }
