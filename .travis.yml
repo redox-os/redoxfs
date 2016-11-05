@@ -1,6 +1,23 @@
+sudo: required
 language: rust
 rust:
   - nightly
-sudo: false
+os:
+  - linux
+  - osx
+dist: trusty
+before_install:
+  - if [ "$TRAVIS_OS_NAME" = "osx" ]; then
+      brew tap sevki/homebrew-gcc_cross_compilers;
+      brew update;
+      brew unlink gcc;
+      brew install sevki/gcc_cross_compilers/x86_64-elf-binutils sevki/gcc_cross_compilers/x86_64-elf-gcc nasm;
+    fi
+  - if [ "$TRAVIS_OS_NAME" = "linux" ]; then
+      sudo apt-get install -qq nasm pkg-config fuse libfuse-dev;
+      sudo modprobe fuse;
+      sudo chmod 666 /dev/fuse;
+      sudo chown root:$USER /etc/fuse.conf;
+    fi
 notifications:
   email: false
