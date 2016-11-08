@@ -7,9 +7,10 @@ use std::collections::BTreeMap;
 use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use syscall::data::Stat;
 use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF};
+use syscall::flag::{O_CREAT, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR};
 use syscall::scheme::Scheme;
-use syscall::{Stat, O_CREAT, O_TRUNC};
 
 pub struct FileScheme {
     name: &'static str,
@@ -44,10 +45,18 @@ impl Scheme for FileScheme {
                 // println!("dir not executable {:o}", node.1.mode);
                 return Err(Error::new(EACCES));
             }
+            if ! node.1.is_dir() {
+                return Err(Error::new(ENOTDIR));
+            }
         }
 
         let resource: Box<Resource> = match node_result {
             Ok(node) => if node.1.is_dir() {
+                if flags & O_ACCMODE != O_RDONLY {
+                    // println!("dir not opened with O_RDONLY");
+                    return Err(Error::new(EACCES));
+                }
+
                 if ! node.1.permission(uid, gid, Node::MODE_READ) {
                     // println!("dir not readable {:o}", node.1.mode);
                     return Err(Error::new(EACCES));
@@ -67,8 +76,13 @@ impl Scheme for FileScheme {
 
                 Box::new(DirResource::new(path.to_string(), node.0, data))
             } else {
-                if ! node.1.permission(uid, gid, Node::MODE_READ) {
+                if (flags & O_ACCMODE == O_RDONLY || flags & O_ACCMODE == O_RDWR) && ! node.1.permission(uid, gid, Node::MODE_READ) {
                     // println!("file not readable {:o}", node.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
+                if (flags & O_ACCMODE == O_WRONLY || flags & O_ACCMODE == O_RDWR) && ! node.1.permission(uid, gid, Node::MODE_WRITE) {
+                    // println!("file not writable {:o}", node.1.mode);
                     return Err(Error::new(EACCES));
                 }
 
@@ -81,7 +95,7 @@ impl Scheme for FileScheme {
                     try!(fs.node_set_len(node.0, 0));
                 }
 
-                Box::new(FileResource::new(path.to_string(), node.0))
+                Box::new(FileResource::new(path.to_string(), node.0, flags))
             },
             Err(err) => if err.errno == ENOENT && flags & O_CREAT == O_CREAT {
                 let mut last_part = String::new();
@@ -101,7 +115,18 @@ impl Scheme for FileScheme {
                         node.1.uid = uid;
                         node.1.gid = gid;
                         try!(fs.write_at(node.0, &node.1));
-                        Box::new(FileResource::new(path.to_string(), node.0))
+
+                        if (flags & O_ACCMODE == O_RDONLY || flags & O_ACCMODE == O_RDWR) && ! node.1.permission(uid, gid, Node::MODE_READ) {
+                            // println!("file not readable {:o}", node.1.mode);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        if (flags & O_ACCMODE == O_WRONLY || flags & O_ACCMODE == O_RDWR) && ! node.1.permission(uid, gid, Node::MODE_WRITE) {
+                            // println!("file not writable {:o}", node.1.mode);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        Box::new(FileResource::new(path.to_string(), node.0, flags))
                     } else {
                         return Err(Error::new(EPERM));
                     }
@@ -132,6 +157,9 @@ impl Scheme for FileScheme {
             if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
                 // println!("dir not executable {:o}", node.1.mode);
                 return Err(Error::new(EACCES));
+            }
+            if ! node.1.is_dir() {
+                return Err(Error::new(ENOTDIR));
             }
         }
 
@@ -182,6 +210,9 @@ impl Scheme for FileScheme {
                 // println!("dir not executable {:o}", node.1.mode);
                 return Err(Error::new(EACCES));
             }
+            if ! node.1.is_dir() {
+                return Err(Error::new(ENOTDIR));
+            }
         }
 
         if let Some(parent) = nodes.last() {
@@ -222,6 +253,9 @@ impl Scheme for FileScheme {
             if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
                 // println!("dir not executable {:o}", node.1.mode);
                 return Err(Error::new(EACCES));
+            }
+            if ! node.1.is_dir() {
+                return Err(Error::new(ENOTDIR));
             }
         }
 

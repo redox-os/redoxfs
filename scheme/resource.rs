@@ -2,7 +2,8 @@ use redoxfs::FileSystem;
 
 use std::cmp::{min, max};
 
-use syscall::error::{Error, Result, EINVAL};
+use syscall::error::{Error, Result, EBADF, EINVAL};
+use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR};
 use syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END};
 
 pub trait Resource {
@@ -55,7 +56,7 @@ impl Resource for DirResource {
     }
 
     fn write(&mut self, _buf: &[u8], _fs: &mut FileSystem) -> Result<usize> {
-        Err(Error::new(EINVAL))
+        Err(Error::new(EBADF))
     }
 
     fn seek(&mut self, offset: usize, whence: usize, _fs: &mut FileSystem) -> Result<usize> {
@@ -93,25 +94,27 @@ impl Resource for DirResource {
     }
 
     fn sync(&mut self) -> Result<usize> {
-        Err(Error::new(EINVAL))
+        Err(Error::new(EBADF))
     }
 
     fn truncate(&mut self, _len: usize, _fs: &mut FileSystem) -> Result<usize> {
-        Err(Error::new(EINVAL))
+        Err(Error::new(EBADF))
     }
 }
 
 pub struct FileResource {
     path: String,
     block: u64,
+    flags: usize,
     seek: u64,
 }
 
 impl FileResource {
-    pub fn new(path: String, block: u64) -> FileResource {
+    pub fn new(path: String, block: u64, flags: usize) -> FileResource {
         FileResource {
             path: path,
             block: block,
+            flags: flags,
             seek: 0,
         }
     }
@@ -122,20 +125,29 @@ impl Resource for FileResource {
         Ok(Box::new(FileResource {
             path: self.path.clone(),
             block: self.block,
+            flags: self.flags,
             seek: self.seek,
         }))
     }
 
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize> {
-        let count = try!(fs.read_node(self.block, self.seek, buf));
-        self.seek += count as u64;
-        Ok(count)
+        if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_RDONLY {
+            let count = try!(fs.read_node(self.block, self.seek, buf));
+            self.seek += count as u64;
+            Ok(count)
+        } else {
+            Err(Error::new(EBADF))
+        }
     }
 
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem) -> Result<usize> {
-        let count = try!(fs.write_node(self.block, self.seek, buf));
-        self.seek += count as u64;
-        Ok(count)
+        if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
+            let count = try!(fs.write_node(self.block, self.seek, buf));
+            self.seek += count as u64;
+            Ok(count)
+        } else {
+            Err(Error::new(EBADF))
+        }
     }
 
     fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem) -> Result<usize> {
@@ -179,8 +191,11 @@ impl Resource for FileResource {
     }
 
     fn truncate(&mut self, len: usize, fs: &mut FileSystem) -> Result<usize> {
-        try!(fs.node_set_len(self.block, len as u64));
-
-        Ok(0)
+        if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
+            try!(fs.node_set_len(self.block, len as u64));
+            Ok(0)
+        } else {
+            Err(Error::new(EBADF))
+        }
     }
 }
