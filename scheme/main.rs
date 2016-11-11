@@ -4,12 +4,9 @@ extern crate redoxfs;
 extern crate spin;
 extern crate syscall;
 
-use std::env;
+use std::{env, process};
 use std::fs::File;
 use std::io::{Read, Write};
-use std::sync::Arc;
-use std::thread;
-use spin::Mutex;
 
 // use cache::Cache;
 use image::Image;
@@ -24,25 +21,22 @@ pub mod image;
 pub mod resource;
 pub mod scheme;
 
-enum Status {
-    Starting,
-    Running,
-    Stopping
-}
-
 fn main() {
     if let Some(path) = env::args().nth(1) {
-        let status_mutex = Arc::new(Mutex::new(Status::Starting));
+        let mut pipes = [0; 2];
+        syscall::pipe2(&mut pipes, 0).unwrap();
 
-        let status_daemon = status_mutex.clone();
-        thread::spawn(move || {
+        // Daemonize
+        if unsafe { syscall::clone(0).unwrap() } == 0 {
+            let _ = syscall::close(pipes[0]);
+
             match Image::open(&path) /* .map(|image| Cache::new(image)) */ {
                 Ok(disk) => match FileSystem::open(Box::new(disk)) {
                     Ok(fs) => match File::create(":file") {
                         Ok(mut socket) => {
                             println!("redoxfs: mounted filesystem {} on file:", path);
 
-                            *status_daemon.lock() = Status::Running;
+                            let _ = syscall::write(pipes[1], &[1]);
 
                             let scheme = FileScheme::new("file", fs);
                             loop {
@@ -59,17 +53,18 @@ fn main() {
                 Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
             }
 
-            *status_daemon.lock() = Status::Stopping;
-        });
+            let _ = syscall::write(pipes[1], &[0]);
 
-        'waiting: loop {
-            match *status_mutex.lock() {
-                Status::Starting => (),
-                Status::Running => break 'waiting,
-                Status::Stopping => break 'waiting,
-            }
+            let _ = syscall::close(pipes[1]);
+        } else {
+            let _ = syscall::close(pipes[1]);
 
-            thread::yield_now();
+            let mut res = [0];
+            syscall::read(pipes[0], &mut res).unwrap();
+
+            let _ = syscall::close(pipes[0]);
+
+            process::exit(res[0] as i32);
         }
     } else {
         println!("redoxfs: no disk image provided");
