@@ -286,12 +286,12 @@ impl Scheme for FileScheme {
 
     /* Resource operations */
     #[allow(unused_variables)]
-    fn dup(&self, old_id: usize, _buf: &[u8]) -> Result<usize> {
+    fn dup(&self, old_id: usize, buf: &[u8]) -> Result<usize> {
         // println!("Dup {}", old_id);
 
         let mut files = self.files.lock();
         let resource = if let Some(old_resource) = files.get(&old_id) {
-            try!(old_resource.dup())
+            old_resource.dup(buf)?
         } else {
             return Err(Error::new(EBADF));
         };
@@ -328,6 +328,15 @@ impl Scheme for FileScheme {
         let mut files = self.files.lock();
         if let Some(mut file) = files.get_mut(&id) {
             file.seek(pos, whence, &mut self.fs.borrow_mut())
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fcntl(&self, id: usize, cmd: usize, arg: usize) -> Result<usize> {
+        let mut files = self.files.lock();
+        if let Some(mut file) = files.get_mut(&id) {
+            file.fcntl(cmd, arg)
         } else {
             Err(Error::new(EBADF))
         }

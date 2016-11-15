@@ -3,14 +3,15 @@ use redoxfs::FileSystem;
 use std::cmp::{min, max};
 
 use syscall::error::{Error, Result, EBADF, EINVAL};
-use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR};
+use syscall::flag::{O_ACCMODE, O_CLOEXEC, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL};
 use syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END};
 
 pub trait Resource {
-    fn dup(&self) -> Result<Box<Resource>>;
+    fn dup(&self, buf: &[u8]) -> Result<Box<Resource>>;
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize>;
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem) -> Result<usize>;
     fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem) -> Result<usize>;
+    fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize>;
     fn path(&self, buf: &mut [u8]) -> Result<usize>;
     fn stat(&self, _stat: &mut Stat, fs: &mut FileSystem) -> Result<usize>;
     fn sync(&mut self) -> Result<usize>;
@@ -36,7 +37,7 @@ impl DirResource {
 }
 
 impl Resource for DirResource {
-    fn dup(&self) -> Result<Box<Resource>> {
+    fn dup(&self, _buf: &[u8]) -> Result<Box<Resource>> {
         Ok(Box::new(DirResource {
             path: self.path.clone(),
             block: self.block,
@@ -68,6 +69,10 @@ impl Resource for DirResource {
         };
 
         Ok(self.seek)
+    }
+
+    fn fcntl(&mut self, _cmd: usize, _arg: usize) -> Result<usize> {
+        Err(Error::new(EBADF))
     }
 
     fn path(&self, buf: &mut [u8]) -> Result<usize> {
@@ -121,13 +126,17 @@ impl FileResource {
 }
 
 impl Resource for FileResource {
-    fn dup(&self) -> Result<Box<Resource>> {
-        Ok(Box::new(FileResource {
-            path: self.path.clone(),
-            block: self.block,
-            flags: self.flags,
-            seek: self.seek,
-        }))
+    fn dup(&self, buf: &[u8]) -> Result<Box<Resource>> {
+        if buf == b"exec" && self.flags & O_CLOEXEC == O_CLOEXEC {
+            Err(Error::new(EBADF))
+        } else {
+            Ok(Box::new(FileResource {
+                path: self.path.clone(),
+                block: self.block,
+                flags: self.flags,
+                seek: self.seek,
+            }))
+        }
     }
 
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize> {
@@ -161,6 +170,17 @@ impl Resource for FileResource {
         };
 
         Ok(self.seek as usize)
+    }
+
+    fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize> {
+        match cmd {
+            F_GETFL => Ok(self.flags),
+            F_SETFL => {
+                self.flags = arg & ! O_ACCMODE;
+                Ok(0)
+            }
+            _ => Err(Error::new(EINVAL))
+        }
     }
 
     fn path(&self, buf: &mut [u8]) -> Result<usize> {
