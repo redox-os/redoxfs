@@ -178,7 +178,7 @@ impl Resource for FileResource {
             F_SETFL => {
                 self.flags = arg & ! O_ACCMODE;
                 Ok(0)
-            }
+            },
             _ => Err(Error::new(EINVAL))
         }
     }

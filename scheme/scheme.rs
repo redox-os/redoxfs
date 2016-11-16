@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use syscall::data::Stat;
 use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF};
-use syscall::flag::{O_CREAT, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR};
+use syscall::flag::{O_CREAT, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM};
 use syscall::scheme::Scheme;
 
 pub struct FileScheme {
@@ -193,6 +193,35 @@ impl Scheme for FileScheme {
             } else {
                 Err(err)
             }
+        }
+    }
+
+    fn chmod(&self, url: &[u8], mode: u16, uid: u32, gid: u32) -> Result<usize> {
+        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
+
+        // println!("Chmod '{}'", path);
+
+        let mut fs = self.fs.borrow_mut();
+
+        let mut nodes = Vec::new();
+        let node_result = fs.path_nodes(path, &mut nodes);
+        for node in nodes.iter() {
+            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                // println!("dir not executable {:o}", node.1.mode);
+                return Err(Error::new(EACCES));
+            }
+            if ! node.1.is_dir() {
+                return Err(Error::new(ENOTDIR));
+            }
+        }
+
+        let mut node = node_result?;
+        if node.1.uid == uid || uid == 0 {
+            node.1.mode = (node.1.mode & ! MODE_PERM) | (mode & MODE_PERM);
+            try!(fs.write_at(node.0, &node.1));
+            Ok(0)
+        } else {
+            Err(Error::new(EPERM))
         }
     }
 
