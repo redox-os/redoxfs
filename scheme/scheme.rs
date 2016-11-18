@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use syscall::data::Stat;
+use syscall::data::{Stat, StatVfs};
 use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF};
 use syscall::flag::{O_CREAT, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM};
 use syscall::scheme::Scheme;
@@ -398,6 +398,25 @@ impl Scheme for FileScheme {
         let files = self.files.lock();
         if let Some(file) = files.get(&id) {
             file.stat(stat, &mut self.fs.borrow_mut())
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fstatvfs(&self, id: usize, stat: &mut StatVfs) -> Result<usize> {
+        let files = self.files.lock();
+        if let Some(_file) = files.get(&id) {
+            let mut fs = self.fs.borrow_mut();
+
+            let free = fs.header.1.free;
+            let free_size = fs.node_len(free)?;
+
+            stat.f_bsize = 512;
+            stat.f_blocks = fs.header.1.size/(stat.f_bsize as u64);
+            stat.f_bfree = free_size/(stat.f_bsize as u64);
+            stat.f_bavail = stat.f_bfree;
+
+            Ok(0)
         } else {
             Err(Error::new(EBADF))
         }
