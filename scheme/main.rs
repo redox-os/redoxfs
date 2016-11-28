@@ -8,7 +8,7 @@ use std::{env, process};
 use std::fs::File;
 use std::io::{Read, Write};
 
-// use cache::Cache;
+use cache::Cache;
 use image::Image;
 use scheme::FileScheme;
 
@@ -30,7 +30,7 @@ fn main() {
         if unsafe { syscall::clone(0).unwrap() } == 0 {
             let _ = syscall::close(pipes[0]);
 
-            match Image::open(&path) /* .map(|image| Cache::new(image)) */ {
+            match Image::open(&path).map(|image| Cache::new(image)) {
                 Ok(disk) => match FileSystem::open(Box::new(disk)) {
                     Ok(fs) => match File::create(":file") {
                         Ok(mut socket) => {
