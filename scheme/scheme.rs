@@ -355,6 +355,10 @@ impl Scheme for FileScheme {
                 buf[i] = b':';
                 i += 1;
             }
+            if i < buf.len() {
+                buf[i] = b'/';
+                i += 1;
+            }
 
             file.path(&mut buf[i..]).map(|count| i + count)
         } else {
