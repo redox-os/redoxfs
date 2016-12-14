@@ -2,7 +2,7 @@
 name = "redoxfs"
 description = "The Redox Filesystem"
 repository = "https://github.com/redox-os/redoxfs"
-version = "0.1.0"
+version = "0.1.1"
 license-file = "LICENSE"
 readme = "README.md"
 authors = ["Jeremy Soller <jackpot51@gmail.com>"]
@@ -13,15 +13,11 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "redoxfs"
-path = "scheme/main.rs"
+path = "mount/main.rs"
 
 [[bin]]
-name = "redoxfs-fuse"
-path = "fuse/main.rs"
-
-[[bin]]
-name = "redoxfs-utility"
-path = "utility/main.rs"
+name = "redoxfs-mkfs"
+path = "mkfs/main.rs"
 
 [dependencies]
 spin = "*"
