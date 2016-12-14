@@ -1,7 +1,7 @@
-use resource::{Resource, DirResource, FileResource};
+use redox::resource::{Resource, DirResource, FileResource};
+use redox::spin::Mutex;
 
 use redoxfs::{FileSystem, Node};
-use spin::Mutex;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::str;
@@ -13,14 +13,14 @@ use syscall::flag::{O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_
 use syscall::scheme::Scheme;
 
 pub struct FileScheme {
-    name: &'static str,
+    name: String,
     fs: RefCell<FileSystem>,
     next_id: AtomicUsize,
     files: Mutex<BTreeMap<usize, Box<Resource>>>
 }
 
 impl FileScheme {
-    pub fn new(name: &'static str, fs: FileSystem) -> FileScheme {
+    pub fn new(name: String, fs: FileSystem) -> FileScheme {
         FileScheme {
             name: name,
             fs: RefCell::new(fs),

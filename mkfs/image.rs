@@ -1,8 +1,7 @@
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
 
 use redoxfs::Disk;
-
 use syscall::error::{Error, Result, EIO};
 
 macro_rules! try_disk {
@@ -21,7 +20,7 @@ pub struct Image {
 
 impl Image {
     pub fn open(path: &str) -> Result<Image> {
-        let file = try_disk!(File::open(path));
+        let file = try_disk!(OpenOptions::new().read(true).write(true).open(path));
         Ok(Image {
             file: file
         })
@@ -30,7 +29,6 @@ impl Image {
 
 impl Disk for Image {
     fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
-        // println!("Image read at {}", block);
         try_disk!(self.file.seek(SeekFrom::Start(block * 512)));
         let count = try_disk!(self.file.read(buffer));
         Ok(count)

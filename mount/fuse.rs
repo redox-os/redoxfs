@@ -1,24 +1,20 @@
-#![deny(warnings)]
-
 extern crate fuse;
-extern crate redoxfs;
-extern crate syscall;
 extern crate time;
 
-use image::Image;
-use std::env;
+use redoxfs;
 use std::path::Path;
-use time::Timespec;
-use fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyCreate, ReplyDirectory, ReplyEmpty, ReplyStatfs, ReplyWrite};
 
-pub mod image;
+use self::fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyCreate, ReplyDirectory, ReplyEmpty, ReplyStatfs, ReplyWrite};
+use self::time::Timespec;
+
+pub use self::fuse::mount;
 
 const TTL: Timespec = Timespec { sec: 1, nsec: 0 };                 // 1 second
 
 const CREATE_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
 
-struct RedoxFS {
-    fs: redoxfs::FileSystem,
+pub struct Fuse {
+    pub fs: redoxfs::FileSystem,
 }
 
 fn node_attr(node: &(u64, redoxfs::Node)) -> FileAttr {
@@ -44,7 +40,7 @@ fn node_attr(node: &(u64, redoxfs::Node)) -> FileAttr {
     }
 }
 
-impl Filesystem for RedoxFS {
+impl Filesystem for Fuse {
     fn lookup(&mut self, _req: &Request, parent_block: u64, name: &Path, reply: ReplyEntry) {
         match self.fs.find_node(name.to_str().unwrap(), parent_block) {
             Ok(node) => {
@@ -255,66 +251,5 @@ impl Filesystem for RedoxFS {
                 reply.error(err.errno as i32);
             }
         }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn main() {
-    use std::ffi::OsStr;
-
-    if let Some(path) = env::args().nth(1) {
-        //Open an existing image
-        match Image::open(&path) {
-            Ok(disk) => match redoxfs::FileSystem::open(Box::new(disk)) {
-                Ok(filesystem) => {
-                    println!("redoxfs: opened filesystem {}", path);
-
-                    if let Some(mountpoint) = env::args_os().nth(2) {
-                        fuse::mount(RedoxFS {
-                            fs: filesystem
-                        }, &mountpoint, &[
-                            // One of the uses of this redoxfs fuse wrapper is to populate a filesystem
-                            // while building the Redox OS kernel. This means that we need to write on
-                            // a filesystem that belongs to `root`, which in turn means that we need to
-                            // be `root`, thus that we need to allow `root` to have access.
-                            OsStr::new("-o"),
-                            OsStr::new("defer_permissions"),
-                        ]);
-                    } else {
-                        println!("redoxfs: no mount point provided");
-                    }
-                },
-                Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err)
-            },
-            Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
-        }
-    } else {
-        println!("redoxfs: no disk image provided");
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn main() {
-    if let Some(path) = env::args().nth(1) {
-        //Open an existing image
-        match Image::open(&path) {
-            Ok(disk) => match redoxfs::FileSystem::open(Box::new(disk)) {
-                Ok(filesystem) => {
-                    println!("redoxfs: opened filesystem {}", path);
-
-                    if let Some(mountpoint) = env::args_os().nth(2) {
-                        fuse::mount(RedoxFS {
-                            fs: filesystem
-                        }, &mountpoint, &[]);
-                    } else {
-                        println!("redoxfs: no mount point provided");
-                    }
-                },
-                Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err)
-            },
-            Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
-        }
-    } else {
-        println!("redoxfs: no disk image provided");
     }
 }
