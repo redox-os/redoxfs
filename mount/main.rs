@@ -32,11 +32,12 @@ fn fork() -> isize {
 
 #[cfg(unix)]
 fn pipe(pipes: &mut [i32; 2]) -> isize {
-    unsafe { libc::pipe2(pipes.as_mut_ptr(), 0) as isize }
+    unsafe { libc::pipe(pipes.as_mut_ptr()) as isize }
 }
 
 #[cfg(all(unix, target_os = "macos"))]
 fn mount<P: AsRef<Path>>(filesystem: redoxfs::FileSystem, mountpoint: &P, mut write: File) {
+    use std::ffi::OsStr;
     use std::io::Write;
 
     let _ = write.write(&[0]);
