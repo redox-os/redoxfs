@@ -82,6 +82,10 @@ fn mount<P: AsRef<Path>>(filesystem: redoxfs::FileSystem, mountpoint: &P, write:
     redox::mount(filesystem, mountpoint, write);
 }
 
+fn usage() {
+    println!("redoxfs [disk] [mountpoint]");
+}
+
 fn main() {
     use std::io::{Read, Write};
 
@@ -106,6 +110,7 @@ fn main() {
                                 process::exit(0);
                             } else {
                                 println!("redoxfs: no mount point provided");
+                                usage();
                             }
                         },
                         Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err)
@@ -118,6 +123,7 @@ fn main() {
                 process::exit(1);
             } else {
                 println!("redoxfs: no disk image provided");
+                usage();
             }
         } else if pid > 0 {
             drop(write);

@@ -3,8 +3,7 @@
 extern crate redoxfs;
 extern crate syscall;
 
-use std::env;
-use std::str;
+use std::{env, process, str};
 
 use redoxfs::FileSystem;
 
@@ -19,13 +18,21 @@ fn main() {
         match Image::open(&path) {
             Ok(disk) => match FileSystem::create(Box::new(disk)) {
                 Ok(filesystem) => {
-                    println!("redoxfs: created filesystem on {}, size {} MB", path, filesystem.header.1.size/1024/1024);
+                    println!("redoxfs-mkfs: created filesystem on {}, size {} MB", path, filesystem.header.1.size/1024/1024);
                 },
-                Err(err) => println!("redoxfs: failed to create filesystem on {}: {}", path, err)
+                Err(err) => {
+                    println!("redoxfs-mkfs: failed to create filesystem on {}: {}", path, err);
+                    process::exit(1);
+                }
             },
-            Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
+            Err(err) => {
+                println!("redoxfs-mkfs: failed to open image {}: {}", path, err);
+                process::exit(1);
+            }
         }
     } else {
-        println!("redoxfs: no disk image provided");
+        println!("redoxfs-mkfs: no disk image provided");
+        println!("redoxfs-mkfs [disk]");
+        process::exit(1);
     }
 }
