@@ -20,9 +20,9 @@ name = "redoxfs-mkfs"
 path = "mkfs/main.rs"
 
 [dependencies]
-spin = "*"
-redox_syscall = { git = "https://github.com/redox-os/syscall.git" }
+spin = "0.4"
+redox_syscall = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 fuse = "0.2"
-time = "*"
+time = "0.1"
