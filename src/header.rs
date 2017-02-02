@@ -8,7 +8,7 @@ pub struct Header {
     pub signature: [u8; 8],
     /// Version, should be 1
     pub version: u64,
-    /// Disk ID, a 128-byte unique identifier
+    /// Disk ID, a 128-bit unique identifier
     pub uuid: [u8; 16],
     /// Disk size, in 512-byte sectors
     pub size: u64,
@@ -84,6 +84,6 @@ impl DerefMut for Header {
 }
 
 #[test]
-fn header_size_test(){
+fn header_size_test() {
     assert_eq!(mem::size_of::<Header>(), 512);
 }
