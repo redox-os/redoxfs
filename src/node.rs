@@ -125,6 +125,6 @@ impl ops::DerefMut for Node {
 }
 
 #[test]
-fn node_size_test(){
+fn node_size_test() {
     assert_eq!(mem::size_of::<Node>(), 512);
 }
