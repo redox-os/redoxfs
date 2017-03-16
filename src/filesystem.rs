@@ -152,21 +152,6 @@ impl FileSystem {
         self.find_node(name, parent.1.next)
     }
 
-    pub fn path_nodes(&mut self, path: &str, nodes: &mut Vec<(u64, Node)>) -> Result<(u64, Node)> {
-        let mut block = self.header.1.root;
-        nodes.push(try!(self.node(block)));
-
-        for part in path.split('/') {
-            if ! part.is_empty() {
-                let node = try!(self.find_node(part, block));
-                block = node.0;
-                nodes.push(node);
-            }
-        }
-
-        Ok(nodes.pop().unwrap())
-    }
-
     fn insert_blocks(&mut self, block: u64, length: u64, parent_block: u64) -> Result<()> {
         if parent_block == 0 {
             return Err(Error::new(ENOSPC));
