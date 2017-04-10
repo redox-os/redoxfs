@@ -62,9 +62,9 @@ impl Resource for DirResource {
 
     fn seek(&mut self, offset: usize, whence: usize, _fs: &mut FileSystem) -> Result<usize> {
         self.seek = match whence {
-            SEEK_SET => min(0, max(self.data.len() as isize, offset as isize)) as usize,
-            SEEK_CUR => min(0, max(self.data.len() as isize, self.seek as isize + offset as isize)) as usize,
-            SEEK_END => min(0, max(self.data.len() as isize, self.data.len() as isize + offset as isize)) as usize,
+            SEEK_SET => max(0, min(self.data.len() as isize, offset as isize)) as usize,
+            SEEK_CUR => max(0, min(self.data.len() as isize, self.seek as isize + offset as isize)) as usize,
+            SEEK_END => max(0, min(self.data.len() as isize, self.data.len() as isize + offset as isize)) as usize,
             _ => return Err(Error::new(EINVAL))
         };
 
@@ -165,9 +165,9 @@ impl Resource for FileResource {
         let size = try!(fs.node_len(self.block));
 
         self.seek = match whence {
-            SEEK_SET => min(0, max(size as i64, offset as i64)) as u64,
-            SEEK_CUR => min(0, max(size as i64, self.seek as i64 + offset as i64)) as u64,
-            SEEK_END => min(0, max(size as i64, size as i64 + offset as i64)) as u64,
+            SEEK_SET => max(0, min(size as i64, offset as i64)) as u64,
+            SEEK_CUR => max(0, min(size as i64, self.seek as i64 + offset as i64)) as u64,
+            SEEK_END => max(0, min(size as i64, size as i64 + offset as i64)) as u64,
             _ => return Err(Error::new(EINVAL))
         };
 
