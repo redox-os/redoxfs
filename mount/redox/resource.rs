@@ -117,12 +117,12 @@ pub struct FileResource {
 }
 
 impl FileResource {
-    pub fn new(path: String, block: u64, flags: usize) -> FileResource {
+    pub fn new(path: String, block: u64, flags: usize, seek: u64) -> FileResource {
         FileResource {
             path: path,
             block: block,
             flags: flags,
-            seek: 0,
+            seek: seek,
         }
     }
 }
