@@ -3,11 +3,11 @@ use redoxfs::FileSystem;
 use std::cmp::{min, max};
 
 use syscall::error::{Error, Result, EBADF, EINVAL};
-use syscall::flag::{O_ACCMODE, O_CLOEXEC, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL};
+use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL};
 use syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END};
 
 pub trait Resource {
-    fn dup(&self, buf: &[u8]) -> Result<Box<Resource>>;
+    fn dup(&self) -> Result<Box<Resource>>;
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize>;
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem) -> Result<usize>;
     fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem) -> Result<usize>;
@@ -37,7 +37,7 @@ impl DirResource {
 }
 
 impl Resource for DirResource {
-    fn dup(&self, _buf: &[u8]) -> Result<Box<Resource>> {
+    fn dup(&self) -> Result<Box<Resource>> {
         Ok(Box::new(DirResource {
             path: self.path.clone(),
             block: self.block,
@@ -128,17 +128,13 @@ impl FileResource {
 }
 
 impl Resource for FileResource {
-    fn dup(&self, buf: &[u8]) -> Result<Box<Resource>> {
-        if buf == b"exec" && self.flags & O_CLOEXEC == O_CLOEXEC {
-            Err(Error::new(EBADF))
-        } else {
-            Ok(Box::new(FileResource {
-                path: self.path.clone(),
-                block: self.block,
-                flags: self.flags,
-                seek: self.seek,
-            }))
-        }
+    fn dup(&self) -> Result<Box<Resource>> {
+        Ok(Box::new(FileResource {
+            path: self.path.clone(),
+            block: self.block,
+            flags: self.flags,
+            seek: self.seek,
+        }))
     }
 
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize> {
