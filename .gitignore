@@ -1,3 +1,5 @@
 target
 image.bin
 image
+.idea/
+redoxfs.iml
