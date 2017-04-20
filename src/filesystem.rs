@@ -1,8 +1,8 @@
 use std::cmp::min;
 
-use syscall::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
+use syscall::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EINVAL, ENAMETOOLONG};
 
-use super::{Disk, ExNode, Extent, Header, Node};
+use super::{Disk, ExNode, Extent, Header, Node, FileName, FileNameError};
 
 /// A file system
 pub struct FileSystem {
@@ -41,11 +41,13 @@ impl FileSystem {
         let size = disk.size()?;
 
         if size >= 4 * 512 {
-            let mut free = (2, Node::new(Node::MODE_FILE, "free", 0, ctime, ctime_nsec));
+            let free_name = FileName::from_str("free").unwrap();
+            let mut free = (2, Node::new(Node::MODE_FILE, free_name, 0, ctime, ctime_nsec));
             free.1.extents[0] = Extent::new(4, size - 4 * 512);
             disk.write_at(free.0, &free.1)?;
 
-            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec));
+            let root_name = FileName::from_str("root").unwrap();
+            let root = (1, Node::new(Node::MODE_DIR | 0o755, root_name, 0, ctime, ctime_nsec));
             disk.write_at(root.0, &root.1)?;
 
             let header = (0, Header::new(size, root.0, free.0));
@@ -124,7 +126,7 @@ impl FileSystem {
         self.child_nodes(children, parent.1.next)
     }
 
-    pub fn find_node(&mut self, name: &str, parent_block: u64) -> Result<(u64, Node)> {
+    pub fn find_node(&mut self, name: &FileName, parent_block: u64) -> Result<(u64, Node)> {
         if parent_block == 0 {
             return Err(Error::new(ENOENT));
         }
@@ -134,15 +136,7 @@ impl FileSystem {
             for (block, size) in extent.blocks() {
                 if size >= 512 {
                     let child = self.node(block)?;
-
-                    let mut matches = false;
-                    if let Ok(child_name) = child.1.name() {
-                        if child_name == name {
-                            matches = true;
-                        }
-                    }
-
-                    if matches {
+                    if child.1.name() == name {
                         return Ok(child);
                     }
                 }
@@ -199,11 +193,39 @@ impl FileSystem {
         }
     }
 
-    pub fn create_node(&mut self, mode: u16, name: &str, parent_block: u64, ctime: u64, ctime_nsec: u32) -> Result<(u64, Node)> {
+    /// get filename from [u8] or get Error from syscall
+    pub fn filename_from_bytes(name: &[u8]) -> Result<&FileName> {
+        let name = FileName::from_bytes(name);
+        match name {
+            Ok(name) => Ok(name),
+            Err(why) => match why {
+                FileNameError::NotUtf8 | FileNameError::ForbiddenCharacter | FileNameError::ZeroSized =>
+                    return Err(Error::new(EINVAL)),
+                FileNameError::TooLong =>
+                    return Err(Error::new(ENAMETOOLONG)),
+            },
+        }
+    }
+
+    pub fn filename_from_str(name: &str) -> Result<&FileName> {
+        let name = FileName::from_str(name);
+        match name {
+            Ok(name) => Ok(name),
+            Err(why) => match why {
+                FileNameError::NotUtf8 | FileNameError::ForbiddenCharacter | FileNameError::ZeroSized =>
+                    return Err(Error::new(EINVAL)),
+                FileNameError::TooLong =>
+                    return Err(Error::new(ENAMETOOLONG)),
+            },
+        }
+    }
+
+    pub fn create_node(&mut self, mode: u16, name: &FileName, parent_block: u64, ctime: u64, ctime_nsec: u32) -> Result<(u64, Node)> {
         if self.find_node(name, parent_block).is_ok() {
             Err(Error::new(EEXIST))
         } else {
             let node = (self.allocate(1)?, Node::new(mode, name, parent_block, ctime, ctime_nsec));
+            
             self.write_at(node.0, &node.1)?;
 
             self.insert_blocks(node.0, 512, parent_block)?;
@@ -259,7 +281,7 @@ impl FileSystem {
         }
     }
 
-    pub fn remove_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<()> {
+    pub fn remove_node(&mut self, mode: u16, name: &FileName, parent_block: u64) -> Result<()> {
         let node = self.find_node(name, parent_block)?;
         if node.1.mode & Node::MODE_TYPE == mode {
             if node.1.is_dir() {

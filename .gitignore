@@ -3,3 +3,4 @@ image.bin
 image
 .idea/
 redoxfs.iml
+*.orig

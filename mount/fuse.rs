@@ -3,6 +3,7 @@ extern crate time;
 
 use redoxfs;
 use std::path::Path;
+use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,6 +19,20 @@ const NULL_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
 pub struct Fuse {
     pub fs: redoxfs::FileSystem,
 }
+
+macro_rules! try_name {
+    ($name: expr, $reply: expr) => {{
+        let bytes = $name.as_os_str().as_bytes();
+        match ::redoxfs::FileSystem::filename_from_bytes(bytes){
+            Ok(name) => name,
+            Err(why) => {
+                $reply.error(why.errno as i32);
+                return;
+            }
+        }
+    }};
+}
+
 
 fn node_attr(node: &(u64, redoxfs::Node)) -> FileAttr {
     FileAttr {
@@ -50,9 +65,11 @@ fn node_attr(node: &(u64, redoxfs::Node)) -> FileAttr {
     }
 }
 
+
 impl Filesystem for Fuse {
     fn lookup(&mut self, _req: &Request, parent_block: u64, name: &Path, reply: ReplyEntry) {
-        match self.fs.find_node(name.to_str().unwrap(), parent_block) {
+        let name = try_name!(name, reply);
+        match self.fs.find_node(name, parent_block) {
             Ok(node) => {
                 reply.entry(&TTL, &node_attr(&node), 0);
             },
@@ -216,7 +233,7 @@ impl Filesystem for Fuse {
                         FileType::Directory
                     } else {
                         FileType::RegularFile
-                    }, child.1.name().unwrap());
+                    }, OsStr::from_bytes(child.1.name().as_bytes()));
 
                     if full {
                         break;
@@ -234,7 +251,8 @@ impl Filesystem for Fuse {
 
     fn create(&mut self, _req: &Request, parent_block: u64, name: &Path, mode: u32, flags: u32, reply: ReplyCreate) {
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        match self.fs.create_node(redoxfs::Node::MODE_FILE | (mode as u16 & redoxfs::Node::MODE_PERM), name.to_str().unwrap(), parent_block, ctime.as_secs(), ctime.subsec_nanos()) {
+        let name = try_name!(name, reply);
+        match self.fs.create_node(redoxfs::Node::MODE_FILE | (mode as u16 & redoxfs::Node::MODE_PERM), name, parent_block, ctime.as_secs(), ctime.subsec_nanos()) {
             Ok(node) => {
                 // println!("Create {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
                 reply.created(&TTL, &node_attr(&node), 0, 0, flags);
@@ -247,7 +265,8 @@ impl Filesystem for Fuse {
 
     fn mkdir(&mut self, _req: &Request, parent_block: u64, name: &Path, mode: u32, reply: ReplyEntry) {
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        match self.fs.create_node(redoxfs::Node::MODE_DIR | (mode as u16 & redoxfs::Node::MODE_PERM), name.to_str().unwrap(), parent_block, ctime.as_secs(), ctime.subsec_nanos()) {
+        let name = try_name!(name, reply);
+        match self.fs.create_node(redoxfs::Node::MODE_DIR | (mode as u16 & redoxfs::Node::MODE_PERM), name, parent_block, ctime.as_secs(), ctime.subsec_nanos()) {
             Ok(node) => {
                 // println!("Mkdir {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
                 reply.entry(&TTL, &node_attr(&node), 0);
@@ -259,7 +278,8 @@ impl Filesystem for Fuse {
     }
 
     fn rmdir(&mut self, _req: &Request, parent_block: u64, name: &Path, reply: ReplyEmpty) {
-        match self.fs.remove_node(redoxfs::Node::MODE_DIR, name.to_str().unwrap(), parent_block) {
+        let name = try_name!(name, reply);
+        match self.fs.remove_node(redoxfs::Node::MODE_DIR, name, parent_block) {
             Ok(()) => {
                 reply.ok();
             },
@@ -270,7 +290,8 @@ impl Filesystem for Fuse {
     }
 
     fn unlink(&mut self, _req: &Request, parent_block: u64, name: &Path, reply: ReplyEmpty) {
-        match self.fs.remove_node(redoxfs::Node::MODE_FILE, name.to_str().unwrap(), parent_block) {
+        let name = try_name!(name, reply);
+        match self.fs.remove_node(redoxfs::Node::MODE_FILE, name, parent_block) {
             Ok(()) => {
                 reply.ok();
             },
@@ -297,7 +318,8 @@ impl Filesystem for Fuse {
 
     fn symlink(&mut self, _req: &Request, parent_block: u64, name: &Path, link: &Path, reply: ReplyEntry) {
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        match self.fs.create_node(redoxfs::Node::MODE_SYMLINK | 0o777, name.to_str().unwrap(), parent_block, ctime.as_secs(), ctime.subsec_nanos()) {
+        let name = try_name!(name, reply);
+        match self.fs.create_node(redoxfs::Node::MODE_SYMLINK | 0o777, name, parent_block, ctime.as_secs(), ctime.subsec_nanos()) {
             Ok(node) => {
                 let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
                 match self.fs.write_node(node.0, 0, link.as_os_str().as_bytes(), mtime.as_secs(), mtime.subsec_nanos()) {

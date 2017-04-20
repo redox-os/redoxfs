@@ -1,6 +1,6 @@
-use std::{fmt, mem, ops, slice, str};
+use std::{fmt, mem, ops, slice};
 
-use super::Extent;
+use super::{Extent, FileName, FileNameBuf};
 
 /// A file/folder node
 #[repr(packed)]
@@ -12,7 +12,7 @@ pub struct Node {
     pub ctime_nsec: u32,
     pub mtime: u64,
     pub mtime_nsec: u32,
-    pub name: [u8; 222],
+    pub name: FileNameBuf,
     pub parent: u64,
     pub next: u64,
     pub extents: [Extent; 15],
@@ -38,18 +38,15 @@ impl Node {
             ctime_nsec: 0,
             mtime: 0,
             mtime_nsec: 0,
-            name: [0; 222],
+            name: FileNameBuf::default(),
             parent: 0,
             next: 0,
             extents: [Extent::default(); 15],
         }
     }
 
-    pub fn new(mode: u16, name: &str, parent: u64, ctime: u64, ctime_nsec: u32) -> Node {
-        let mut bytes = [0; 222];
-        for (b, c) in bytes.iter_mut().zip(name.bytes()) {
-            *b = c;
-        }
+    pub fn new(mode: u16, name: &FileName, parent: u64, ctime: u64, ctime_nsec: u32) -> Node {
+        let bytes = name.to_filename_buf();
 
         Node {
             mode: mode,
@@ -66,17 +63,8 @@ impl Node {
         }
     }
 
-    pub fn name(&self) -> Result<&str, str::Utf8Error> {
-        let mut len = 0;
-
-        for &b in self.name.iter() {
-            if b == 0 {
-                break;
-            }
-            len += 1;
-        }
-
-        str::from_utf8(&self.name[..len])
+    pub fn name(&self) -> &FileName {
+        &self.name
     }
 
     pub fn is_dir(&self) -> bool {
@@ -121,7 +109,7 @@ impl fmt::Debug for Node {
             .field("ctime_nsec", &self.ctime_nsec)
             .field("mtime", &self.mtime)
             .field("mtime_nsec", &self.mtime_nsec)
-            .field("name", &self.name())
+            .field("name", &self.name.as_str())
             .field("next", &self.next)
             .field("extents", &extents)
             .finish()

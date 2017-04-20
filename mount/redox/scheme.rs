@@ -1,7 +1,7 @@
 use redox::resource::{Resource, DirResource, FileResource};
 use redox::spin::Mutex;
 
-use redoxfs::{FileSystem, Node};
+use redoxfs::{FileSystem, Node, FileName};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::str;
@@ -66,7 +66,10 @@ impl FileScheme {
         loop {
             let node_res = match part_opt {
                 None => fs.node(block),
-                Some(part) => fs.find_node(part, block),
+                Some(part) => {
+                    let part = FileSystem::filename_from_str(part)?;
+                    fs.find_node(part, block)
+                },
             };
 
             part_opt = parts.next();
@@ -200,12 +203,11 @@ impl Scheme for FileScheme {
 
                     let mut data = Vec::new();
                     for child in children.iter() {
-                        if let Ok(name) = child.1.name() {
-                            if ! data.is_empty() {
-                                data.push(b'\n');
-                            }
-                            data.extend_from_slice(&name.as_bytes());
+                        let name = child.1.name();
+                        if ! data.is_empty() {
+                            data.push(b'\n');
                         }
+                        data.extend_from_slice(&name.as_bytes());
                     }
 
                     Box::new(DirResource::new(path.to_string(), node.0, Some(data)))
@@ -279,6 +281,10 @@ impl Scheme for FileScheme {
                         };
 
                         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                        let filename = match FileName::from_str(&last_part){
+                            Ok(filename) => filename,
+                            Err(_) => return Err(Error::new(EPERM)),
+                        };
                         let mut node = fs.create_node(mode_type | (flags as u16 & Node::MODE_PERM), &last_part, parent.0, ctime.as_secs(), ctime.subsec_nanos())?;
                         node.1.uid = uid;
                         node.1.gid = gid;
@@ -313,14 +319,12 @@ impl Scheme for FileScheme {
     }
 
     fn chmod(&self, url: &[u8], mode: u16, uid: u32, gid: u32) -> Result<usize> {
-        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
-
         // println!("Chmod '{}'", path);
 
         let mut fs = self.fs.borrow_mut();
 
         let mut nodes = Vec::new();
-        if let Some(mut node) = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
+        if let Some(mut node) = self.path_nodes(&mut fs, url, uid, gid, &mut nodes)? {
             if node.1.uid == uid || uid == 0 {
                 node.1.mode = (node.1.mode & ! MODE_PERM) | (mode & MODE_PERM);
                 fs.write_at(node.0, &node.1)?;
@@ -334,14 +338,12 @@ impl Scheme for FileScheme {
     }
 
     fn rmdir(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
-        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
-
         // println!("Rmdir '{}'", path);
 
         let mut fs = self.fs.borrow_mut();
 
         let mut nodes = Vec::new();
-        if let Some(child) = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
+        if let Some(child) = self.path_nodes(&mut fs, url, uid, gid, &mut nodes)? {
             if let Some(parent) = nodes.last() {
                 if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
                     // println!("dir not writable {:o}", parent.1.mode);
@@ -354,11 +356,8 @@ impl Scheme for FileScheme {
                         return Err(Error::new(EACCES));
                     }
 
-                    if let Ok(child_name) = child.1.name() {
-                        fs.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
-                    } else {
-                        Err(Error::new(ENOENT))
-                    }
+                    let child_name = child.1.name();
+                    fs.remove_node(Node::MODE_DIR, child_name, parent.0).and(Ok(0))
                 } else {
                     Err(Error::new(ENOTDIR))
                 }
@@ -371,14 +370,12 @@ impl Scheme for FileScheme {
     }
 
     fn unlink(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
-        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
-
         // println!("Unlink '{}'", path);
 
         let mut fs = self.fs.borrow_mut();
 
         let mut nodes = Vec::new();
-        if let Some(child) = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
+        if let Some(child) = self.path_nodes(&mut fs, url, uid, gid, &mut nodes)? {
             if let Some(parent) = nodes.last() {
                 if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
                     // println!("dir not writable {:o}", parent.1.mode);
@@ -391,14 +388,12 @@ impl Scheme for FileScheme {
                         return Err(Error::new(EACCES));
                     }
 
-                    if let Ok(child_name) = child.1.name() {
-                        if child.1.is_symlink() {
-                            fs.remove_node(Node::MODE_SYMLINK, child_name, parent.0).and(Ok(0))
-                        } else {
-                            fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
-                        }
+
+                    let child_name = child.1.name();
+                    if child.1.is_symlink() {
+                        fs.remove_node(Node::MODE_SYMLINK, child_name, parent.0).and(Ok(0))
                     } else {
-                        Err(Error::new(ENOENT))
+                        fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
                     }
                 } else {
                     Err(Error::new(EISDIR))
