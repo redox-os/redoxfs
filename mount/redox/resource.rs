@@ -94,18 +94,10 @@ impl Resource for DirResource {
             st_dev: 0, // TODO
             st_ino: node.0,
             st_mode: node.1.mode,
-            st_nlink: 0,
             st_uid: node.1.uid,
             st_gid: node.1.gid,
             st_size: try!(fs.node_len(self.block)),
-            st_blksize: 0,
-            st_blocks: 0,
-            st_mtime: 0,
-            st_mtime_nsec: 0,
-            st_atime: 0,
-            st_atime_nsec: 0,
-            st_ctime: 0,
-            st_ctime_nsec: 0,
+            ..Default::default()
         };
 
         Ok(0)
