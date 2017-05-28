@@ -90,12 +90,23 @@ impl Resource for DirResource {
     fn stat(&self, stat: &mut Stat, fs: &mut FileSystem) -> Result<usize> {
         let node = try!(fs.node(self.block));
 
-        stat.st_dev = 0; //TODO
-        stat.st_ino = node.0;
-        stat.st_mode = node.1.mode;
-        stat.st_uid = node.1.uid;
-        stat.st_gid = node.1.gid;
-        stat.st_size = try!(fs.node_len(self.block));
+        *stat = Stat {
+            st_dev: 0, // TODO
+            st_ino: node.0,
+            st_mode: node.1.mode,
+            st_nlink: 0,
+            st_uid: node.1.uid,
+            st_gid: node.1.gid,
+            st_size: try!(fs.node_len(self.block)),
+            st_blksize: 0,
+            st_blocks: 0,
+            st_mtime: 0,
+            st_mtime_nsec: 0,
+            st_atime: 0,
+            st_atime_nsec: 0,
+            st_ctime: 0,
+            st_ctime_nsec: 0,
+        };
 
         Ok(0)
     }
