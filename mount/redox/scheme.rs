@@ -89,7 +89,7 @@ impl Scheme for FileScheme {
                     }
 
                     let mut children = Vec::new();
-                    try!(fs.child_nodes(&mut children, node.0));
+                    fs.child_nodes(&mut children, node.0)?;
 
                     let mut data = Vec::new();
                     for child in children.iter() {
@@ -130,11 +130,11 @@ impl Scheme for FileScheme {
                         return Err(Error::new(EACCES));
                     }
 
-                    try!(fs.node_set_len(node.0, 0));
+                    fs.node_set_len(node.0, 0)?;
                 }
 
                 let seek = if flags & O_APPEND == O_APPEND {
-                    try!(fs.node_len(node.0))
+                    fs.node_len(node.0)?
                 } else {
                     0
                 };
@@ -157,10 +157,10 @@ impl Scheme for FileScheme {
 
                         let dir = flags & O_DIRECTORY == O_DIRECTORY;
 
-                        let mut node = try!(fs.create_node(if dir { Node::MODE_DIR } else { Node::MODE_FILE } | (flags as u16 & Node::MODE_PERM), &last_part, parent.0));
+                        let mut node = fs.create_node(if dir { Node::MODE_DIR } else { Node::MODE_FILE } | (flags as u16 & Node::MODE_PERM), &last_part, parent.0)?;
                         node.1.uid = uid;
                         node.1.gid = gid;
-                        try!(fs.write_at(node.0, &node.1));
+                        fs.write_at(node.0, &node.1)?;
 
                         if (flags & O_ACCMODE == O_RDONLY || flags & O_ACCMODE == O_RDWR) && ! node.1.permission(uid, gid, Node::MODE_READ) {
                             // println!("file not readable {:o}", node.1.mode);
@@ -176,7 +176,7 @@ impl Scheme for FileScheme {
                             Box::new(DirResource::new(path.to_string(), node.0, Vec::new()))
                         } else {
                             let seek = if flags & O_APPEND == O_APPEND {
-                                try!(fs.node_len(node.0))
+                                fs.node_len(node.0)?
                             } else {
                                 0
                             };
@@ -211,7 +211,7 @@ impl Scheme for FileScheme {
         if let Some(mut node) = path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
             if node.1.uid == uid || uid == 0 {
                 node.1.mode = (node.1.mode & ! MODE_PERM) | (mode & MODE_PERM);
-                try!(fs.write_at(node.0, &node.1));
+                fs.write_at(node.0, &node.1)?;
                 Ok(0)
             } else {
                 Err(Error::new(EPERM))

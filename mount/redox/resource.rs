@@ -88,7 +88,7 @@ impl Resource for DirResource {
     }
 
     fn stat(&self, stat: &mut Stat, fs: &mut FileSystem) -> Result<usize> {
-        let node = try!(fs.node(self.block));
+        let node = fs.node(self.block)?;
 
         *stat = Stat {
             st_dev: 0, // TODO
@@ -96,7 +96,7 @@ impl Resource for DirResource {
             st_mode: node.1.mode,
             st_uid: node.1.uid,
             st_gid: node.1.gid,
-            st_size: try!(fs.node_len(self.block)),
+            st_size: fs.node_len(self.block)?,
             ..Default::default()
         };
 
@@ -142,7 +142,7 @@ impl Resource for FileResource {
 
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_RDONLY {
-            let count = try!(fs.read_node(self.block, self.seek, buf));
+            let count = fs.read_node(self.block, self.seek, buf)?;
             self.seek += count as u64;
             Ok(count)
         } else {
@@ -152,7 +152,7 @@ impl Resource for FileResource {
 
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
-            let count = try!(fs.write_node(self.block, self.seek, buf));
+            let count = fs.write_node(self.block, self.seek, buf)?;
             self.seek += count as u64;
             Ok(count)
         } else {
@@ -161,7 +161,7 @@ impl Resource for FileResource {
     }
 
     fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem) -> Result<usize> {
-        let size = try!(fs.node_len(self.block));
+        let size = fs.node_len(self.block)?;
 
         self.seek = match whence {
             SEEK_SET => max(0, min(size as i64, offset as i64)) as u64,
@@ -197,14 +197,14 @@ impl Resource for FileResource {
     }
 
     fn stat(&self, stat: &mut Stat, fs: &mut FileSystem) -> Result<usize> {
-        let node = try!(fs.node(self.block));
+        let node = fs.node(self.block)?;
 
         stat.st_dev = 0; //TODO
         stat.st_ino = node.0;
         stat.st_mode = node.1.mode;
         stat.st_uid = node.1.uid;
         stat.st_gid = node.1.gid;
-        stat.st_size = try!(fs.node_len(self.block));
+        stat.st_size = fs.node_len(self.block)?;
 
         Ok(0)
     }
@@ -215,7 +215,7 @@ impl Resource for FileResource {
 
     fn truncate(&mut self, len: usize, fs: &mut FileSystem) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
-            try!(fs.node_set_len(self.block, len as u64));
+            fs.node_set_len(self.block, len as u64)?;
             Ok(0)
         } else {
             Err(Error::new(EBADF))

@@ -51,7 +51,7 @@ impl<T: Disk> Disk for Cache<T> {
         }
 
         if failed {
-            try!(self.inner.read_at(block, buffer));
+            self.inner.read_at(block, buffer)?;
 
             read = 0;
             for i in 0..(buffer.len() + 511)/512 {
@@ -73,7 +73,7 @@ impl<T: Disk> Disk for Cache<T> {
     fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         // println!("Cache write at {}", block);
 
-        try!(self.inner.write_at(block, buffer));
+        self.inner.write_at(block, buffer)?;
 
         let mut written = 0;
         for i in 0..(buffer.len() + 511)/512 {
