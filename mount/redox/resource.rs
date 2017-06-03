@@ -164,9 +164,9 @@ impl Resource for FileResource {
         let size = fs.node_len(self.block)?;
 
         self.seek = match whence {
-            SEEK_SET => max(0, min(size as i64, offset as i64)) as u64,
-            SEEK_CUR => max(0, min(size as i64, self.seek as i64 + offset as i64)) as u64,
-            SEEK_END => max(0, min(size as i64, size as i64 + offset as i64)) as u64,
+            SEEK_SET => max(0, offset as i64) as u64,
+            SEEK_CUR => max(0, self.seek as i64 + offset as i64) as u64,
+            SEEK_END => max(0, size as i64 + offset as i64) as u64,
             _ => return Err(Error::new(EINVAL))
         };
 
