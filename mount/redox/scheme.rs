@@ -8,8 +8,8 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use syscall::data::{Stat, StatVfs};
-use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF};
-use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM};
+use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF, ELOOP};
+use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK};
 use syscall::scheme::Scheme;
 
 pub struct FileScheme {
@@ -67,7 +67,7 @@ impl Scheme for FileScheme {
     fn open(&self, url: &[u8], flags: usize, uid: u32, gid: u32) -> Result<usize> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
-        //println!("Open '{}' {:X}", path, flags);
+        println!("Open '{}' {:X}", path, flags);
 
         let mut fs = self.fs.borrow_mut();
 
@@ -108,6 +108,25 @@ impl Scheme for FileScheme {
                     // println!("dir not opened with O_RDONLY");
                     return Err(Error::new(EACCES));
                 }
+            } else if node.1.is_symlink() && flags & O_STAT != O_STAT && flags & O_SYMLINK != O_SYMLINK {
+                // TODO: Find way to support symlink to another scheme
+                let mut node = node;
+                for _ in 1..10 { // XXX What should the limit be?
+                    let mut buf = [0; 4096];
+                    let count = fs.read_node(node.0, 0, &mut buf)?;
+                    // XXX Relative paths
+                    let path = str::from_utf8(&buf[0..count]).unwrap_or("").trim_matches('/');
+                    if let Some(next_node) = path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
+                        if !next_node.1.is_symlink() {
+                            drop(fs);
+                            return self.open(&buf[0..count], flags, uid, gid);
+                        }
+                        node = next_node;
+                    } else {
+                        return Err(Error::new(ENOENT));
+                    }
+                }
+                return Err(Error::new(ELOOP));
             } else {
                 if flags & O_DIRECTORY == O_DIRECTORY {
                     // println!("{:X} & {:X}: ENOTDIR {}", flags, O_DIRECTORY, path);
@@ -156,8 +175,15 @@ impl Scheme for FileScheme {
                         }
 
                         let dir = flags & O_DIRECTORY == O_DIRECTORY;
+                        let mode_type = if dir {
+                            Node::MODE_DIR
+                        } else if flags & O_SYMLINK == O_SYMLINK {
+                            Node::MODE_SYMLINK
+                        } else {
+                            Node::MODE_FILE
+                        };
 
-                        let mut node = fs.create_node(if dir { Node::MODE_DIR } else { Node::MODE_FILE } | (flags as u16 & Node::MODE_PERM), &last_part, parent.0)?;
+                        let mut node = fs.create_node(mode_type | (flags as u16 & Node::MODE_PERM), &last_part, parent.0)?;
                         node.1.uid = uid;
                         node.1.gid = gid;
                         fs.write_at(node.0, &node.1)?;
