@@ -18,6 +18,7 @@ impl Node {
     pub const MODE_TYPE: u16 = 0xF000;
     pub const MODE_FILE: u16 = 0x8000;
     pub const MODE_DIR: u16 = 0x4000;
+    pub const MODE_SYMLINK: u16 = 0xA000;
 
     pub const MODE_PERM: u16 = 0x0FFF;
     pub const MODE_EXEC: u16 = 0o1;
@@ -72,6 +73,10 @@ impl Node {
 
     pub fn is_file(&self) -> bool {
         self.mode & Node::MODE_TYPE == Node::MODE_FILE
+    }
+
+    pub fn is_symlink(&self) -> bool {
+        self.mode & Node::MODE_TYPE == Node::MODE_SYMLINK
     }
 
     pub fn permission(&self, uid: u32, gid: u32, op: u16) -> bool {
