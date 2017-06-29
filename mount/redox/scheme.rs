@@ -8,7 +8,7 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use syscall::data::{Stat, StatVfs};
-use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF, ELOOP};
+use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF, ELOOP, EINVAL};
 use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK};
 use syscall::scheme::Scheme;
 
@@ -204,6 +204,8 @@ impl Scheme for FileScheme {
                     }
                 }
                 return Err(Error::new(ELOOP));
+            } else if !node.1.is_symlink() && flags & O_SYMLINK == O_SYMLINK {
+                  return Err(Error::new(EINVAL));
             } else {
                 if flags & O_DIRECTORY == O_DIRECTORY {
                     // println!("{:X} & {:X}: ENOTDIR {}", flags, O_DIRECTORY, path);
