@@ -63,6 +63,77 @@ fn path_nodes(fs: &mut FileSystem, path: &str, uid: u32, gid: u32, nodes: &mut V
     }
 }
 
+/// Make a relative path absolute
+/// Given a cwd of "scheme:/path"
+/// This function will turn "foo" into "scheme:/path/foo"
+/// "/foo" will turn into "scheme:/foo"
+/// "bar:/foo" will be used directly, as it is already absolute
+pub fn canonicalize(current: &[u8], path: &[u8]) -> Vec<u8> {
+    // This function is modified from a version in the kernel
+    let mut canon = if path.iter().position(|&b| b == b':').is_none() {
+        let cwd = &current[0..current.iter().rposition(|x| *x == '/' as u8).unwrap_or(0)];
+
+        let mut canon = if !path.starts_with(b"/") {
+            let mut c = cwd.to_vec();
+            if ! c.ends_with(b"/") {
+                c.push(b'/');
+            }
+            c
+        } else {
+            cwd[..cwd.iter().position(|&b| b == b':').map_or(1, |i| i + 1)].to_vec()
+        };
+
+        canon.extend_from_slice(&path);
+        canon
+    } else {
+        path.to_vec()
+    };
+
+    // NOTE: assumes the scheme does not include anything like "../" or "./"
+    let mut result = {
+        let parts = canon.split(|&c| c == b'/')
+            .filter(|&part| part != b".")
+            .rev()
+            .scan(0, |nskip, part| {
+                if part == b"." {
+                    Some(None)
+                } else if part == b".." {
+                    *nskip += 1;
+                    Some(None)
+                } else {
+                    if *nskip > 0 {
+                        *nskip -= 1;
+                        Some(None)
+                    } else {
+                        Some(Some(part))
+                    }
+                }
+            })
+            .filter_map(|x| x)
+            .collect::<Vec<_>>();
+        parts
+            .iter()
+            .rev()
+            .fold(Vec::new(), |mut vec, &part| {
+                vec.extend_from_slice(part);
+                vec.push(b'/');
+                vec
+            })
+    };
+    result.pop(); // remove extra '/'
+
+    // replace with the root of the scheme if it's empty
+    if result.len() == 0 {
+        let pos = canon.iter()
+                        .position(|&b| b == b':')
+                        .map_or(canon.len(), |p| p + 1);
+        canon.truncate(pos);
+        canon
+    } else {
+        result
+    }
+}
+
 impl Scheme for FileScheme {
     fn open(&self, url: &[u8], flags: usize, uid: u32, gid: u32) -> Result<usize> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
@@ -109,17 +180,23 @@ impl Scheme for FileScheme {
                     return Err(Error::new(EACCES));
                 }
             } else if node.1.is_symlink() && flags & O_STAT != O_STAT && flags & O_SYMLINK != O_SYMLINK {
-                // TODO: Find way to support symlink to another scheme
                 let mut node = node;
                 for _ in 1..10 { // XXX What should the limit be?
                     let mut buf = [0; 4096];
                     let count = fs.read_node(node.0, 0, &mut buf)?;
                     // XXX Relative paths
-                    let path = str::from_utf8(&buf[0..count]).unwrap_or("").trim_matches('/');
+                    let scheme = format!("{}:", self.name);
+                    let canon = canonicalize(format!("{}{}", scheme, str::from_utf8(url).unwrap()).as_bytes(), &buf[0..count]);
+                    let path = str::from_utf8(&canon[scheme.len()..]).unwrap_or("").trim_matches('/');
                     if let Some(next_node) = path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
                         if !next_node.1.is_symlink() {
-                            drop(fs);
-                            return self.open(&buf[0..count], flags, uid, gid);
+                            if canon.starts_with(scheme.as_bytes()) {
+                                drop(fs);
+                                return self.open(&canon[scheme.len()..], flags, uid, gid);
+                            } else {
+                                // TODO: Find way to support symlink to another scheme
+                                return Err(Error::new(ENOENT));
+                            }
                         }
                         node = next_node;
                     } else {
