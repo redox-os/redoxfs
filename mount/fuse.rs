@@ -3,6 +3,7 @@ extern crate time;
 
 use redoxfs;
 use std::path::Path;
+use std::os::unix::ffi::OsStrExt;
 
 use self::fuse::{FileType, FileAttr, Filesystem, Request, ReplyData, ReplyEntry, ReplyAttr, ReplyCreate, ReplyDirectory, ReplyEmpty, ReplyStatfs, ReplyWrite};
 use self::time::Timespec;
@@ -28,6 +29,8 @@ fn node_attr(node: &(u64, redoxfs::Node)) -> FileAttr {
         crtime: CREATE_TIME,
         kind: if node.1.is_dir() {
             FileType::Directory
+        } else if node.1.is_symlink() {
+            FileType::Symlink
         } else {
             FileType::RegularFile
         },
@@ -246,6 +249,36 @@ impl Filesystem for Fuse {
                 let blocks = self.fs.header.1.size/bsize;
                 let bfree = free_size/bsize;
                 reply.statfs(blocks, bfree, bfree, 0, 0, bsize as u32, 256, 0);
+            },
+            Err(err) => {
+                reply.error(err.errno as i32);
+            }
+        }
+    }
+
+    fn symlink(&mut self, _req: &Request, parent_block: u64, name: &Path, link: &Path, reply: ReplyEntry) {
+        match self.fs.create_node(redoxfs::Node::MODE_SYMLINK | 0o777, name.to_str().unwrap(), parent_block) {
+            Ok(node) => {
+                match self.fs.write_node(node.0, 0, link.as_os_str().as_bytes()) {
+                    Ok(_count) => {
+                        reply.entry(&TTL, &node_attr(&node), 0);
+                    },
+                    Err(err) => {
+                        reply.error(err.errno as i32);
+                    }
+                }
+            },
+            Err(error) => {
+                reply.error(error.errno as i32);
+            }
+        }
+    }
+
+    fn readlink(&mut self, _req: &Request, ino: u64, reply: ReplyData) {
+        let mut data = vec![0; 4096];
+        match self.fs.read_node(ino, 0, &mut data) {
+            Ok(count) => {
+                reply.data(&data[..count]);
             },
             Err(err) => {
                 reply.error(err.errno as i32);
