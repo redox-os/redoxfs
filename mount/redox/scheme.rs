@@ -138,7 +138,7 @@ impl Scheme for FileScheme {
     fn open(&self, url: &[u8], flags: usize, uid: u32, gid: u32) -> Result<usize> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
-        println!("Open '{}' {:X}", path, flags);
+        // println!("Open '{}' {:X}", path, flags);
 
         let mut fs = self.fs.borrow_mut();
 
@@ -385,7 +385,11 @@ impl Scheme for FileScheme {
                     }
 
                     if let Ok(child_name) = child.1.name() {
-                        fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
+                        if child.1.is_symlink() {
+                            fs.remove_node(Node::MODE_SYMLINK, child_name, parent.0).and(Ok(0))
+                        } else {
+                            fs.remove_node(Node::MODE_FILE, child_name, parent.0).and(Ok(0))
+                        }
                     } else {
                         Err(Error::new(ENOENT))
                     }
