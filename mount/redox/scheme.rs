@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use syscall::data::{Stat, StatVfs};
 use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF, ELOOP, EINVAL};
-use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK};
+use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK, O_NOFOLLOW};
 use syscall::scheme::Scheme;
 
 pub struct FileScheme {
@@ -179,7 +179,7 @@ impl Scheme for FileScheme {
                     // println!("dir not opened with O_RDONLY");
                     return Err(Error::new(EACCES));
                 }
-            } else if node.1.is_symlink() && flags & O_STAT != O_STAT && flags & O_SYMLINK != O_SYMLINK {
+            } else if node.1.is_symlink() && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW) && flags & O_SYMLINK != O_SYMLINK {
                 let mut node = node;
                 for _ in 1..10 { // XXX What should the limit be?
                     let mut buf = [0; 4096];
