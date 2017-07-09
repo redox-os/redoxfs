@@ -37,15 +37,15 @@ impl FileSystem {
     }
 
     /// Create a file system on a disk
-    pub fn create(mut disk: Box<Disk>) -> Result<Self> {
+    pub fn create(mut disk: Box<Disk>, ctime: u64, ctime_nsec: u32) -> Result<Self> {
         let size = disk.size()?;
 
         if size >= 4 * 512 {
-            let mut free = (2, Node::new(Node::MODE_FILE, "free", 0));
+            let mut free = (2, Node::new(Node::MODE_FILE, "free", 0, ctime, ctime_nsec));
             free.1.extents[0] = Extent::new(4, size - 4 * 512);
             disk.write_at(free.0, &free.1)?;
 
-            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0));
+            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec));
             disk.write_at(root.0, &root.1)?;
 
             let header = (0, Header::new(size, root.0, free.0));
@@ -194,11 +194,11 @@ impl FileSystem {
         }
     }
 
-    pub fn create_node(&mut self, mode: u16, name: &str, parent_block: u64) -> Result<(u64, Node)> {
+    pub fn create_node(&mut self, mode: u16, name: &str, parent_block: u64, ctime: u64, ctime_nsec: u32) -> Result<(u64, Node)> {
         if self.find_node(name, parent_block).is_ok() {
             Err(Error::new(EEXIST))
         } else {
-            let node = (self.allocate(1)?, Node::new(mode, name, parent_block));
+            let node = (self.allocate(1)?, Node::new(mode, name, parent_block, ctime, ctime_nsec));
             self.write_at(node.0, &node.1)?;
 
             self.insert_blocks(node.0, 512, parent_block)?;
@@ -276,6 +276,7 @@ impl FileSystem {
         }
     }
 
+    // TODO: modification time
     fn node_ensure_len(&mut self, block: u64, mut length: u64) -> Result<()> {
         if block == 0 {
             return Err(Error::new(ENOENT));
@@ -319,6 +320,7 @@ impl FileSystem {
         }
     }
 
+    //TODO: modification time
     pub fn node_set_len(&mut self, block: u64, mut length: u64) -> Result<()> {
         if block == 0 {
             return Err(Error::new(ENOENT));
@@ -450,7 +452,7 @@ impl FileSystem {
         Ok(i)
     }
 
-    pub fn write_node(&mut self, block: u64, offset: u64, buf: &[u8]) -> Result<usize> {
+    pub fn write_node(&mut self, block: u64, offset: u64, buf: &[u8], mtime: u64, mtime_nsec: u32) -> Result<usize> {
         let block_offset = offset / 512;
         let mut byte_offset = (offset % 512) as usize;
 
@@ -510,6 +512,15 @@ impl FileSystem {
 
             assert_eq!(length, 0);
             assert_eq!(block, extent.block + (extent.length + 511)/512);
+        }
+
+        if i > 0 {
+            let mut node = self.node(block)?;
+            if mtime > node.1.mtime || (mtime == node.1.mtime && mtime_nsec > node.1.mtime_nsec) {
+                node.1.mtime = mtime;
+                node.1.mtime_nsec = mtime_nsec;
+                self.write_at(node.0, &node.1)?;
+            }
         }
 
         Ok(i)
