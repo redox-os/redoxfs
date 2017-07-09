@@ -246,7 +246,7 @@ impl Resource for FileResource {
 
     fn utimens(&mut self, times: &[TimeSpec], fs: &mut FileSystem) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
-            if let Some(mtime) = times.get(0) {
+            if let Some(mtime) = times.get(1) {
                 let mut node = fs.node(self.block)?;
 
                 node.1.mtime = mtime.tv_sec as u64;
