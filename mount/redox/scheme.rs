@@ -8,7 +8,7 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use syscall::data::{Stat, StatVfs};
+use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF, ELOOP, EINVAL};
 use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK, O_NOFOLLOW};
 use syscall::scheme::Scheme;
@@ -534,6 +534,16 @@ impl Scheme for FileScheme {
         let mut files = self.files.lock();
         if let Some(mut file) = files.get_mut(&id) {
             file.truncate(len, &mut self.fs.borrow_mut())
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn futimens(&self, id: usize, times: &[TimeSpec]) -> Result<usize> {
+        // println!("Futimens {}, {}", id, times.len());
+        let mut files = self.files.lock();
+        if let Some(mut file) = files.get_mut(&id) {
+            file.utimens(times, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }

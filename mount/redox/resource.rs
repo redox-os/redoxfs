@@ -1,8 +1,10 @@
 use redoxfs::FileSystem;
 
 use std::cmp::{min, max};
+use std::mem;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use syscall::data::TimeSpec;
 use syscall::error::{Error, Result, EBADF, EINVAL};
 use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL};
 use syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END};
@@ -17,6 +19,7 @@ pub trait Resource {
     fn stat(&self, _stat: &mut Stat, fs: &mut FileSystem) -> Result<usize>;
     fn sync(&mut self) -> Result<usize>;
     fn truncate(&mut self, len: usize, fs: &mut FileSystem) -> Result<usize>;
+    fn utimens(&mut self, times: &[TimeSpec], fs: &mut FileSystem) -> Result<usize>;
 }
 
 pub struct DirResource {
@@ -114,6 +117,10 @@ impl Resource for DirResource {
     }
 
     fn truncate(&mut self, _len: usize, _fs: &mut FileSystem) -> Result<usize> {
+        Err(Error::new(EBADF))
+    }
+
+    fn utimens(&mut self, _times: &[TimeSpec], _fs: &mut FileSystem) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 }
@@ -232,6 +239,25 @@ impl Resource for FileResource {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
             fs.node_set_len(self.block, len as u64)?;
             Ok(0)
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn utimens(&mut self, times: &[TimeSpec], fs: &mut FileSystem) -> Result<usize> {
+        if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
+            if let Some(mtime) = times.get(0) {
+                let mut node = fs.node(self.block)?;
+
+                node.1.mtime = mtime.tv_sec as u64;
+                node.1.mtime_nsec = mtime.tv_nsec as u32;
+
+                fs.write_at(node.0, &node.1)?;
+
+                Ok(mem::size_of::<TimeSpec>())
+            } else {
+                Ok(0)
+            }
         } else {
             Err(Error::new(EBADF))
         }
