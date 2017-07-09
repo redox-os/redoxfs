@@ -1,6 +1,7 @@
 use redoxfs::FileSystem;
 
 use std::cmp::{min, max};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::error::{Error, Result, EBADF, EINVAL};
 use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL};
@@ -152,7 +153,8 @@ impl Resource for FileResource {
 
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
-            let count = fs.write_node(self.block, self.seek, buf)?;
+            let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let count = fs.write_node(self.block, self.seek, buf, mtime.as_secs(), mtime.subsec_nanos())?;
             self.seek += count as u64;
             Ok(count)
         } else {

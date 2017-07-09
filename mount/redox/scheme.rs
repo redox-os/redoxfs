@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::{Stat, StatVfs};
 use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF, ELOOP, EINVAL};
@@ -262,7 +263,8 @@ impl Scheme for FileScheme {
                             Node::MODE_FILE
                         };
 
-                        let mut node = fs.create_node(mode_type | (flags as u16 & Node::MODE_PERM), &last_part, parent.0)?;
+                        let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                        let mut node = fs.create_node(mode_type | (flags as u16 & Node::MODE_PERM), &last_part, parent.0, ctime.as_secs(), ctime.subsec_nanos())?;
                         node.1.uid = uid;
                         node.1.gid = gid;
                         fs.write_at(node.0, &node.1)?;
