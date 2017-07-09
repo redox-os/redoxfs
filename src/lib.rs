@@ -1,6 +1,5 @@
 #![crate_name="redoxfs"]
 #![crate_type="lib"]
-#![feature(associated_consts)]
 
 #![deny(warnings)]
 
