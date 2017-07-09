@@ -95,9 +95,14 @@ impl Resource for DirResource {
             st_dev: 0, // TODO
             st_ino: node.0,
             st_mode: node.1.mode,
+            st_nlink: 1,
             st_uid: node.1.uid,
             st_gid: node.1.gid,
             st_size: fs.node_len(self.block)?,
+            st_mtime: node.1.mtime,
+            st_mtime_nsec: node.1.mtime_nsec,
+            st_ctime: node.1.ctime,
+            st_ctime_nsec: node.1.ctime_nsec,
             ..Default::default()
         };
 
@@ -205,9 +210,14 @@ impl Resource for FileResource {
             st_dev: 0, // TODO
             st_ino: node.0,
             st_mode: node.1.mode,
+            st_nlink: 1,
             st_uid: node.1.uid,
             st_gid: node.1.gid,
             st_size: fs.node_len(self.block)?,
+            st_mtime: node.1.mtime,
+            st_mtime_nsec: node.1.mtime_nsec,
+            st_ctime: node.1.ctime,
+            st_ctime_nsec: node.1.ctime_nsec,
             ..Default::default()
         };
 
