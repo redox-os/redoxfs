@@ -1,7 +1,6 @@
 use redoxfs::FileSystem;
 
 use std::cmp::{min, max};
-use std::mem;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::TimeSpec;
