@@ -190,7 +190,7 @@ impl Resource for FileResource {
         match cmd {
             F_GETFL => Ok(self.flags),
             F_SETFL => {
-                self.flags = arg & ! O_ACCMODE;
+                self.flags = (self.flags & O_ACCMODE) | (arg & ! O_ACCMODE);
                 Ok(0)
             },
             _ => Err(Error::new(EINVAL))
