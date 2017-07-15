@@ -269,16 +269,6 @@ impl Scheme for FileScheme {
                         node.1.gid = gid;
                         fs.write_at(node.0, &node.1)?;
 
-                        if (flags & O_ACCMODE == O_RDONLY || flags & O_ACCMODE == O_RDWR) && ! node.1.permission(uid, gid, Node::MODE_READ) {
-                            // println!("file not readable {:o}", node.1.mode);
-                            return Err(Error::new(EACCES));
-                        }
-
-                        if (flags & O_ACCMODE == O_WRONLY || flags & O_ACCMODE == O_RDWR) && ! node.1.permission(uid, gid, Node::MODE_WRITE) {
-                            // println!("file not writable {:o}", node.1.mode);
-                            return Err(Error::new(EACCES));
-                        }
-
                         if dir {
                             Box::new(DirResource::new(path.to_string(), node.0, Vec::new()))
                         } else {
