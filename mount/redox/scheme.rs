@@ -371,8 +371,8 @@ impl Scheme for FileScheme {
                 }
 
                 if ! child.1.is_dir() {
-                    if ! child.1.permission(uid, gid, Node::MODE_WRITE) {
-                        // println!("file not writable {:o}", parent.1.mode);
+                    if child.1.uid != uid {
+                        // println!("file not owned by current user {}", parent.1.uid);
                         return Err(Error::new(EACCES));
                     }
 
