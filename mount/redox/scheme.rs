@@ -31,6 +31,32 @@ impl FileScheme {
     }
 }
 
+fn resolve_symlink(fs: &mut FileSystem, name: &str, uid: u32, gid: u32, nodes: &mut Vec<(u64, Node)>, url: &[u8], node: (u64, Node)) -> Result<Vec<u8>> {
+    let mut node = node;
+    for _ in 1..10 { // XXX What should the limit be?
+        let mut buf = [0; 4096];
+        let count = fs.read_node(node.0, 0, &mut buf)?;
+        // XXX Relative paths
+        let scheme = format!("{}:", name);
+        let canon = canonicalize(format!("{}{}", scheme, str::from_utf8(url).unwrap()).as_bytes(), &buf[0..count]);
+        let path = str::from_utf8(&canon[scheme.len()..]).unwrap_or("").trim_matches('/');
+        if let Some(next_node) = path_nodes(fs, path, uid, gid, nodes)? {
+            if !next_node.1.is_symlink() {
+                if canon.starts_with(scheme.as_bytes()) {
+                    return Ok(canon[scheme.len()..].to_vec());
+                } else {
+                    // TODO: Find way to support symlink to another scheme
+                    return Err(Error::new(ENOENT));
+                }
+            }
+            node = next_node;
+        } else {
+            return Err(Error::new(ENOENT));
+        }
+    }
+    Err(Error::new(ELOOP))
+}
+
 fn path_nodes(fs: &mut FileSystem, path: &str, uid: u32, gid: u32, nodes: &mut Vec<(u64, Node)>) -> Result<Option<(u64, Node)>> {
     let mut parts = path.split('/').filter(|part| ! part.is_empty());
     let mut part_opt = None;
@@ -181,30 +207,9 @@ impl Scheme for FileScheme {
                     return Err(Error::new(EACCES));
                 }
             } else if node.1.is_symlink() && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW) && flags & O_SYMLINK != O_SYMLINK {
-                let mut node = node;
-                for _ in 1..10 { // XXX What should the limit be?
-                    let mut buf = [0; 4096];
-                    let count = fs.read_node(node.0, 0, &mut buf)?;
-                    // XXX Relative paths
-                    let scheme = format!("{}:", self.name);
-                    let canon = canonicalize(format!("{}{}", scheme, str::from_utf8(url).unwrap()).as_bytes(), &buf[0..count]);
-                    let path = str::from_utf8(&canon[scheme.len()..]).unwrap_or("").trim_matches('/');
-                    if let Some(next_node) = path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
-                        if !next_node.1.is_symlink() {
-                            if canon.starts_with(scheme.as_bytes()) {
-                                drop(fs);
-                                return self.open(&canon[scheme.len()..], flags, uid, gid);
-                            } else {
-                                // TODO: Find way to support symlink to another scheme
-                                return Err(Error::new(ENOENT));
-                            }
-                        }
-                        node = next_node;
-                    } else {
-                        return Err(Error::new(ENOENT));
-                    }
-                }
-                return Err(Error::new(ELOOP));
+                let resolved = resolve_symlink(&mut fs, &self.name, uid, gid, &mut nodes, url, node)?;
+                drop(fs);
+                return self.open(&resolved, flags, uid, gid);
             } else if !node.1.is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                   return Err(Error::new(EINVAL));
             } else {
