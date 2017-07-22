@@ -402,7 +402,7 @@ impl Scheme for FileScheme {
         // println!("Dup {}", old_id);
 
         if ! buf.is_empty() {
-            return Err(Error::new(ENOENT));
+            return Err(Error::new(EINVAL));
         }
 
         let mut files = self.files.lock();
