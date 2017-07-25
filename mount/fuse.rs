@@ -136,7 +136,7 @@ impl Filesystem for Fuse {
 
         if let Some(mtime) = mtime {
             match self.fs.node(block) {
-                Ok(mut node) => if mtime.sec as u64 > node.1.mtime || (mtime.sec as u64 == node.1.mtime && mtime.nsec as u32 > node.1.mtime_nsec) {
+                Ok(mut node) => {
                     node.1.mtime = mtime.sec as u64;
                     node.1.mtime_nsec = mtime.nsec as u32;
                     if let Err(err) = self.fs.write_at(node.0, &node.1) {
