@@ -197,20 +197,32 @@ impl Filesystem for Fuse {
         let mut children = Vec::new();
         match self.fs.child_nodes(&mut children, parent_block) {
             Ok(()) => {
+                let mut i;
+                let skip;
                 if offset == 0 {
-                    let mut i = 0;
+                    skip = 0;
+                    i = 0;
                     reply.add(parent_block - self.fs.header.0, i, FileType::Directory, ".");
                     i += 1;
                     reply.add(parent_block - self.fs.header.0, i, FileType::Directory, "..");
                     i += 1;
-                    for child in children.iter() {
-                        reply.add(child.0 - self.fs.header.0, i, if child.1.is_dir() {
-                            FileType::Directory
-                        } else {
-                            FileType::RegularFile
-                        }, child.1.name().unwrap());
-                        i += 1;
+                } else {
+                    i = offset + 1;
+                    skip = offset as usize - 1;
+                }
+
+                for child in children.iter().skip(skip) {
+                    let full = reply.add(child.0 - self.fs.header.0, i, if child.1.is_dir() {
+                        FileType::Directory
+                    } else {
+                        FileType::RegularFile
+                    }, child.1.name().unwrap());
+
+                    if full {
+                        break;
                     }
+
+                    i += 1;
                 }
                 reply.ok();
             },
