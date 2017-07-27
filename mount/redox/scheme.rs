@@ -31,33 +31,73 @@ impl FileScheme {
     }
 }
 
-fn path_nodes(fs: &mut FileSystem, path: &str, uid: u32, gid: u32, nodes: &mut Vec<(u64, Node)>) -> Result<Option<(u64, Node)>> {
-    let mut parts = path.split('/').filter(|part| ! part.is_empty());
-    let mut part_opt = None;
-    let mut block = fs.header.1.root;
-    loop {
-        let node_res = match part_opt {
-            None => fs.node(block),
-            Some(part) => fs.find_node(part, block),
-        };
+impl FileScheme {
+    fn resolve_symlink(&self, fs: &mut FileSystem, uid: u32, gid: u32, url: &[u8], node: (u64, Node), nodes: &mut Vec<(u64, Node)>) -> Result<Vec<u8>> {
+        let mut node = node;
+        for _ in 1..10 { // XXX What should the limit be?
+            let mut buf = [0; 4096];
+            let count = fs.read_node(node.0, 0, &mut buf)?;
+            let scheme = format!("{}:", &self.name);
+            let canon = canonicalize(&format!("{}{}", scheme, str::from_utf8(url).unwrap()).as_bytes(), &buf[0..count]);
+            let path = str::from_utf8(&canon[scheme.len()..]).unwrap_or("").trim_matches('/');
+            nodes.clear();
+            if let Some(next_node) = self.path_nodes(fs, path, uid, gid, nodes)? {
+                if !next_node.1.is_symlink() {
+                    if canon.starts_with(scheme.as_bytes()) {
+                        nodes.push(next_node);
+                        return Ok(canon[scheme.len()..].to_vec());
+                    } else {
+                        // TODO: Find way to support symlink to another scheme
+                        return Err(Error::new(ENOENT));
+                    }
+                }
+                node = next_node;
+            } else {
+                return Err(Error::new(ENOENT));
+            }
+        }
+        Err(Error::new(ELOOP))
+    }
 
-        part_opt = parts.next();
-        if part_opt.is_some() {
-            let node = node_res?;
-            if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
-                return Err(Error::new(EACCES));
-            }
-            if ! node.1.is_dir() {
-                return Err(Error::new(ENOTDIR));
-            }
-            block = node.0;
-            nodes.push(node);
-        } else {
-            match node_res {
-                Ok(node) => return Ok(Some(node)),
-                Err(err) => match err.errno {
-                    ENOENT => return Ok(None),
-                    _ => return Err(err)
+    fn path_nodes(&self, fs: &mut FileSystem, path: &str, uid: u32, gid: u32, nodes: &mut Vec<(u64, Node)>) -> Result<Option<(u64, Node)>> {
+        let mut parts = path.split('/').filter(|part| ! part.is_empty());
+        let mut part_opt = None;
+        let mut block = fs.header.1.root;
+        loop {
+            let node_res = match part_opt {
+                None => fs.node(block),
+                Some(part) => fs.find_node(part, block),
+            };
+
+            part_opt = parts.next();
+            if part_opt.is_some() {
+                let node = node_res?;
+                if ! node.1.permission(uid, gid, Node::MODE_EXEC) {
+                    return Err(Error::new(EACCES));
+                }
+                if node.1.is_symlink() {
+                    let mut url = Vec::new();
+                    url.extend_from_slice(self.name.as_bytes());
+                    url.push(b':');
+                    for i in nodes.iter() {
+                        url.push(b'/');
+                        url.extend_from_slice(&i.1.name);
+                    }
+                    self.resolve_symlink(fs, uid, gid, &url, node, nodes)?;
+                    block = nodes.last().unwrap().0;
+                } else if ! node.1.is_dir() {
+                    return Err(Error::new(ENOTDIR));
+                } else {
+                    block = node.0;
+                    nodes.push(node);
+                }
+            } else {
+                match node_res {
+                    Ok(node) => return Ok(Some(node)),
+                    Err(err) => match err.errno {
+                        ENOENT => return Ok(None),
+                        _ => return Err(err)
+                    }
                 }
             }
         }
@@ -144,7 +184,7 @@ impl Scheme for FileScheme {
         let mut fs = self.fs.borrow_mut();
 
         let mut nodes = Vec::new();
-        let node_opt = path_nodes(&mut fs, path, uid, gid, &mut nodes)?;
+        let node_opt = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)?;
         let resource: Box<Resource> = match node_opt {
             Some(node) => if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
                 return Err(Error::new(EEXIST));
@@ -180,31 +220,11 @@ impl Scheme for FileScheme {
                     // println!("dir not opened with O_RDONLY");
                     return Err(Error::new(EACCES));
                 }
-            } else if node.1.is_symlink() && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW) && flags & O_SYMLINK != O_SYMLINK {
-                let mut node = node;
-                for _ in 1..10 { // XXX What should the limit be?
-                    let mut buf = [0; 4096];
-                    let count = fs.read_node(node.0, 0, &mut buf)?;
-                    // XXX Relative paths
-                    let scheme = format!("{}:", self.name);
-                    let canon = canonicalize(format!("{}{}", scheme, str::from_utf8(url).unwrap()).as_bytes(), &buf[0..count]);
-                    let path = str::from_utf8(&canon[scheme.len()..]).unwrap_or("").trim_matches('/');
-                    if let Some(next_node) = path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
-                        if !next_node.1.is_symlink() {
-                            if canon.starts_with(scheme.as_bytes()) {
-                                drop(fs);
-                                return self.open(&canon[scheme.len()..], flags, uid, gid);
-                            } else {
-                                // TODO: Find way to support symlink to another scheme
-                                return Err(Error::new(ENOENT));
-                            }
-                        }
-                        node = next_node;
-                    } else {
-                        return Err(Error::new(ENOENT));
-                    }
-                }
-                return Err(Error::new(ELOOP));
+            } else if node.1.is_symlink() && !(flags & O_STAT == O_STAT && flags  & O_NOFOLLOW == O_NOFOLLOW) && flags & O_SYMLINK != O_SYMLINK {
+                let mut resolve_nodes = Vec::new();
+                let resolved = self.resolve_symlink(&mut fs, uid, gid, url, node, &mut resolve_nodes)?;
+                drop(fs);
+                return self.open(&resolved, flags, uid, gid);
             } else if !node.1.is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                   return Err(Error::new(EINVAL));
             } else {
@@ -305,7 +325,7 @@ impl Scheme for FileScheme {
         let mut fs = self.fs.borrow_mut();
 
         let mut nodes = Vec::new();
-        if let Some(mut node) = path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
+        if let Some(mut node) = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
             if node.1.uid == uid || uid == 0 {
                 node.1.mode = (node.1.mode & ! MODE_PERM) | (mode & MODE_PERM);
                 fs.write_at(node.0, &node.1)?;
@@ -326,7 +346,7 @@ impl Scheme for FileScheme {
         let mut fs = self.fs.borrow_mut();
 
         let mut nodes = Vec::new();
-        if let Some(child) = path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
+        if let Some(child) = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
             if let Some(parent) = nodes.last() {
                 if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
                     // println!("dir not writable {:o}", parent.1.mode);
@@ -363,7 +383,7 @@ impl Scheme for FileScheme {
         let mut fs = self.fs.borrow_mut();
 
         let mut nodes = Vec::new();
-        if let Some(child) = path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
+        if let Some(child) = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)? {
             if let Some(parent) = nodes.last() {
                 if ! parent.1.permission(uid, gid, Node::MODE_WRITE) {
                     // println!("dir not writable {:o}", parent.1.mode);
