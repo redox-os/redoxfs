@@ -265,6 +265,7 @@ impl FileSystem {
                 }
             }
 
+            self.node_set_len(node.0, 0)?;
             self.remove_blocks(node.0, 1, parent_block)?;
             self.write_at(node.0, &Node::default())?;
 
@@ -331,7 +332,11 @@ impl FileSystem {
         let mut node = self.node(block)?;
         for mut extent in node.1.extents.iter_mut() {
             if extent.length > length {
-                //TODO: self.deallocate(block, 512)?;
+                let start = (length + 511)/512;
+                let end = (extent.length + 511)/512
+                if end > start {
+                    self.deallocate(extent.block + start, (end - start) * 512)?;
+                }
                 extent.length = length;
                 changed = true;
                 length = 0;
