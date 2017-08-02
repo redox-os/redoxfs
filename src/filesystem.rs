@@ -185,7 +185,12 @@ impl FileSystem {
             Ok(())
         } else {
             if parent.1.next == 0 {
-                parent.1.next = self.allocate(1)?;
+                let next = self.allocate(1)?;
+                // Could be mutated by self.allocate if free block
+                if parent.0 == self.header.1.free {
+                    self.read_at(parent.0, &mut parent.1)?;
+                }
+                parent.1.next = next;
                 self.write_at(parent.0, &parent.1)?;
                 self.write_at(parent.1.next, &Node::default())?;
             }
