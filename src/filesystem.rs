@@ -333,7 +333,7 @@ impl FileSystem {
         for mut extent in node.1.extents.iter_mut() {
             if extent.length > length {
                 let start = (length + 511)/512;
-                let end = (extent.length + 511)/512
+                let end = (extent.length + 511)/512;
                 if end > start {
                     self.deallocate(extent.block + start, (end - start) * 512)?;
                 }
