@@ -74,7 +74,7 @@ impl FileSystem {
         let free_block = self.header.1.free;
         let mut free = self.node(free_block)?;
         let mut block_option = None;
-        for mut extent in free.1.extents.iter_mut() {
+        for extent in free.1.extents.iter_mut() {
             if extent.length/512 >= length {
                 block_option = Some(extent.block);
                 extent.length -= length * 512;
@@ -159,7 +159,7 @@ impl FileSystem {
 
         let mut inserted = false;
         let mut parent = self.node(parent_block)?;
-        for mut extent in parent.1.extents.iter_mut() {
+        for extent in parent.1.extents.iter_mut() {
             if extent.length == 0 {
                 //New extent
                 inserted = true;
@@ -220,7 +220,7 @@ impl FileSystem {
         let mut removed = false;
         let mut replace_option = None;
         let mut parent = self.node(parent_block)?;
-        for mut extent in parent.1.extents.iter_mut() {
+        for extent in parent.1.extents.iter_mut() {
             if block >= extent.block && block + length <= extent.block + extent.length/512 {
                 //Inside
                 removed = true;
@@ -291,7 +291,7 @@ impl FileSystem {
         let mut changed = false;
 
         let mut node = self.node(block)?;
-        for mut extent in node.1.extents.iter_mut() {
+        for extent in node.1.extents.iter_mut() {
             if extent.length >= length {
                 length = 0;
                 break;
@@ -335,7 +335,7 @@ impl FileSystem {
         let mut changed = false;
 
         let mut node = self.node(block)?;
-        for mut extent in node.1.extents.iter_mut() {
+        for extent in node.1.extents.iter_mut() {
             if extent.length > length {
                 let start = (length + 511)/512;
                 let end = (extent.length + 511)/512;
@@ -420,7 +420,7 @@ impl FileSystem {
                 self.read_at(block, &mut sector)?;
 
                 let sector_size = min(sector.len() as u64, length) as usize;
-                for (s_b, mut b) in sector[byte_offset..sector_size].iter().zip(buf[i..].iter_mut()) {
+                for (s_b, b) in sector[byte_offset..sector_size].iter().zip(buf[i..].iter_mut()) {
                     *b = *s_b;
                     i += 1;
                 }
@@ -446,7 +446,7 @@ impl FileSystem {
                 self.read_at(block, &mut sector)?;
 
                 let sector_size = min(sector.len() as u64, length) as usize;
-                for (s_b, mut b) in sector[..sector_size].iter().zip(buf[i..].iter_mut()) {
+                for (s_b, b) in sector[..sector_size].iter().zip(buf[i..].iter_mut()) {
                     *b = *s_b;
                     i += 1;
                 }
@@ -481,7 +481,7 @@ impl FileSystem {
                 self.read_at(block, &mut sector)?;
 
                 let sector_size = min(sector.len() as u64, length) as usize;
-                for (mut s_b, b) in sector[byte_offset..sector_size].iter_mut().zip(buf[i..].iter()) {
+                for (s_b, b) in sector[byte_offset..sector_size].iter_mut().zip(buf[i..].iter()) {
                     *s_b = *b;
                     i += 1;
                 }
@@ -509,7 +509,7 @@ impl FileSystem {
                 self.read_at(block, &mut sector)?;
 
                 let sector_size = min(sector.len() as u64, length) as usize;
-                for (mut s_b, b) in sector[..sector_size].iter_mut().zip(buf[i..].iter()) {
+                for (s_b, b) in sector[..sector_size].iter_mut().zip(buf[i..].iter()) {
                     *s_b = *b;
                     i += 1;
                 }

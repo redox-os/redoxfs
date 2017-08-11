@@ -442,7 +442,7 @@ impl Scheme for FileScheme {
     fn read(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let mut files = self.files.lock();
-        if let Some(mut file) = files.get_mut(&id) {
+        if let Some(file) = files.get_mut(&id) {
             file.read(buf, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
@@ -452,7 +452,7 @@ impl Scheme for FileScheme {
     fn write(&self, id: usize, buf: &[u8]) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let mut files = self.files.lock();
-        if let Some(mut file) = files.get_mut(&id) {
+        if let Some(file) = files.get_mut(&id) {
             file.write(buf, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
@@ -462,7 +462,7 @@ impl Scheme for FileScheme {
     fn seek(&self, id: usize, pos: usize, whence: usize) -> Result<usize> {
         // println!("Seek {}, {} {}", id, pos, whence);
         let mut files = self.files.lock();
-        if let Some(mut file) = files.get_mut(&id) {
+        if let Some(file) = files.get_mut(&id) {
             file.seek(pos, whence, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
@@ -471,7 +471,7 @@ impl Scheme for FileScheme {
 
     fn fcntl(&self, id: usize, cmd: usize, arg: usize) -> Result<usize> {
         let mut files = self.files.lock();
-        if let Some(mut file) = files.get_mut(&id) {
+        if let Some(file) = files.get_mut(&id) {
             file.fcntl(cmd, arg)
         } else {
             Err(Error::new(EBADF))
@@ -536,7 +536,7 @@ impl Scheme for FileScheme {
     fn fsync(&self, id: usize) -> Result<usize> {
         // println!("Fsync {}", id);
         let mut files = self.files.lock();
-        if let Some(mut file) = files.get_mut(&id) {
+        if let Some(file) = files.get_mut(&id) {
             file.sync()
         } else {
             Err(Error::new(EBADF))
@@ -546,7 +546,7 @@ impl Scheme for FileScheme {
     fn ftruncate(&self, id: usize, len: usize) -> Result<usize> {
         // println!("Ftruncate {}, {}", id, len);
         let mut files = self.files.lock();
-        if let Some(mut file) = files.get_mut(&id) {
+        if let Some(file) = files.get_mut(&id) {
             file.truncate(len, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
@@ -556,7 +556,7 @@ impl Scheme for FileScheme {
     fn futimens(&self, id: usize, times: &[TimeSpec]) -> Result<usize> {
         // println!("Futimens {}, {}", id, times.len());
         let mut files = self.files.lock();
-        if let Some(mut file) = files.get_mut(&id) {
+        if let Some(file) = files.get_mut(&id) {
             file.utimens(times, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))

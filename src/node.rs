@@ -47,7 +47,7 @@ impl Node {
 
     pub fn new(mode: u16, name: &str, parent: u64, ctime: u64, ctime_nsec: u32) -> Node {
         let mut bytes = [0; 222];
-        for (mut b, c) in bytes.iter_mut().zip(name.bytes()) {
+        for (b, c) in bytes.iter_mut().zip(name.bytes()) {
             *b = c;
         }
 
