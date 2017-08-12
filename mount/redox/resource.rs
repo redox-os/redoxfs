@@ -4,7 +4,7 @@ use std::cmp::{min, max};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::TimeSpec;
-use syscall::error::{Error, Result, EBADF, EINVAL};
+use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR};
 use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL};
 use syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END};
 
@@ -24,12 +24,12 @@ pub trait Resource {
 pub struct DirResource {
     path: String,
     block: u64,
-    data: Vec<u8>,
+    data: Option<Vec<u8>>,
     seek: usize,
 }
 
 impl DirResource {
-    pub fn new(path: String, block: u64, data: Vec<u8>) -> DirResource {
+    pub fn new(path: String, block: u64, data: Option<Vec<u8>>) -> DirResource {
         DirResource {
             path: path,
             block: block,
@@ -50,9 +50,10 @@ impl Resource for DirResource {
     }
 
     fn read(&mut self, buf: &mut [u8], _fs: &mut FileSystem) -> Result<usize> {
+        let data = self.data.as_ref().ok_or(Error::new(EISDIR))?;
         let mut i = 0;
-        while i < buf.len() && self.seek < self.data.len() {
-            buf[i] = self.data[self.seek];
+        while i < buf.len() && self.seek < data.len() {
+            buf[i] = data[self.seek];
             i += 1;
             self.seek += 1;
         }
@@ -64,10 +65,11 @@ impl Resource for DirResource {
     }
 
     fn seek(&mut self, offset: usize, whence: usize, _fs: &mut FileSystem) -> Result<usize> {
+        let data = self.data.as_ref().ok_or(Error::new(EBADF))?;
         self.seek = match whence {
-            SEEK_SET => max(0, min(self.data.len() as isize, offset as isize)) as usize,
-            SEEK_CUR => max(0, min(self.data.len() as isize, self.seek as isize + offset as isize)) as usize,
-            SEEK_END => max(0, min(self.data.len() as isize, self.data.len() as isize + offset as isize)) as usize,
+            SEEK_SET => max(0, min(data.len() as isize, offset as isize)) as usize,
+            SEEK_CUR => max(0, min(data.len() as isize, self.seek as isize + offset as isize)) as usize,
+            SEEK_END => max(0, min(data.len() as isize, data.len() as isize + offset as isize)) as usize,
             _ => return Err(Error::new(EINVAL))
         };
 

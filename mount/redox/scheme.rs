@@ -208,12 +208,12 @@ impl Scheme for FileScheme {
                         }
                     }
 
-                    Box::new(DirResource::new(path.to_string(), node.0, data))
+                    Box::new(DirResource::new(path.to_string(), node.0, Some(data)))
                 } else if flags & O_WRONLY == O_WRONLY {
                     // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
                     return Err(Error::new(EISDIR));
                 } else {
-                    Box::new(DirResource::new(path.to_string(), node.0, Vec::new()))
+                    Box::new(DirResource::new(path.to_string(), node.0, None))
                 }
             } else if node.1.is_symlink() && !(flags & O_STAT == O_STAT && flags  & O_NOFOLLOW == O_NOFOLLOW) && flags & O_SYMLINK != O_SYMLINK {
                 let mut resolve_nodes = Vec::new();
@@ -285,7 +285,7 @@ impl Scheme for FileScheme {
                         fs.write_at(node.0, &node.1)?;
 
                         if dir {
-                            Box::new(DirResource::new(path.to_string(), node.0, Vec::new()))
+                            Box::new(DirResource::new(path.to_string(), node.0, None))
                         } else {
                             let seek = if flags & O_APPEND == O_APPEND {
                                 fs.node_len(node.0)?
