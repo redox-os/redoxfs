@@ -189,11 +189,6 @@ impl Scheme for FileScheme {
             Some(node) => if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
                 return Err(Error::new(EEXIST));
             } else if node.1.is_dir() {
-                if flags & O_STAT != O_STAT && flags & O_DIRECTORY != O_DIRECTORY {
-                    // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
-                    return Err(Error::new(EISDIR));
-                }
-
                 if flags & O_ACCMODE == O_RDONLY {
                     if ! node.1.permission(uid, gid, Node::MODE_READ) {
                         // println!("dir not readable {:o}", node.1.mode);
@@ -213,12 +208,12 @@ impl Scheme for FileScheme {
                         }
                     }
 
-                    Box::new(DirResource::new(path.to_string(), node.0, data))
-                } else if flags & O_STAT == O_STAT {
-                    Box::new(DirResource::new(path.to_string(), node.0, Vec::new()))
+                    Box::new(DirResource::new(path.to_string(), node.0, Some(data)))
+                } else if flags & O_WRONLY == O_WRONLY {
+                    // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
+                    return Err(Error::new(EISDIR));
                 } else {
-                    // println!("dir not opened with O_RDONLY");
-                    return Err(Error::new(EACCES));
+                    Box::new(DirResource::new(path.to_string(), node.0, None))
                 }
             } else if node.1.is_symlink() && !(flags & O_STAT == O_STAT && flags  & O_NOFOLLOW == O_NOFOLLOW) && flags & O_SYMLINK != O_SYMLINK {
                 let mut resolve_nodes = Vec::new();
@@ -290,7 +285,7 @@ impl Scheme for FileScheme {
                         fs.write_at(node.0, &node.1)?;
 
                         if dir {
-                            Box::new(DirResource::new(path.to_string(), node.0, Vec::new()))
+                            Box::new(DirResource::new(path.to_string(), node.0, None))
                         } else {
                             let seek = if flags & O_APPEND == O_APPEND {
                                 fs.node_len(node.0)?
