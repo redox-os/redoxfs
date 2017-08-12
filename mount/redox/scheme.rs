@@ -189,7 +189,7 @@ impl Scheme for FileScheme {
             Some(node) => if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
                 return Err(Error::new(EEXIST));
             } else if node.1.is_dir() {
-                if flags & O_ACCMODE == O_RDONLY && flags & O_DIRECTORY == O_DIRECTORY {
+                if flags & O_ACCMODE == O_RDONLY {
                     if ! node.1.permission(uid, gid, Node::MODE_READ) {
                         // println!("dir not readable {:o}", node.1.mode);
                         return Err(Error::new(EACCES));
@@ -209,7 +209,7 @@ impl Scheme for FileScheme {
                     }
 
                     Box::new(DirResource::new(path.to_string(), node.0, data))
-                } else if flags & O_RDONLY == O_RDONLY || flags & O_WRONLY == O_WRONLY {
+                } else if flags & O_WRONLY == O_WRONLY {
                     // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
                     return Err(Error::new(EISDIR));
                 } else {
