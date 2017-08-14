@@ -253,7 +253,7 @@ impl Scheme for FileScheme {
                     0
                 };
 
-                Box::new(FileResource::new(path.to_string(), node.0, flags, seek))
+                Box::new(FileResource::new(path.to_string(), node.0, flags, seek, uid))
             },
             None => if flags & O_CREAT == O_CREAT {
                 let mut last_part = String::new();
@@ -293,7 +293,7 @@ impl Scheme for FileScheme {
                                 0
                             };
 
-                            Box::new(FileResource::new(path.to_string(), node.0, flags, seek))
+                            Box::new(FileResource::new(path.to_string(), node.0, flags, seek, uid))
                         }
                     } else {
                         return Err(Error::new(EPERM));
