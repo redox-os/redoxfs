@@ -131,15 +131,17 @@ pub struct FileResource {
     block: u64,
     flags: usize,
     seek: u64,
+    uid: u32,
 }
 
 impl FileResource {
-    pub fn new(path: String, block: u64, flags: usize, seek: u64) -> FileResource {
+    pub fn new(path: String, block: u64, flags: usize, seek: u64, uid: u32) -> FileResource {
         FileResource {
             path: path,
             block: block,
             flags: flags,
             seek: seek,
+            uid: uid,
         }
     }
 }
@@ -151,6 +153,7 @@ impl Resource for FileResource {
             block: self.block,
             flags: self.flags,
             seek: self.seek,
+            uid: self.uid,
         }))
     }
 
@@ -246,9 +249,10 @@ impl Resource for FileResource {
     }
 
     fn utimens(&mut self, times: &[TimeSpec], fs: &mut FileSystem) -> Result<usize> {
-        if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
+        let mut node = fs.node(self.block)?;
+
+        if node.1.uid == self.uid || self.uid == 0 {
             if let Some(mtime) = times.get(1) {
-                let mut node = fs.node(self.block)?;
 
                 node.1.mtime = mtime.tv_sec as u64;
                 node.1.mtime_nsec = mtime.tv_nsec as u32;
