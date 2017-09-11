@@ -3,7 +3,7 @@
 extern crate redoxfs;
 extern crate syscall;
 
-use std::{env, process, str, time};
+use std::{env, process, time};
 
 use redoxfs::FileSystem;
 
