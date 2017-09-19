@@ -20,7 +20,7 @@ name = "redoxfs-mkfs"
 path = "mkfs/main.rs"
 
 [dependencies]
-spin = "0.4"
+spin = { git = "https://github.com/messense/spin-rs", rev = "020f1b3f" }
 redox_syscall = "0.1"
 
 [target.'cfg(unix)'.dependencies]
