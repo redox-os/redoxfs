@@ -24,6 +24,6 @@ spin = { git = "https://github.com/messense/spin-rs", rev = "020f1b3f" }
 redox_syscall = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-fuse = "0.2"
+fuse = "0.3"
 libc = "0.2"
 time = "0.1"

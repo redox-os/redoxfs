@@ -1,3 +1,4 @@
+use std::io;
 use std::fs::File;
 use std::path::Path;
 
@@ -11,7 +12,7 @@ mod fuse;
 mod redox;
 
 #[cfg(all(unix, target_os = "macos"))]
-pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, mut write: File) {
+pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, mut write: File) -> io::Result<()> {
     use std::ffi::OsStr;
     use std::io::Write;
 
@@ -27,11 +28,11 @@ pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P,
         // be `root`, thus that we need to allow `root` to have access.
         OsStr::new("-o"),
         OsStr::new("defer_permissions"),
-    ]);
+    ])
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, mut write: File) {
+pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, mut write: File) -> io::Result<()> {
     use std::io::Write;
 
     let _ = write.write(&[0]);
@@ -39,10 +40,10 @@ pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P,
 
     fuse::mount(fuse::Fuse {
         fs: filesystem
-    }, mountpoint, &[]);
+    }, mountpoint, &[])
 }
 
 #[cfg(target_os = "redox")]
-pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, write: File) {
-    redox::mount(filesystem, mountpoint, write);
+pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, write: File) -> io::Result<()> {
+    redox::mount(filesystem, mountpoint, write)
 }

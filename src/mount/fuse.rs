@@ -1,8 +1,9 @@
 extern crate fuse;
 extern crate time;
 
-use std::path::Path;
+use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use disk::Disk;
@@ -54,7 +55,7 @@ fn node_attr(node: &(u64, Node)) -> FileAttr {
 }
 
 impl<D: Disk> Filesystem for Fuse<D> {
-    fn lookup(&mut self, _req: &Request, parent_block: u64, name: &Path, reply: ReplyEntry) {
+    fn lookup(&mut self, _req: &Request, parent_block: u64, name: &OsStr, reply: ReplyEntry) {
         match self.fs.find_node(name.to_str().unwrap(), parent_block) {
             Ok(node) => {
                 reply.entry(&TTL, &node_attr(&node), 0);
@@ -235,7 +236,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn create(&mut self, _req: &Request, parent_block: u64, name: &Path, mode: u32, flags: u32, reply: ReplyCreate) {
+    fn create(&mut self, _req: &Request, parent_block: u64, name: &OsStr, mode: u32, flags: u32, reply: ReplyCreate) {
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         match self.fs.create_node(Node::MODE_FILE | (mode as u16 & Node::MODE_PERM), name.to_str().unwrap(), parent_block, ctime.as_secs(), ctime.subsec_nanos()) {
             Ok(node) => {
@@ -248,7 +249,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn mkdir(&mut self, _req: &Request, parent_block: u64, name: &Path, mode: u32, reply: ReplyEntry) {
+    fn mkdir(&mut self, _req: &Request, parent_block: u64, name: &OsStr, mode: u32, reply: ReplyEntry) {
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         match self.fs.create_node(Node::MODE_DIR | (mode as u16 & Node::MODE_PERM), name.to_str().unwrap(), parent_block, ctime.as_secs(), ctime.subsec_nanos()) {
             Ok(node) => {
@@ -261,7 +262,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn rmdir(&mut self, _req: &Request, parent_block: u64, name: &Path, reply: ReplyEmpty) {
+    fn rmdir(&mut self, _req: &Request, parent_block: u64, name: &OsStr, reply: ReplyEmpty) {
         match self.fs.remove_node(Node::MODE_DIR, name.to_str().unwrap(), parent_block) {
             Ok(()) => {
                 reply.ok();
@@ -272,7 +273,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn unlink(&mut self, _req: &Request, parent_block: u64, name: &Path, reply: ReplyEmpty) {
+    fn unlink(&mut self, _req: &Request, parent_block: u64, name: &OsStr, reply: ReplyEmpty) {
         match self.fs.remove_node(Node::MODE_FILE, name.to_str().unwrap(), parent_block) {
             Ok(()) => {
                 reply.ok();
@@ -298,7 +299,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn symlink(&mut self, _req: &Request, parent_block: u64, name: &Path, link: &Path, reply: ReplyEntry) {
+    fn symlink(&mut self, _req: &Request, parent_block: u64, name: &OsStr, link: &Path, reply: ReplyEntry) {
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         match self.fs.create_node(Node::MODE_SYMLINK | 0o777, name.to_str().unwrap(), parent_block, ctime.as_secs(), ctime.subsec_nanos()) {
             Ok(node) => {

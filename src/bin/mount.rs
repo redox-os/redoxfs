@@ -61,9 +61,16 @@ fn main() {
                         Ok(filesystem) => {
                             println!("redoxfs: opened filesystem {}", path);
 
-                            if let Some(mountpoint) = env::args_os().nth(2) {
-                                mount(filesystem, &mountpoint, write);
-                                process::exit(0);
+                            if let Some(mountpoint) = env::args().nth(2) {
+                                match mount(filesystem, &mountpoint, write) {
+                                    Ok(()) => {
+                                        process::exit(0);
+                                    },
+                                    Err(err) => {
+                                        println!("redoxfs: failed to mount {} to {}: {}", path, mountpoint, err);
+                                        process::exit(1);
+                                    }
+                                }
                             } else {
                                 println!("redoxfs: no mount point provided");
                                 usage();
