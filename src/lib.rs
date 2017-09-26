@@ -5,16 +5,18 @@
 
 extern crate syscall;
 
-pub use self::disk::Disk;
+pub use self::disk::{Disk, DiskCache, DiskFile};
 pub use self::ex_node::ExNode;
 pub use self::extent::Extent;
 pub use self::filesystem::FileSystem;
 pub use self::header::Header;
+pub use self::mount::mount;
 pub use self::node::Node;
 
-pub mod disk;
-pub mod ex_node;
-pub mod extent;
-pub mod filesystem;
-pub mod header;
-pub mod node;
+mod disk;
+mod ex_node;
+mod extent;
+mod filesystem;
+mod header;
+mod mount;
+mod node;

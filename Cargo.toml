@@ -2,7 +2,7 @@
 name = "redoxfs"
 description = "The Redox Filesystem"
 repository = "https://github.com/redox-os/redoxfs"
-version = "0.1.2"
+version = "0.2.0"
 license-file = "LICENSE"
 readme = "README.md"
 authors = ["Jeremy Soller <jackpot51@gmail.com>"]
@@ -13,11 +13,11 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "redoxfs"
-path = "mount/main.rs"
+path = "src/bin/mount.rs"
 
 [[bin]]
 name = "redoxfs-mkfs"
-path = "mkfs/main.rs"
+path = "src/bin/mkfs.rs"
 
 [dependencies]
 spin = { git = "https://github.com/messense/spin-rs", rev = "020f1b3f" }
@@ -25,4 +25,5 @@ redox_syscall = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 fuse = "0.2"
+libc = "0.2"
 time = "0.1"

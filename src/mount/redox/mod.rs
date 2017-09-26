@@ -1,6 +1,5 @@
 extern crate spin;
 
-use redoxfs;
 use syscall::{Packet, Scheme};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -11,7 +10,7 @@ use self::scheme::FileScheme;
 pub mod resource;
 pub mod scheme;
 
-pub fn mount<P: AsRef<Path>>(filesystem: redoxfs::FileSystem, mountpoint: &P, mut write: File) {
+pub fn mount<P: AsRef<Path>>(filesystem: filesystem::FileSystem, mountpoint: &P, mut write: File) {
     let mountpoint = mountpoint.as_ref();
     match File::create(format!(":{}", mountpoint.display())) {
         Ok(mut socket) => {

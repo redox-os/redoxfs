@@ -5,25 +5,13 @@
 extern crate libc;
 
 extern crate redoxfs;
-extern crate syscall;
 
 use std::env;
 use std::fs::File;
 use std::os::unix::io::FromRawFd;
-use std::path::Path;
 use std::process;
 
-use cache::Cache;
-use image::Image;
-
-pub mod cache;
-pub mod image;
-
-#[cfg(unix)]
-pub mod fuse;
-
-#[cfg(target_os = "redox")]
-pub mod redox;
+use redoxfs::{DiskCache, DiskFile, mount};
 
 #[cfg(unix)]
 fn fork() -> isize {
@@ -33,38 +21,6 @@ fn fork() -> isize {
 #[cfg(unix)]
 fn pipe(pipes: &mut [i32; 2]) -> isize {
     unsafe { libc::pipe(pipes.as_mut_ptr()) as isize }
-}
-
-#[cfg(all(unix, target_os = "macos"))]
-fn mount<P: AsRef<Path>>(filesystem: redoxfs::FileSystem, mountpoint: &P, mut write: File) {
-    use std::ffi::OsStr;
-    use std::io::Write;
-
-    let _ = write.write(&[0]);
-    drop(write);
-
-    fuse::mount(fuse::Fuse {
-        fs: filesystem
-    }, mountpoint, &[
-        // One of the uses of this redoxfs fuse wrapper is to populate a filesystem
-        // while building the Redox OS kernel. This means that we need to write on
-        // a filesystem that belongs to `root`, which in turn means that we need to
-        // be `root`, thus that we need to allow `root` to have access.
-        OsStr::new("-o"),
-        OsStr::new("defer_permissions"),
-    ]);
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn mount<P: AsRef<Path>>(filesystem: redoxfs::FileSystem, mountpoint: &P, mut write: File) {
-    use std::io::Write;
-
-    let _ = write.write(&[0]);
-    drop(write);
-
-    fuse::mount(fuse::Fuse {
-        fs: filesystem
-    }, mountpoint, &[]);
 }
 
 #[cfg(target_os = "redox")]
@@ -100,8 +56,8 @@ fn main() {
 
             if let Some(path) = env::args().nth(1) {
                 //Open an existing image
-                match Image::open(&path).map(|image| Cache::new(image)) {
-                    Ok(disk) => match redoxfs::FileSystem::open(Box::new(disk)) {
+                match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
+                    Ok(disk) => match redoxfs::FileSystem::open(disk) {
                         Ok(filesystem) => {
                             println!("redoxfs: opened filesystem {}", path);
 

@@ -1,8 +1,7 @@
 use std::{cmp, ptr};
-
-use redoxfs::Disk;
-
 use syscall::error::Result;
+
+use disk::Disk;
 
 use self::lru_cache::LruCache;
 
@@ -15,21 +14,21 @@ fn copy_memory(src: &[u8], dest: &mut [u8]) -> usize {
     len
 }
 
-pub struct Cache<T> {
+pub struct DiskCache<T> {
     inner: T,
     cache: LruCache<u64, [u8; 512]>,
 }
 
-impl<T: Disk> Cache<T> {
+impl<T: Disk> DiskCache<T> {
     pub fn new(inner: T) -> Self {
-        Cache {
+        DiskCache {
             inner: inner,
             cache: LruCache::new(65536) // 32 MB cache
         }
     }
 }
 
-impl<T: Disk> Disk for Cache<T> {
+impl<T: Disk> Disk for DiskCache<T> {
     fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         // println!("Cache read at {}", block);
 

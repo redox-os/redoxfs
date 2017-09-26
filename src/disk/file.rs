@@ -1,41 +1,41 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
-
-use redoxfs::Disk;
 use syscall::error::{Error, Result, EIO};
+
+use disk::Disk;
 
 macro_rules! try_disk {
     ($expr:expr) => (match $expr {
         Ok(val) => val,
         Err(err) => {
-            println!("Disk I/O Error: {}", err);
+            eprintln!("Disk I/O Error: {}", err);
             return Err(Error::new(EIO));
         }
     })
 }
 
-pub struct Image {
+pub struct DiskFile {
     file: File
 }
 
-impl Image {
-    pub fn open(path: &str) -> Result<Image> {
+impl DiskFile {
+    pub fn open(path: &str) -> Result<DiskFile> {
         let file = try_disk!(OpenOptions::new().read(true).write(true).open(path));
-        Ok(Image {
+        Ok(DiskFile {
             file: file
         })
     }
 
-    pub fn create(path: &str, size: u64) -> Result<Image> {
+    pub fn create(path: &str, size: u64) -> Result<DiskFile> {
         let file = try_disk!(OpenOptions::new().read(true).write(true).create(true).open(path));
         try_disk!(file.set_len(size));
-        Ok(Image {
+        Ok(DiskFile {
             file: file
         })
     }
 }
 
-impl Disk for Image {
+impl Disk for DiskFile {
     fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         try_disk!(self.file.seek(SeekFrom::Start(block * 512)));
         let count = try_disk!(self.file.read(buffer));

@@ -5,15 +5,15 @@ use syscall::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENO
 use super::{Disk, ExNode, Extent, Header, Node};
 
 /// A file system
-pub struct FileSystem {
-    pub disk: Box<Disk>,
+pub struct FileSystem<D: Disk> {
+    pub disk: D,
     pub block: u64,
     pub header: (u64, Header)
 }
 
-impl FileSystem {
+impl<D: Disk> FileSystem<D> {
     /// Open a file system on a disk
-    pub fn open(mut disk: Box<Disk>) -> Result<Self> {
+    pub fn open(mut disk: D) -> Result<Self> {
         for block in 0..65536 {
             let mut header = (0, Header::default());
             disk.read_at(block + header.0, &mut header.1)?;
@@ -37,7 +37,7 @@ impl FileSystem {
     }
 
     /// Create a file system on a disk
-    pub fn create(mut disk: Box<Disk>, ctime: u64, ctime_nsec: u32) -> Result<Self> {
+    pub fn create(mut disk: D, ctime: u64, ctime_nsec: u32) -> Result<Self> {
         let size = disk.size()?;
 
         if size >= 4 * 512 {

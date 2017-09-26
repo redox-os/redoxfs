@@ -1,15 +1,10 @@
 #![deny(warnings)]
 
 extern crate redoxfs;
-extern crate syscall;
 
 use std::{env, process, time};
 
-use redoxfs::FileSystem;
-
-use image::Image;
-
-pub mod image;
+use redoxfs::{FileSystem, DiskFile};
 
 fn main() {
     let mut args = env::args();
@@ -17,8 +12,8 @@ fn main() {
         let ctime = time::SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
 
         //Open an existing image
-        match Image::open(&path) {
-            Ok(disk) => match FileSystem::create(Box::new(disk), ctime.as_secs(), ctime.subsec_nanos()) {
+        match DiskFile::open(&path) {
+            Ok(disk) => match FileSystem::create(disk, ctime.as_secs(), ctime.subsec_nanos()) {
                 Ok(filesystem) => {
                     println!("redoxfs-mkfs: created filesystem on {}, size {} MB", path, filesystem.header.1.size/1024/1024);
                 },
