@@ -22,7 +22,7 @@ path = "src/bin/mkfs.rs"
 doc = false
 
 [dependencies]
-spin = { git = "https://github.com/messense/spin-rs", rev = "020f1b3f" }
+spin = "0.4"
 redox_syscall = "0.1"
 
 [target.'cfg(unix)'.dependencies]
