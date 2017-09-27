@@ -14,10 +14,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "redoxfs"
 path = "src/bin/mount.rs"
+doc = false
 
 [[bin]]
 name = "redoxfs-mkfs"
 path = "src/bin/mkfs.rs"
+doc = false
 
 [dependencies]
 spin = { git = "https://github.com/messense/spin-rs", rev = "020f1b3f" }
