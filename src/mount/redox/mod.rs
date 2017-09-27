@@ -5,12 +5,14 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
+use disk::Disk;
+
 use self::scheme::FileScheme;
 
 pub mod resource;
 pub mod scheme;
 
-pub fn mount<P: AsRef<Path>>(filesystem: filesystem::FileSystem, mountpoint: &P, mut write: File) -> io::Result<()> {
+pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: filesystem::FileSystem<D>, mountpoint: &P, mut write: File) -> io::Result<()> {
     let mountpoint = mountpoint.as_ref();
     let mut socket = File::create(format!(":{}", mountpoint.display()))?;
 

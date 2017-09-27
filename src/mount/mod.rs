@@ -12,16 +12,10 @@ mod fuse;
 mod redox;
 
 #[cfg(all(unix, target_os = "macos"))]
-pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, mut write: File) -> io::Result<()> {
+pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, write: File) -> io::Result<()> {
     use std::ffi::OsStr;
-    use std::io::Write;
 
-    let _ = write.write(&[0]);
-    drop(write);
-
-    fuse::mount(fuse::Fuse {
-        fs: filesystem
-    }, mountpoint, &[
+    fuse::mount(filesystem, mountpoint, write, &[
         // One of the uses of this redoxfs fuse wrapper is to populate a filesystem
         // while building the Redox OS kernel. This means that we need to write on
         // a filesystem that belongs to `root`, which in turn means that we need to
@@ -32,15 +26,8 @@ pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P,
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, mut write: File) -> io::Result<()> {
-    use std::io::Write;
-
-    let _ = write.write(&[0]);
-    drop(write);
-
-    fuse::mount(fuse::Fuse {
-        fs: filesystem
-    }, mountpoint, &[])
+pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: FileSystem<D>, mountpoint: &P, write: File) -> io::Result<()> {
+    fuse::mount(filesystem, mountpoint, write, &[])
 }
 
 #[cfg(target_os = "redox")]
