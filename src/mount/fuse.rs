@@ -2,8 +2,7 @@ extern crate fuse;
 extern crate time;
 
 use std::ffi::OsStr;
-use std::fs::File;
-use std::io::{self, Write};
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,13 +18,12 @@ const TTL: Timespec = Timespec { sec: 1, nsec: 0 };                 // 1 second
 
 const NULL_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
 
-pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: filesystem::FileSystem<D>, mountpoint: &P, mut write: File, options: &[&OsStr]) -> io::Result<()> {
+pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: filesystem::FileSystem<D>, mountpoint: &P, mut callback: F, options: &[&OsStr]) -> io::Result<()> {
     let mut session = Session::new(Fuse {
         fs: filesystem
     }, mountpoint.as_ref(), options)?;
 
-    let _ = write.write(&[0]);
-    drop(write);
+    callback();
 
     session.run()
 }

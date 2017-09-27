@@ -4,6 +4,9 @@
 #[cfg(unix)]
 extern crate libc;
 
+#[cfg(target_os = "redox")]
+extern crate syscall;
+
 extern crate redoxfs;
 
 use std::env;
@@ -33,11 +36,6 @@ fn pipe(pipes: &mut [usize; 2]) -> isize {
     syscall::Error::mux(syscall::pipe2(pipes, 0)) as isize
 }
 
-#[cfg(target_os = "redox")]
-fn mount<P: AsRef<Path>>(filesystem: redoxfs::FileSystem, mountpoint: &P, write: File) {
-    redox::mount(filesystem, mountpoint, write);
-}
-
 fn usage() {
     println!("redoxfs [disk] [mountpoint]");
 }
@@ -62,13 +60,15 @@ fn main() {
                             println!("redoxfs: opened filesystem {}", path);
 
                             if let Some(mountpoint) = env::args().nth(2) {
-                                match mount(filesystem, &mountpoint, write) {
+                                match mount(filesystem, &mountpoint, || {
+                                    println!("redoxfs: mounted filesystem on {}:", mountpoint);
+                                    let _ = write.write(&[0]);
+                                }) {
                                     Ok(()) => {
                                         process::exit(0);
                                     },
                                     Err(err) => {
                                         println!("redoxfs: failed to mount {} to {}: {}", path, mountpoint, err);
-                                        process::exit(1);
                                     }
                                 }
                             } else {
@@ -82,7 +82,6 @@ fn main() {
                 }
 
                 let _ = write.write(&[1]);
-                drop(write);
                 process::exit(1);
             } else {
                 println!("redoxfs: no disk image provided");

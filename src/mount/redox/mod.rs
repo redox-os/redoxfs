@@ -6,20 +6,18 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 use disk::Disk;
+use filesystem::FileSystem;
 
 use self::scheme::FileScheme;
 
 pub mod resource;
 pub mod scheme;
 
-pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: filesystem::FileSystem<D>, mountpoint: &P, mut write: File) -> io::Result<()> {
+pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: &P, mut callback: F) -> io::Result<()> {
     let mountpoint = mountpoint.as_ref();
     let mut socket = File::create(format!(":{}", mountpoint.display()))?;
 
-    println!("redoxfs: mounted filesystem on {}:", mountpoint.display());
-
-    let _ = write.write(&[0]);
-    drop(write);
+    callback();
 
     let scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem);
     loop {
@@ -28,6 +26,4 @@ pub fn mount<D: Disk, P: AsRef<Path>>(filesystem: filesystem::FileSystem<D>, mou
         scheme.handle(&mut packet);
         socket.write(&packet).unwrap();
     }
-
-    Ok(())
 }

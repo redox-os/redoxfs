@@ -1,7 +1,3 @@
-use redox::resource::{Resource, DirResource, FileResource};
-use redox::spin::Mutex;
-
-use redoxfs::{FileSystem, Node};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::str;
@@ -13,15 +9,22 @@ use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOE
 use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK, O_NOFOLLOW};
 use syscall::scheme::Scheme;
 
-pub struct FileScheme {
+use disk::Disk;
+use filesystem::FileSystem;
+use node::Node;
+
+use super::resource::{Resource, DirResource, FileResource};
+use super::spin::Mutex;
+
+pub struct FileScheme<D: Disk> {
     name: String,
-    fs: RefCell<FileSystem>,
+    fs: RefCell<FileSystem<D>>,
     next_id: AtomicUsize,
-    files: Mutex<BTreeMap<usize, Box<Resource>>>
+    files: Mutex<BTreeMap<usize, Box<Resource<D>>>>
 }
 
-impl FileScheme {
-    pub fn new(name: String, fs: FileSystem) -> FileScheme {
+impl<D: Disk> FileScheme<D> {
+    pub fn new(name: String, fs: FileSystem<D>) -> FileScheme<D> {
         FileScheme {
             name: name,
             fs: RefCell::new(fs),
@@ -29,10 +32,8 @@ impl FileScheme {
             files: Mutex::new(BTreeMap::new())
         }
     }
-}
 
-impl FileScheme {
-    fn resolve_symlink(&self, fs: &mut FileSystem, uid: u32, gid: u32, url: &[u8], node: (u64, Node), nodes: &mut Vec<(u64, Node)>) -> Result<Vec<u8>> {
+    fn resolve_symlink(&self, fs: &mut FileSystem<D>, uid: u32, gid: u32, url: &[u8], node: (u64, Node), nodes: &mut Vec<(u64, Node)>) -> Result<Vec<u8>> {
         let mut node = node;
         for _ in 1..10 { // XXX What should the limit be?
             let mut buf = [0; 4096];
@@ -59,7 +60,7 @@ impl FileScheme {
         Err(Error::new(ELOOP))
     }
 
-    fn path_nodes(&self, fs: &mut FileSystem, path: &str, uid: u32, gid: u32, nodes: &mut Vec<(u64, Node)>) -> Result<Option<(u64, Node)>> {
+    fn path_nodes(&self, fs: &mut FileSystem<D>, path: &str, uid: u32, gid: u32, nodes: &mut Vec<(u64, Node)>) -> Result<Option<(u64, Node)>> {
         let mut parts = path.split('/').filter(|part| ! part.is_empty());
         let mut part_opt = None;
         let mut block = fs.header.1.root;
@@ -175,7 +176,7 @@ pub fn canonicalize(current: &[u8], path: &[u8]) -> Vec<u8> {
     }
 }
 
-impl Scheme for FileScheme {
+impl<D: Disk> Scheme for FileScheme<D> {
     fn open(&self, url: &[u8], flags: usize, uid: u32, gid: u32) -> Result<usize> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
@@ -185,7 +186,7 @@ impl Scheme for FileScheme {
 
         let mut nodes = Vec::new();
         let node_opt = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)?;
-        let resource: Box<Resource> = match node_opt {
+        let resource: Box<Resource<D>> = match node_opt {
             Some(node) => if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
                 return Err(Error::new(EEXIST));
             } else if node.1.is_dir() {

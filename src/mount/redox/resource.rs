@@ -1,5 +1,3 @@
-use redoxfs::FileSystem;
-
 use std::cmp::{min, max};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,17 +6,20 @@ use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR};
 use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL};
 use syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END};
 
-pub trait Resource {
-    fn dup(&self) -> Result<Box<Resource>>;
-    fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize>;
-    fn write(&mut self, buf: &[u8], fs: &mut FileSystem) -> Result<usize>;
-    fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem) -> Result<usize>;
+use disk::Disk;
+use filesystem::FileSystem;
+
+pub trait Resource<D: Disk> {
+    fn dup(&self) -> Result<Box<Resource<D>>>;
+    fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize>;
+    fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize>;
+    fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem<D>) -> Result<usize>;
     fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize>;
     fn path(&self, buf: &mut [u8]) -> Result<usize>;
-    fn stat(&self, _stat: &mut Stat, fs: &mut FileSystem) -> Result<usize>;
+    fn stat(&self, _stat: &mut Stat, fs: &mut FileSystem<D>) -> Result<usize>;
     fn sync(&mut self) -> Result<usize>;
-    fn truncate(&mut self, len: usize, fs: &mut FileSystem) -> Result<usize>;
-    fn utimens(&mut self, times: &[TimeSpec], fs: &mut FileSystem) -> Result<usize>;
+    fn truncate(&mut self, len: usize, fs: &mut FileSystem<D>) -> Result<usize>;
+    fn utimens(&mut self, times: &[TimeSpec], fs: &mut FileSystem<D>) -> Result<usize>;
 }
 
 pub struct DirResource {
@@ -39,8 +40,8 @@ impl DirResource {
     }
 }
 
-impl Resource for DirResource {
-    fn dup(&self) -> Result<Box<Resource>> {
+impl<D: Disk> Resource<D> for DirResource {
+    fn dup(&self) -> Result<Box<Resource<D>>> {
         Ok(Box::new(DirResource {
             path: self.path.clone(),
             block: self.block,
@@ -49,7 +50,7 @@ impl Resource for DirResource {
         }))
     }
 
-    fn read(&mut self, buf: &mut [u8], _fs: &mut FileSystem) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u8], _fs: &mut FileSystem<D>) -> Result<usize> {
         let data = self.data.as_ref().ok_or(Error::new(EISDIR))?;
         let mut i = 0;
         while i < buf.len() && self.seek < data.len() {
@@ -60,11 +61,11 @@ impl Resource for DirResource {
         Ok(i)
     }
 
-    fn write(&mut self, _buf: &[u8], _fs: &mut FileSystem) -> Result<usize> {
+    fn write(&mut self, _buf: &[u8], _fs: &mut FileSystem<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 
-    fn seek(&mut self, offset: usize, whence: usize, _fs: &mut FileSystem) -> Result<usize> {
+    fn seek(&mut self, offset: usize, whence: usize, _fs: &mut FileSystem<D>) -> Result<usize> {
         let data = self.data.as_ref().ok_or(Error::new(EBADF))?;
         self.seek = match whence {
             SEEK_SET => max(0, min(data.len() as isize, offset as isize)) as usize,
@@ -92,7 +93,7 @@ impl Resource for DirResource {
         Ok(i)
     }
 
-    fn stat(&self, stat: &mut Stat, fs: &mut FileSystem) -> Result<usize> {
+    fn stat(&self, stat: &mut Stat, fs: &mut FileSystem<D>) -> Result<usize> {
         let node = fs.node(self.block)?;
 
         *stat = Stat {
@@ -117,11 +118,11 @@ impl Resource for DirResource {
         Err(Error::new(EBADF))
     }
 
-    fn truncate(&mut self, _len: usize, _fs: &mut FileSystem) -> Result<usize> {
+    fn truncate(&mut self, _len: usize, _fs: &mut FileSystem<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 
-    fn utimens(&mut self, _times: &[TimeSpec], _fs: &mut FileSystem) -> Result<usize> {
+    fn utimens(&mut self, _times: &[TimeSpec], _fs: &mut FileSystem<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 }
@@ -146,8 +147,8 @@ impl FileResource {
     }
 }
 
-impl Resource for FileResource {
-    fn dup(&self) -> Result<Box<Resource>> {
+impl<D: Disk> Resource<D> for FileResource {
+    fn dup(&self) -> Result<Box<Resource<D>>> {
         Ok(Box::new(FileResource {
             path: self.path.clone(),
             block: self.block,
@@ -157,7 +158,7 @@ impl Resource for FileResource {
         }))
     }
 
-    fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_RDONLY {
             let count = fs.read_node(self.block, self.seek, buf)?;
             self.seek += count as u64;
@@ -167,7 +168,7 @@ impl Resource for FileResource {
         }
     }
 
-    fn write(&mut self, buf: &[u8], fs: &mut FileSystem) -> Result<usize> {
+    fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
             let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
             let count = fs.write_node(self.block, self.seek, buf, mtime.as_secs(), mtime.subsec_nanos())?;
@@ -178,7 +179,7 @@ impl Resource for FileResource {
         }
     }
 
-    fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem) -> Result<usize> {
+    fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem<D>) -> Result<usize> {
         let size = fs.node_len(self.block)?;
 
         self.seek = match whence {
@@ -214,7 +215,7 @@ impl Resource for FileResource {
         Ok(i)
     }
 
-    fn stat(&self, stat: &mut Stat, fs: &mut FileSystem) -> Result<usize> {
+    fn stat(&self, stat: &mut Stat, fs: &mut FileSystem<D>) -> Result<usize> {
         let node = fs.node(self.block)?;
 
         *stat = Stat {
@@ -239,7 +240,7 @@ impl Resource for FileResource {
         Ok(0)
     }
 
-    fn truncate(&mut self, len: usize, fs: &mut FileSystem) -> Result<usize> {
+    fn truncate(&mut self, len: usize, fs: &mut FileSystem<D>) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
             fs.node_set_len(self.block, len as u64)?;
             Ok(0)
@@ -248,7 +249,7 @@ impl Resource for FileResource {
         }
     }
 
-    fn utimens(&mut self, times: &[TimeSpec], fs: &mut FileSystem) -> Result<usize> {
+    fn utimens(&mut self, times: &[TimeSpec], fs: &mut FileSystem<D>) -> Result<usize> {
         let mut node = fs.node(self.block)?;
 
         if node.1.uid == self.uid || self.uid == 0 {
