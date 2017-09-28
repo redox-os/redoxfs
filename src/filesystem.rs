@@ -37,23 +37,42 @@ impl<D: Disk> FileSystem<D> {
     }
 
     /// Create a file system on a disk
-    pub fn create(mut disk: D, ctime: u64, ctime_nsec: u32) -> Result<Self> {
-        let size = disk.size()?;
+    pub fn create(disk: D, ctime: u64, ctime_nsec: u32) -> Result<Self> {
+        Self::create_reserved(disk, &[], ctime, ctime_nsec)
+    }
 
-        if size >= 4 * 512 {
-            let mut free = (2, Node::new(Node::MODE_FILE, "free", 0, ctime, ctime_nsec));
-            free.1.extents[0] = Extent::new(4, size - 4 * 512);
+    /// Create a file system on a disk, with reserved data at the beginning
+    /// Reserved data will be zero padded up to the nearest block
+    pub fn create_reserved(mut disk: D, reserved: &[u8], ctime: u64, ctime_nsec: u32) -> Result<Self> {
+        let size = disk.size()?;
+        let block_offset = (reserved.len() as u64 + 511)/512;
+
+        if size >= (block_offset + 4) * 512 {
+            let mut free = (block_offset + 2, Node::new(Node::MODE_FILE, "free", 0, ctime, ctime_nsec));
+            free.1.extents[0] = Extent::new(block_offset + 4, size - (block_offset + 4) * 512);
             disk.write_at(free.0, &free.1)?;
 
-            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec));
+            let root = (block_offset + 1, Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec));
             disk.write_at(root.0, &root.1)?;
 
-            let header = (0, Header::new(size, root.0, free.0));
+            let header = (block_offset + 0, Header::new(size, root.0, free.0));
             disk.write_at(header.0, &header.1)?;
+
+            for block in 0..block_offset as usize {
+                let mut data = [0; 512];
+
+                let mut i = 0;
+                while i < data.len() && block * 512 + i < reserved.len() {
+                    data[i] = reserved[block * 512 + i];
+                    i += 1;
+                }
+
+                disk.write_at(block as u64, &data)?;
+            }
 
             Ok(FileSystem {
                 disk: disk,
-                block: 0,
+                block: block_offset,
                 header: header
             })
         } else {
