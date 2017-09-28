@@ -48,15 +48,15 @@ impl<D: Disk> FileSystem<D> {
         let block_offset = (reserved.len() as u64 + 511)/512;
 
         if size >= (block_offset + 4) * 512 {
-            let mut free = (block_offset + 2, Node::new(Node::MODE_FILE, "free", 0, ctime, ctime_nsec));
-            free.1.extents[0] = Extent::new(block_offset + 4, size - (block_offset + 4) * 512);
-            disk.write_at(free.0, &free.1)?;
+            let mut free = (2, Node::new(Node::MODE_FILE, "free", 0, ctime, ctime_nsec));
+            free.1.extents[0] = Extent::new(4, size - (block_offset + 4) * 512);
+            disk.write_at(block_offset + free.0, &free.1)?;
 
-            let root = (block_offset + 1, Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec));
-            disk.write_at(root.0, &root.1)?;
+            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec));
+            disk.write_at(block_offset + root.0, &root.1)?;
 
-            let header = (block_offset + 0, Header::new(size, root.0, free.0));
-            disk.write_at(header.0, &header.1)?;
+            let header = (0, Header::new(size, root.0, free.0));
+            disk.write_at(block_offset + header.0, &header.1)?;
 
             for block in 0..block_offset as usize {
                 let mut data = [0; 512];
