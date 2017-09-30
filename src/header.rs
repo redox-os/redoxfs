@@ -1,6 +1,8 @@
 use std::{fmt, mem, slice};
 use std::ops::{Deref, DerefMut};
 
+use uuid::Uuid;
+
 /// The header of the filesystem
 #[repr(packed)]
 pub struct Header {
@@ -37,10 +39,11 @@ impl Header {
     }
 
     pub fn new(size: u64, root: u64, free: u64) -> Header {
+        let uuid = Uuid::new_v4();
         Header {
             signature: *Header::SIGNATURE,
             version: Header::VERSION,
-            uuid: [0; 16],
+            uuid: *uuid.as_bytes(),
             size: size,
             root: root,
             free: free,

@@ -4,6 +4,7 @@
 #![deny(warnings)]
 
 extern crate syscall;
+extern crate uuid;
 
 pub use self::disk::{Disk, DiskCache, DiskFile};
 pub use self::ex_node::ExNode;
