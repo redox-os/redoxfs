@@ -60,8 +60,9 @@ fn disk_paths(paths: &mut Vec<String>) {
         Ok(entries) => for entry_res in entries {
             if let Ok(entry) = entry_res {
                 if let Ok(path) = entry.path().into_os_string().into_string() {
-                    let scheme = path.trim_left_matches(':');
+                    let scheme = path.trim_left_matches(':').trim_matches('/');
                     if scheme.starts_with("disk") {
+                        println!("redoxfs: found scheme {}", scheme);
                         schemes.push(format!("{}:", scheme));
                     }
                 }
@@ -77,6 +78,7 @@ fn disk_paths(paths: &mut Vec<String>) {
             Ok(entries) => for entry_res in entries {
                 if let Ok(entry) = entry_res {
                     if let Ok(path) = entry.path().into_os_string().into_string() {
+                        println!("redoxfs: found path {}", path);
                         paths.push(path);
                     }
                 }
