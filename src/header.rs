@@ -3,14 +3,14 @@ use std::ops::{Deref, DerefMut};
 
 use uuid::Uuid;
 
-use BLOCK_SIZE;
+use {BLOCK_SIZE, SIGNATURE, VERSION};
 
 /// The header of the filesystem
 #[repr(packed)]
 pub struct Header {
-    /// Signature, should be b"RedoxFS\0"
+    /// Signature, should be SIGNATURE
     pub signature: [u8; 8],
-    /// Version, should be 1
+    /// Version, should be VERSION
     pub version: u64,
     /// Disk ID, a 128-bit unique identifier
     pub uuid: [u8; 16],
@@ -25,9 +25,6 @@ pub struct Header {
 }
 
 impl Header {
-    pub const SIGNATURE: &'static [u8; 8] = b"RedoxFS\0";
-    pub const VERSION: u64 = 2;
-
     pub fn default() -> Header {
         Header {
             signature: [0; 8],
@@ -43,8 +40,8 @@ impl Header {
     pub fn new(size: u64, root: u64, free: u64) -> Header {
         let uuid = Uuid::new_v4();
         Header {
-            signature: *Header::SIGNATURE,
-            version: Header::VERSION,
+            signature: *SIGNATURE,
+            version: VERSION,
             uuid: *uuid.as_bytes(),
             size: size,
             root: root,
@@ -54,7 +51,7 @@ impl Header {
     }
 
     pub fn valid(&self) -> bool {
-        &self.signature == Header::SIGNATURE && self.version == Header::VERSION
+        &self.signature == SIGNATURE && self.version == VERSION
     }
 }
 
