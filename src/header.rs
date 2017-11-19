@@ -3,6 +3,8 @@ use std::ops::{Deref, DerefMut};
 
 use uuid::Uuid;
 
+use BLOCK_SIZE;
+
 /// The header of the filesystem
 #[repr(packed)]
 pub struct Header {
@@ -12,14 +14,14 @@ pub struct Header {
     pub version: u64,
     /// Disk ID, a 128-bit unique identifier
     pub uuid: [u8; 16],
-    /// Disk size, in 512-byte sectors
+    /// Disk size, in number of BLOCK_SIZE sectors
     pub size: u64,
     /// Block of root node
     pub root: u64,
     /// Block of free space node
     pub free: u64,
     /// Padding
-    pub padding: [u8; 456]
+    pub padding: [u8; BLOCK_SIZE as usize - 56]
 }
 
 impl Header {
@@ -34,7 +36,7 @@ impl Header {
             size: 0,
             root: 0,
             free: 0,
-            padding: [0; 456]
+            padding: [0; BLOCK_SIZE as usize - 56]
         }
     }
 
@@ -47,7 +49,7 @@ impl Header {
             size: size,
             root: root,
             free: free,
-            padding: [0; 456]
+            padding: [0; BLOCK_SIZE as usize - 56]
         }
     }
 
@@ -88,5 +90,5 @@ impl DerefMut for Header {
 
 #[test]
 fn header_size_test() {
-    assert_eq!(mem::size_of::<Header>(), 512);
+    assert_eq!(mem::size_of::<Header>(), BLOCK_SIZE as usize);
 }

@@ -9,6 +9,7 @@ use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOE
 use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK, O_NOFOLLOW};
 use syscall::scheme::Scheme;
 
+use BLOCK_SIZE;
 use disk::Disk;
 use filesystem::FileSystem;
 use node::Node;
@@ -518,7 +519,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
             let free = fs.header.1.free;
             let free_size = fs.node_len(free)?;
 
-            stat.f_bsize = 512;
+            stat.f_bsize = BLOCK_SIZE as u32;
             stat.f_blocks = fs.header.1.size/(stat.f_bsize as u64);
             stat.f_bfree = free_size/(stat.f_bsize as u64);
             stat.f_bavail = stat.f_bfree;

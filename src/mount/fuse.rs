@@ -7,6 +7,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use BLOCK_SIZE;
 use disk::Disk;
 use filesystem;
 use node::Node;
@@ -36,7 +37,7 @@ fn node_attr(node: &(u64, Node)) -> FileAttr {
     FileAttr {
         ino: node.0,
         size: node.1.extents[0].length,
-        blocks: (node.1.extents[0].length + 511)/512,
+        blocks: (node.1.extents[0].length + BLOCK_SIZE - 1)/BLOCK_SIZE,
         atime: NULL_TIME,
         mtime: Timespec {
             sec: node.1.mtime as i64,
@@ -297,7 +298,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         let free = self.fs.header.1.free;
         match self.fs.node_len(free) {
             Ok(free_size) => {
-                let bsize = 512;
+                let bsize = BLOCK_SIZE;
                 let blocks = self.fs.header.1.size/bsize;
                 let bfree = free_size/bsize;
                 reply.statfs(blocks, bfree, bfree, 0, 0, bsize as u32, 256, 0);

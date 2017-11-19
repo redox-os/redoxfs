@@ -6,6 +6,8 @@
 extern crate syscall;
 extern crate uuid;
 
+pub const BLOCK_SIZE: u64 = 512;
+
 pub use self::disk::{Disk, DiskCache, DiskFile};
 pub use self::ex_node::ExNode;
 pub use self::extent::Extent;

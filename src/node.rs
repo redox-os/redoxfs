@@ -1,5 +1,6 @@
 use std::{fmt, mem, ops, slice, str};
 
+use BLOCK_SIZE;
 use super::Extent;
 
 /// A file/folder node
@@ -15,7 +16,7 @@ pub struct Node {
     pub name: [u8; 222],
     pub parent: u64,
     pub next: u64,
-    pub extents: [Extent; 15],
+    pub extents: [Extent; (BLOCK_SIZE as usize - 272)/16],
 }
 
 impl Node {
@@ -41,7 +42,7 @@ impl Node {
             name: [0; 222],
             parent: 0,
             next: 0,
-            extents: [Extent::default(); 15],
+            extents: [Extent::default(); (BLOCK_SIZE as usize - 272)/16],
         }
     }
 
@@ -62,7 +63,7 @@ impl Node {
             name: bytes,
             parent: parent,
             next: 0,
-            extents: [Extent::default(); 15],
+            extents: [Extent::default(); (BLOCK_SIZE as usize - 272)/16],
         }
     }
 
@@ -147,5 +148,5 @@ impl ops::DerefMut for Node {
 
 #[test]
 fn node_size_test() {
-    assert_eq!(mem::size_of::<Node>(), 512);
+    assert_eq!(mem::size_of::<Node>(), BLOCK_SIZE as usize);
 }

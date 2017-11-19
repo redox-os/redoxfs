@@ -2,6 +2,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
 use syscall::error::{Error, Result, EIO};
 
+use BLOCK_SIZE;
 use disk::Disk;
 
 macro_rules! try_disk {
@@ -37,13 +38,13 @@ impl DiskFile {
 
 impl Disk for DiskFile {
     fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
-        try_disk!(self.file.seek(SeekFrom::Start(block * 512)));
+        try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
         let count = try_disk!(self.file.read(buffer));
         Ok(count)
     }
 
     fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
-        try_disk!(self.file.seek(SeekFrom::Start(block * 512)));
+        try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
         let count = try_disk!(self.file.write(buffer));
         Ok(count)
     }

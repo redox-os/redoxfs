@@ -1,13 +1,14 @@
 use std::{fmt, mem, ops, slice};
 
-use super::Extent;
+use BLOCK_SIZE;
+use Extent;
 
 /// An extra node
 #[repr(packed)]
 pub struct ExNode {
     pub prev: u64,
     pub next: u64,
-    pub extents: [Extent; 31],
+    pub extents: [Extent; (BLOCK_SIZE as usize - 16)/16],
 }
 
 impl ExNode {
@@ -15,7 +16,7 @@ impl ExNode {
         ExNode {
             prev: 0,
             next: 0,
-            extents: [Extent::default(); 31],
+            extents: [Extent::default(); (BLOCK_SIZE as usize - 16)/16],
         }
     }
 
@@ -54,5 +55,5 @@ impl ops::DerefMut for ExNode {
 
 #[test]
 fn ex_node_size_test() {
-    assert_eq!(mem::size_of::<ExNode>(), 512);
+    assert_eq!(mem::size_of::<ExNode>(), BLOCK_SIZE as usize);
 }
