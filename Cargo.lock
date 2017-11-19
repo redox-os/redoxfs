@@ -1,15 +1,3 @@
-[root]
-name = "redoxfs"
-version = "0.2.0"
-dependencies = [
- "fuse 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "libc 0.2.32 (registry+https://github.com/rust-lang/crates.io-index)",
- "redox_syscall 0.1.31 (registry+https://github.com/rust-lang/crates.io-index)",
- "spin 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
- "time 0.1.38 (registry+https://github.com/rust-lang/crates.io-index)",
- "uuid 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
 [[package]]
 name = "bitflags"
 version = "0.7.0"
@@ -80,6 +68,18 @@ dependencies = [
 name = "redox_syscall"
 version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "redoxfs"
+version = "0.2.0"
+dependencies = [
+ "fuse 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "libc 0.2.32 (registry+https://github.com/rust-lang/crates.io-index)",
+ "redox_syscall 0.1.31 (registry+https://github.com/rust-lang/crates.io-index)",
+ "spin 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "time 0.1.38 (registry+https://github.com/rust-lang/crates.io-index)",
+ "uuid 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "spin"
