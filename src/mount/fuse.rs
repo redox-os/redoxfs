@@ -1,6 +1,7 @@
 extern crate fuse;
 extern crate time;
 
+use std::cmp;
 use std::ffi::OsStr;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -175,9 +176,9 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn read(&mut self, _req: &Request, block: u64, _fh: u64, offset: u64, size: u32, reply: ReplyData) {
+    fn read(&mut self, _req: &Request, block: u64, _fh: u64, offset: i64, size: u32, reply: ReplyData) {
         let mut data = vec![0; size as usize];
-        match self.fs.read_node(block, offset, &mut data) {
+        match self.fs.read_node(block, cmp::max(0, offset) as u64, &mut data) {
             Ok(count) => {
                 reply.data(&data[..count]);
             },
@@ -187,9 +188,9 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn write(&mut self, _req: &Request, block: u64, _fh: u64, offset: u64, data: &[u8], _flags: u32, reply: ReplyWrite) {
+    fn write(&mut self, _req: &Request, block: u64, _fh: u64, offset: i64, data: &[u8], _flags: u32, reply: ReplyWrite) {
         let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        match self.fs.write_node(block, offset, &data, mtime.as_secs(), mtime.subsec_nanos()) {
+        match self.fs.write_node(block, cmp::max(0, offset) as u64, &data, mtime.as_secs(), mtime.subsec_nanos()) {
             Ok(count) => {
                 reply.written(count as u32);
             },
@@ -207,7 +208,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         reply.ok();
     }
 
-    fn readdir(&mut self, _req: &Request, parent_block: u64, _fh: u64, offset: u64, mut reply: ReplyDirectory) {
+    fn readdir(&mut self, _req: &Request, parent_block: u64, _fh: u64, offset: i64, mut reply: ReplyDirectory) {
         let mut children = Vec::new();
         match self.fs.child_nodes(&mut children, parent_block) {
             Ok(()) => {
