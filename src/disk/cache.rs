@@ -1,13 +1,9 @@
 use std::{cmp, ptr};
+use std::collections::{BTreeMap, VecDeque};
 use syscall::error::Result;
 
 use BLOCK_SIZE;
 use disk::Disk;
-
-use self::lru_cache::LruCache;
-
-mod linked_hash_map;
-mod lru_cache;
 
 fn copy_memory(src: &[u8], dest: &mut [u8]) -> usize {
     let len = cmp::min(src.len(), dest.len());
@@ -17,15 +13,29 @@ fn copy_memory(src: &[u8], dest: &mut [u8]) -> usize {
 
 pub struct DiskCache<T> {
     inner: T,
-    cache: LruCache<u64, [u8; BLOCK_SIZE as usize]>,
+    cache: BTreeMap<u64, [u8; BLOCK_SIZE as usize]>,
+    order: VecDeque<u64>,
+    size: usize,
 }
 
 impl<T: Disk> DiskCache<T> {
     pub fn new(inner: T) -> Self {
         DiskCache {
             inner: inner,
-            cache: LruCache::new((256 * 1024 * 1024 / BLOCK_SIZE) as usize) // 256 MB cache
+            cache: BTreeMap::new(),
+            order: VecDeque::new(),
+            size: 65536, // 256 MB cache
         }
+    }
+
+    fn insert(&mut self, i: u64, data: [u8; BLOCK_SIZE as usize]) {
+        while self.order.len() >= self.size {
+            let removed = self.order.pop_front().unwrap();
+            self.cache.remove(&removed);
+        }
+
+        self.cache.insert(i, data);
+        self.order.push_back(i);
     }
 }
 
@@ -63,7 +73,7 @@ impl<T: Disk> Disk for DiskCache<T> {
 
                 let mut cache_buf = [0; BLOCK_SIZE as usize];
                 read += copy_memory(buffer_slice, &mut cache_buf);
-                self.cache.insert(block_i, cache_buf);
+                self.insert(block_i, cache_buf);
             }
         }
 
@@ -85,7 +95,7 @@ impl<T: Disk> Disk for DiskCache<T> {
 
             let mut cache_buf = [0; BLOCK_SIZE as usize];
             written += copy_memory(buffer_slice, &mut cache_buf);
-            self.cache.insert(block_i, cache_buf);
+            self.insert(block_i, cache_buf);
         }
 
         Ok(written)
