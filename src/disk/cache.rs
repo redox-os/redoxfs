@@ -1,5 +1,5 @@
 use std::{cmp, ptr};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use syscall::error::Result;
 
 use BLOCK_SIZE;
@@ -13,7 +13,7 @@ fn copy_memory(src: &[u8], dest: &mut [u8]) -> usize {
 
 pub struct DiskCache<T> {
     inner: T,
-    cache: BTreeMap<u64, [u8; BLOCK_SIZE as usize]>,
+    cache: HashMap<u64, [u8; BLOCK_SIZE as usize]>,
     order: VecDeque<u64>,
     size: usize,
 }
@@ -22,7 +22,7 @@ impl<T: Disk> DiskCache<T> {
     pub fn new(inner: T) -> Self {
         DiskCache {
             inner: inner,
-            cache: BTreeMap::new(),
+            cache: HashMap::new(),
             order: VecDeque::new(),
             size: 65536, // 256 MB cache
         }
