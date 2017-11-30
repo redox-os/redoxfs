@@ -210,12 +210,12 @@ impl<D: Disk> Scheme for FileScheme<D> {
                         }
                     }
 
-                    Box::new(DirResource::new(path.to_string(), node.0, Some(data)))
+                    Box::new(DirResource::new(path.to_string(), node.0, Some(data), uid))
                 } else if flags & O_WRONLY == O_WRONLY {
                     // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
                     return Err(Error::new(EISDIR));
                 } else {
-                    Box::new(DirResource::new(path.to_string(), node.0, None))
+                    Box::new(DirResource::new(path.to_string(), node.0, None, uid))
                 }
             } else if node.1.is_symlink() && !(flags & O_STAT == O_STAT && flags  & O_NOFOLLOW == O_NOFOLLOW) && flags & O_SYMLINK != O_SYMLINK {
                 let mut resolve_nodes = Vec::new();
@@ -287,7 +287,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
                         fs.write_at(node.0, &node.1)?;
 
                         if dir {
-                            Box::new(DirResource::new(path.to_string(), node.0, None))
+                            Box::new(DirResource::new(path.to_string(), node.0, None, uid))
                         } else {
                             let seek = if flags & O_APPEND == O_APPEND {
                                 fs.node_len(node.0)?
@@ -461,6 +461,24 @@ impl<D: Disk> Scheme for FileScheme<D> {
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
             file.seek(pos, whence, &mut self.fs.borrow_mut())
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fchmod(&self, id: usize, mode: u16) -> Result<usize> {
+        let mut files = self.files.lock();
+        if let Some(file) = files.get_mut(&id) {
+            file.fchmod(mode, &mut self.fs.borrow_mut())
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fchown(&self, id: usize, uid: u32, gid: u32) -> Result<usize> {
+        let mut files = self.files.lock();
+        if let Some(file) = files.get_mut(&id) {
+            file.fchown(uid, gid, &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }

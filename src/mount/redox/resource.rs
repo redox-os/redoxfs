@@ -2,8 +2,8 @@ use std::cmp::{min, max};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::TimeSpec;
-use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR};
-use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL};
+use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, EPERM};
+use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL, MODE_PERM};
 use syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END};
 
 use disk::Disk;
@@ -14,6 +14,8 @@ pub trait Resource<D: Disk> {
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem<D>) -> Result<usize>;
+    fn fchmod(&mut self, mode: u16, fs: &mut FileSystem<D>) -> Result<usize>;
+    fn fchown(&mut self, uid: u32, gid: u32, fs: &mut FileSystem<D>) -> Result<usize>;
     fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize>;
     fn path(&self, buf: &mut [u8]) -> Result<usize>;
     fn stat(&self, _stat: &mut Stat, fs: &mut FileSystem<D>) -> Result<usize>;
@@ -27,15 +29,17 @@ pub struct DirResource {
     block: u64,
     data: Option<Vec<u8>>,
     seek: usize,
+    uid: u32,
 }
 
 impl DirResource {
-    pub fn new(path: String, block: u64, data: Option<Vec<u8>>) -> DirResource {
+    pub fn new(path: String, block: u64, data: Option<Vec<u8>>, uid: u32) -> DirResource {
         DirResource {
             path: path,
             block: block,
             data: data,
             seek: 0,
+            uid: uid,
         }
     }
 }
@@ -46,7 +50,8 @@ impl<D: Disk> Resource<D> for DirResource {
             path: self.path.clone(),
             block: self.block,
             data: self.data.clone(),
-            seek: self.seek
+            seek: self.seek,
+            uid: self.uid
         }))
     }
 
@@ -75,6 +80,40 @@ impl<D: Disk> Resource<D> for DirResource {
         };
 
         Ok(self.seek)
+    }
+
+    fn fchmod(&mut self, mode: u16, fs: &mut FileSystem<D>) -> Result<usize> {
+        let mut node = fs.node(self.block)?;
+
+        if node.1.uid == self.uid || self.uid == 0 {
+            node.1.mode = (node.1.mode & ! MODE_PERM) | (mode & MODE_PERM);
+
+            fs.write_at(node.0, &node.1)?;
+
+            Ok(0)
+        } else {
+            Err(Error::new(EPERM))
+        }
+    }
+
+    fn fchown(&mut self, uid: u32, gid: u32, fs: &mut FileSystem<D>) -> Result<usize> {
+        let mut node = fs.node(self.block)?;
+
+        if node.1.uid == self.uid || self.uid == 0 {
+            if uid as i32 != -1 {
+                node.1.uid = uid;
+            }
+
+            if gid as i32 != -1 {
+                node.1.gid = gid;
+            }
+
+            fs.write_at(node.0, &node.1)?;
+
+            Ok(0)
+        } else {
+            Err(Error::new(EPERM))
+        }
     }
 
     fn fcntl(&mut self, _cmd: usize, _arg: usize) -> Result<usize> {
@@ -192,6 +231,40 @@ impl<D: Disk> Resource<D> for FileResource {
         Ok(self.seek as usize)
     }
 
+    fn fchmod(&mut self, mode: u16, fs: &mut FileSystem<D>) -> Result<usize> {
+        let mut node = fs.node(self.block)?;
+
+        if node.1.uid == self.uid || self.uid == 0 {
+            node.1.mode = (node.1.mode & ! MODE_PERM) | (mode & MODE_PERM);
+
+            fs.write_at(node.0, &node.1)?;
+
+            Ok(0)
+        } else {
+            Err(Error::new(EPERM))
+        }
+    }
+
+    fn fchown(&mut self, uid: u32, gid: u32, fs: &mut FileSystem<D>) -> Result<usize> {
+        let mut node = fs.node(self.block)?;
+
+        if node.1.uid == self.uid || self.uid == 0 {
+            if uid as i32 != -1 {
+                node.1.uid = uid;
+            }
+
+            if gid as i32 != -1 {
+                node.1.gid = gid;
+            }
+
+            fs.write_at(node.0, &node.1)?;
+
+            Ok(0)
+        } else {
+            Err(Error::new(EPERM))
+        }
+    }
+
     fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize> {
         match cmd {
             F_GETFL => Ok(self.flags),
@@ -265,7 +338,7 @@ impl<D: Disk> Resource<D> for FileResource {
                 Ok(0)
             }
         } else {
-            Err(Error::new(EBADF))
+            Err(Error::new(EPERM))
         }
     }
 }
