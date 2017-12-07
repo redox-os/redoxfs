@@ -114,18 +114,20 @@ impl Node {
 impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let extents: Vec<&Extent> = self.extents.iter().filter(|extent| -> bool { extent.length > 0 }).collect();
-        f.debug_struct("Node")
-            .field("mode", &self.mode)
-            .field("uid", &self.uid)
-            .field("gid", &self.gid)
-            .field("ctime", &self.ctime)
-            .field("ctime_nsec", &self.ctime_nsec)
-            .field("mtime", &self.mtime)
-            .field("mtime_nsec", &self.mtime_nsec)
-            .field("name", &self.name())
-            .field("next", &self.next)
-            .field("extents", &extents)
-            .finish()
+        unsafe {
+            f.debug_struct("Node")
+                .field("mode", &self.mode)
+                .field("uid", &self.uid)
+                .field("gid", &self.gid)
+                .field("ctime", &self.ctime)
+                .field("ctime_nsec", &self.ctime_nsec)
+                .field("mtime", &self.mtime)
+                .field("mtime_nsec", &self.mtime_nsec)
+                .field("name", &self.name())
+                .field("next", &self.next)
+                .field("extents", &extents)
+                .finish()
+        }
     }
 }
 

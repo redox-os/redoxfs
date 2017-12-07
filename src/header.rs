@@ -57,14 +57,16 @@ impl Header {
 
 impl fmt::Debug for Header {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Header")
-            .field("signature", &self.signature)
-            .field("version", &self.version)
-            .field("uuid", &self.uuid)
-            .field("size", &self.size)
-            .field("root", &self.root)
-            .field("free", &self.free)
-            .finish()
+        unsafe {
+            f.debug_struct("Header")
+                .field("signature", &self.signature)
+                .field("version", &self.version)
+                .field("uuid", &self.uuid)
+                .field("size", &self.size)
+                .field("root", &self.root)
+                .field("free", &self.free)
+                .finish()
+        }
     }
 }
 

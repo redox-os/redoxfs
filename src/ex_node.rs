@@ -28,11 +28,13 @@ impl ExNode {
 impl fmt::Debug for ExNode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let extents: Vec<&Extent> = self.extents.iter().filter(|extent| -> bool { extent.length > 0 }).collect();
-        f.debug_struct("ExNode")
-            .field("prev", &self.prev)
-            .field("next", &self.next)
-            .field("extents", &extents)
-            .finish()
+        unsafe {
+            f.debug_struct("ExNode")
+                .field("prev", &self.prev)
+                .field("next", &self.next)
+                .field("extents", &extents)
+                .finish()
+        }
     }
 }
 
