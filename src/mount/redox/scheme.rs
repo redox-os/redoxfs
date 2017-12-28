@@ -519,6 +519,19 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
+    fn frename(&self, id: usize, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
+        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
+
+        println!("Frename {}, {} from {}, {}", id, path, uid, gid);
+        let files = self.files.lock();
+        if let Some(_file) = files.get(&id) {
+            // TODO
+            Err(Error::new(EPERM))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
     fn fstat(&self, id: usize, stat: &mut Stat) -> Result<usize> {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
         let files = self.files.lock();
