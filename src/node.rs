@@ -2,6 +2,7 @@ use std::{fmt, mem, ops, slice, str};
 
 use BLOCK_SIZE;
 use super::Extent;
+use syscall;
 
 /// A file/folder node
 #[repr(packed)]
@@ -46,13 +47,16 @@ impl Node {
         }
     }
 
-    pub fn new(mode: u16, name: &str, parent: u64, ctime: u64, ctime_nsec: u32) -> Node {
+    pub fn new(mode: u16, name: &str, parent: u64, ctime: u64, ctime_nsec: u32) -> syscall::Result<Node> {
         let mut bytes = [0; 222];
+        if name.len() > bytes.len() {
+            return Err(syscall::Error::new(syscall::ENAMETOOLONG));
+        }
         for (b, c) in bytes.iter_mut().zip(name.bytes()) {
             *b = c;
         }
 
-        Node {
+        Ok(Node {
             mode: mode,
             uid: 0,
             gid: 0,
@@ -64,7 +68,7 @@ impl Node {
             parent: parent,
             next: 0,
             extents: [Extent::default(); (BLOCK_SIZE as usize - 272)/16],
-        }
+        })
     }
 
     pub fn name(&self) -> Result<&str, str::Utf8Error> {
@@ -80,6 +84,20 @@ impl Node {
         str::from_utf8(&self.name[..len])
     }
 
+    pub fn set_name(&mut self, name: &str) -> syscall::Result<()> {
+        let mut bytes = [0; 222];
+        if name.len() > bytes.len() {
+            return Err(syscall::Error::new(syscall::ENAMETOOLONG));
+        }
+        for (b, c) in bytes.iter_mut().zip(name.bytes()) {
+            *b = c;
+        }
+
+        self.name = bytes;
+
+        Ok(())
+    }
+
     pub fn is_dir(&self) -> bool {
         self.mode & Node::MODE_TYPE == Node::MODE_DIR
     }
@@ -90,6 +108,10 @@ impl Node {
 
     pub fn is_symlink(&self) -> bool {
         self.mode & Node::MODE_TYPE == Node::MODE_SYMLINK
+    }
+
+    pub fn owner(&self, uid: u32) -> bool {
+        uid == 0 || self.uid == uid
     }
 
     pub fn permission(&self, uid: u32, gid: u32, op: u16) -> bool {

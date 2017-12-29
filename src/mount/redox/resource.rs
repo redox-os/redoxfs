@@ -10,6 +10,7 @@ use disk::Disk;
 use filesystem::FileSystem;
 
 pub trait Resource<D: Disk> {
+    fn block(&self) -> u64;
     fn dup(&self) -> Result<Box<Resource<D>>>;
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize>;
@@ -45,6 +46,10 @@ impl DirResource {
 }
 
 impl<D: Disk> Resource<D> for DirResource {
+    fn block(&self) -> u64 {
+        self.block
+    }
+
     fn dup(&self) -> Result<Box<Resource<D>>> {
         Ok(Box::new(DirResource {
             path: self.path.clone(),
@@ -187,6 +192,10 @@ impl FileResource {
 }
 
 impl<D: Disk> Resource<D> for FileResource {
+    fn block(&self) -> u64 {
+        self.block
+    }
+
     fn dup(&self) -> Result<Box<Resource<D>>> {
         Ok(Box::new(FileResource {
             path: self.path.clone(),

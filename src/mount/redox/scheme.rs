@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::{Stat, StatVfs, TimeSpec};
-use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, EPERM, ENOENT, EBADF, ELOOP, EINVAL};
+use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, ENOTEMPTY, EPERM, ENOENT, EBADF, ELOOP, EINVAL};
 use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK, O_NOFOLLOW};
 use syscall::scheme::Scheme;
 
@@ -522,11 +522,97 @@ impl<D: Disk> Scheme for FileScheme<D> {
     fn frename(&self, id: usize, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
-        println!("Frename {}, {} from {}, {}", id, path, uid, gid);
+        // println!("Frename {}, {} from {}, {}", id, path, uid, gid);
+
         let files = self.files.lock();
-        if let Some(_file) = files.get(&id) {
-            // TODO
-            Err(Error::new(EPERM))
+        if let Some(file) = files.get(&id) {
+            //TODO: Check for EINVAL
+            // The new pathname contained a path prefix of the old, or, more generally,
+            // an attempt was made to make a directory a subdirectory of itself.
+
+            let mut last_part = String::new();
+            for part in path.split('/') {
+                if ! part.is_empty() {
+                    last_part = part.to_string();
+                }
+            }
+            if last_part.is_empty() {
+                return Err(Error::new(EPERM));
+            }
+
+            let mut fs = self.fs.borrow_mut();
+
+            let mut orig = fs.node(file.block())?;
+
+            if ! orig.1.owner(uid) {
+                // println!("orig not owned by caller {}", uid);
+                return Err(Error::new(EACCES));
+            }
+
+            let mut nodes = Vec::new();
+            let node_opt = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)?;
+
+            if let Some(parent) = nodes.last() {
+                if ! parent.1.owner(uid) {
+                    // println!("parent not owned by caller {}", uid);
+                    return Err(Error::new(EACCES));
+                }
+
+                if let Some(ref node) = node_opt {
+                    if ! node.1.owner(uid) {
+                        // println!("new dir not owned by caller {}", uid);
+                        return Err(Error::new(EACCES));
+                    }
+
+                    if node.1.is_dir() {
+                        if ! orig.1.is_dir() {
+                            // println!("orig is file, new is dir");
+                            return Err(Error::new(EACCES));
+                        }
+
+                        let mut children = Vec::new();
+                        fs.child_nodes(&mut children, node.0)?;
+
+                        if ! children.is_empty() {
+                            // println!("new dir not empty");
+                            return Err(Error::new(ENOTEMPTY));
+                        }
+                    } else {
+                        if orig.1.is_dir() {
+                            // println!("orig is dir, new is file");
+                            return Err(Error::new(ENOTDIR));
+                        }
+                    }
+                }
+
+                let orig_parent = orig.1.parent;
+
+                orig.1.set_name(&last_part)?;
+                orig.1.parent = parent.0;
+
+                if parent.0 != orig_parent {
+                    fs.remove_blocks(orig.0, 1, orig_parent)?;
+                }
+
+                fs.write_at(orig.0, &orig.1)?;
+
+                if let Some(node) = node_opt {
+                    if node.0 != orig.0 {
+                        fs.node_set_len(node.0, 0)?;
+                        fs.remove_blocks(node.0, 1, parent.0)?;
+                        fs.write_at(node.0, &Node::default())?;
+                        fs.deallocate(node.0, BLOCK_SIZE)?;
+                    }
+                }
+
+                if parent.0 != orig_parent {
+                    fs.insert_blocks(orig.0, BLOCK_SIZE, parent.0)?;
+                }
+
+                Ok(0)
+            } else {
+                Err(Error::new(EPERM))
+            }
         } else {
             Err(Error::new(EBADF))
         }

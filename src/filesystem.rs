@@ -48,11 +48,11 @@ impl<D: Disk> FileSystem<D> {
         let block_offset = (reserved.len() as u64 + BLOCK_SIZE - 1)/BLOCK_SIZE;
 
         if size >= (block_offset + 4) * BLOCK_SIZE {
-            let mut free = (2, Node::new(Node::MODE_FILE, "free", 0, ctime, ctime_nsec));
+            let mut free = (2, Node::new(Node::MODE_FILE, "free", 0, ctime, ctime_nsec)?);
             free.1.extents[0] = Extent::new(4, size - (block_offset + 4) * BLOCK_SIZE);
             disk.write_at(block_offset + free.0, &free.1)?;
 
-            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec));
+            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec)?);
             disk.write_at(block_offset + root.0, &root.1)?;
 
             let header = (0, Header::new(size, root.0, free.0));
@@ -171,7 +171,8 @@ impl<D: Disk> FileSystem<D> {
         self.find_node(name, parent.1.next)
     }
 
-    fn insert_blocks(&mut self, block: u64, length: u64, parent_block: u64) -> Result<()> {
+    //TODO: Accept length in units of BLOCK_SIZE to match remove_blocks
+    pub fn insert_blocks(&mut self, block: u64, length: u64, parent_block: u64) -> Result<()> {
         if parent_block == 0 {
             return Err(Error::new(ENOSPC));
         }
@@ -222,7 +223,8 @@ impl<D: Disk> FileSystem<D> {
         if self.find_node(name, parent_block).is_ok() {
             Err(Error::new(EEXIST))
         } else {
-            let node = (self.allocate(1)?, Node::new(mode, name, parent_block, ctime, ctime_nsec));
+            let node_data = Node::new(mode, name, parent_block, ctime, ctime_nsec)?;
+            let node = (self.allocate(1)?, node_data);
             self.write_at(node.0, &node.1)?;
 
             self.insert_blocks(node.0, BLOCK_SIZE, parent_block)?;
@@ -231,7 +233,7 @@ impl<D: Disk> FileSystem<D> {
         }
     }
 
-    fn remove_blocks(&mut self, block: u64, length: u64, parent_block: u64) -> Result<()> {
+    pub fn remove_blocks(&mut self, block: u64, length: u64, parent_block: u64) -> Result<()> {
         if parent_block == 0 {
             return Err(Error::new(ENOENT));
         }
@@ -270,8 +272,6 @@ impl<D: Disk> FileSystem<D> {
                 self.insert_blocks(replace.block, replace.length, parent_block)?;
             }
 
-            self.deallocate(block, BLOCK_SIZE)?;
-
             Ok(())
         } else {
             self.remove_blocks(block, length, parent.1.next)
@@ -292,6 +292,7 @@ impl<D: Disk> FileSystem<D> {
             self.node_set_len(node.0, 0)?;
             self.remove_blocks(node.0, 1, parent_block)?;
             self.write_at(node.0, &Node::default())?;
+            self.deallocate(node.0, BLOCK_SIZE)?;
 
             Ok(())
         } else if node.1.is_dir() {
