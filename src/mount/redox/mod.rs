@@ -1,5 +1,6 @@
 extern crate spin;
 
+use syscall;
 use syscall::{Packet, Scheme};
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -18,6 +19,8 @@ pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mou
     let mut socket = File::create(format!(":{}", mountpoint.display()))?;
 
     callback();
+
+    syscall::setrens(0, 0).expect("redoxfs: failed to enter null namespace");
 
     let scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem);
     loop {
