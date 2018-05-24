@@ -1,6 +1,6 @@
 use std::cmp::min;
 
-use syscall::error::{Result, Error, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
+use syscall::error::{Result, Error, EEXIST, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
 
 use {BLOCK_SIZE, Disk, ExNode, Extent, Header, Node};
 
@@ -220,7 +220,9 @@ impl<D: Disk> FileSystem<D> {
     }
 
     pub fn create_node(&mut self, mode: u16, name: &str, parent_block: u64, ctime: u64, ctime_nsec: u32) -> Result<(u64, Node)> {
-        if self.find_node(name, parent_block).is_ok() {
+        if name.contains(':') {
+            Err(Error::new(EINVAL))
+        } else if self.find_node(name, parent_block).is_ok() {
             Err(Error::new(EEXIST))
         } else {
             let node_data = Node::new(mode, name, parent_block, ctime, ctime_nsec)?;
