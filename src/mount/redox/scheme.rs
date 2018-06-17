@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::result::Result as StdResult;
 use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,11 +18,81 @@ use node::Node;
 use super::resource::{Resource, DirResource, FileResource};
 use super::spin::Mutex;
 
+/// The size to round offset/len up to.
+/// This ensures more fmaps can share the same memory even with different parameters.
+const PAGE_SIZE: usize = 8;
+/// The max amount of fmaps that can be held simultaneously.
+/// This restriction is here because we can under no circumstances reallocate,
+/// that would invalidate previous mappings.
+const FMAP_AMOUNT: usize = 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FmapKey {
+    pub block: u64,
+    pub offset: usize,
+    pub size: usize
+}
+impl FmapKey {
+    pub fn round(&self) -> FmapKey {
+        let remainder = self.size % PAGE_SIZE;
+        FmapKey {
+            block: self.block,
+            offset: self.offset - self.offset % PAGE_SIZE,
+            size: if remainder == 0 { self.size } else { self.size - remainder + self.size }
+        }
+    }
+    pub fn is_compatible(&self, other: &FmapKey) -> bool {
+        self.block == other.block
+            && self.offset <= other.offset
+            && self.offset + self.size >= other.offset + other.size
+    }
+}
+#[derive(Clone)]
+pub struct FmapValue {
+    pub buffer: Vec<u8>,
+    /// The actual file length. Syncing only writes &buffer[..actual_size].
+    pub actual_size: usize,
+    pub refcount: usize
+}
+
+// NOTE: This can NOT reallocate. That would invalidate previous mappings.
+pub struct Fmaps(Vec<Option<(FmapKey, FmapValue)>>);
+impl Default for Fmaps {
+    fn default() -> Fmaps {
+        Fmaps(vec![None; FMAP_AMOUNT])
+    }
+}
+
+impl Fmaps {
+    pub fn find_compatible(&mut self, key: &FmapKey) -> StdResult<(usize, &mut (FmapKey, FmapValue)), Option<usize>> {
+        let mut first_empty = None;
+        for (i, entry) in self.0.iter_mut().enumerate() {
+            match entry {
+                None => first_empty = Some(i),
+                Some(entry) if entry.0.is_compatible(key) => return Ok((i, entry)),
+                _ => ()
+            }
+        }
+        Err(first_empty)
+    }
+    pub fn index(&mut self, index: usize) -> &mut Option<(FmapKey, FmapValue)> {
+        &mut self.0[index]
+    }
+    pub fn insert(&mut self, index: usize, key: FmapKey, value: FmapValue) -> &mut FmapValue {
+        let elem = &mut self.0[index];
+        assert!(elem.is_none());
+        *elem = Some((key, value));
+
+        &mut elem.as_mut().unwrap().1
+    }
+}
+
 pub struct FileScheme<D: Disk> {
     name: String,
     fs: RefCell<FileSystem<D>>,
     next_id: AtomicUsize,
-    files: Mutex<BTreeMap<usize, Box<Resource<D>>>>
+    files: Mutex<BTreeMap<usize, Box<Resource<D>>>>,
+    fmaps: Mutex<Fmaps>
 }
 
 impl<D: Disk> FileScheme<D> {
@@ -30,7 +101,8 @@ impl<D: Disk> FileScheme<D> {
             name: name,
             fs: RefCell::new(fs),
             next_id: AtomicUsize::new(1),
-            files: Mutex::new(BTreeMap::new())
+            files: Mutex::new(BTreeMap::new()),
+            fmaps: Mutex::new(Fmaps::default())
         }
     }
 
@@ -651,7 +723,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
         // println!("Fsync {}", id);
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
-            file.sync()
+            file.sync(&mut self.fmaps.lock(), &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
@@ -677,10 +749,21 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
+    fn fmap(&self, id: usize, offset: usize, size: usize) -> Result<usize> {
+        // println!("Fmap {}, {}, {}", id, offset, size);
+        let mut files = self.files.lock();
+        if let Some(file) = files.get_mut(&id) {
+            file.fmap(offset, size, &mut self.fmaps.lock(), &mut self.fs.borrow_mut())
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
     fn close(&self, id: usize) -> Result<usize> {
         // println!("Close {}", id);
         let mut files = self.files.lock();
-        if files.remove(&id).is_some() {
+        if let Some(mut file) = files.remove(&id) {
+            let _ = file.funmap(&mut self.fmaps.lock(), &mut self.fs.borrow_mut());
             Ok(0)
         } else {
             Err(Error::new(EBADF))
