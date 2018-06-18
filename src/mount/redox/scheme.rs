@@ -20,7 +20,7 @@ use super::spin::Mutex;
 
 /// The size to round offset/len up to.
 /// This ensures more fmaps can share the same memory even with different parameters.
-const PAGE_SIZE: usize = 8;
+const PAGE_SIZE: usize = 4096;
 /// The max amount of fmaps that can be held simultaneously.
 /// This restriction is here because we can under no circumstances reallocate,
 /// that would invalidate previous mappings.
@@ -38,7 +38,7 @@ impl FmapKey {
         FmapKey {
             block: self.block,
             offset: self.offset - self.offset % PAGE_SIZE,
-            size: if remainder == 0 { self.size } else { self.size - remainder + self.size }
+            size: if remainder == 0 { self.size } else { self.size - remainder + PAGE_SIZE }
         }
     }
     pub fn is_compatible(&self, other: &FmapKey) -> bool {
@@ -68,7 +68,7 @@ impl Fmaps {
         let mut first_empty = None;
         for (i, entry) in self.0.iter_mut().enumerate() {
             match entry {
-                None => first_empty = Some(i),
+                None if first_empty.is_none() => first_empty = Some(i),
                 Some(entry) if entry.0.is_compatible(key) => return Ok((i, entry)),
                 _ => ()
             }
