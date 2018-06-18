@@ -204,14 +204,17 @@ impl FileResource {
 
     fn sync_fmap<D: Disk>(&mut self, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<()> {
         if let Some((i, key_exact)) = self.fmap.as_ref() {
-            let (_, value) = maps.index(*i).as_mut().expect("mapping dropped while still referenced");
+            let (key_round, value) = maps.index(*i).as_mut().expect("mapping dropped while still referenced");
+
+            let rel_offset = key_exact.offset - key_round.offset;
             // Minimum out of our size and the original file size
-            let actual_size = value.actual_size.min(key_exact.size);
+            let actual_size = (value.actual_size - rel_offset).min(key_exact.size);
 
             let mut count = 0;
             while count < actual_size {
                 let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                match fs.write_node(self.block, key_exact.offset as u64 + count as u64, &value.buffer[count..actual_size],
+                match fs.write_node(self.block, key_exact.offset as u64 + count as u64,
+                        &value.buffer[rel_offset..][count..actual_size],
                         mtime.as_secs(), mtime.subsec_nanos())? {
                     0 => {
                         eprintln!("Fmap failed to write whole buffer, encountered EOF early.");
@@ -306,7 +309,8 @@ impl<D: Disk> Resource<D> for FileResource {
             let mut content = vec![0; key_round.size];
             let mut count = 0;
             while count < key_round.size {
-                match fs.read_node(self.block, key_round.offset as u64 + count as u64, &mut content[count..])? {
+                match fs.read_node(self.block, key_round.offset as u64 + count as u64,
+                        &mut content[key_round.offset..][count..key_round.size])? {
                     0 => break,
                     n => count += n
                 }
