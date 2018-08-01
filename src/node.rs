@@ -110,19 +110,26 @@ impl Node {
         self.mode & Node::MODE_TYPE == Node::MODE_SYMLINK
     }
 
+    /// Tests if UID is the owner of that file, only true when uid=0 or when the UID stored in metadata is equal to the UID you supply
     pub fn owner(&self, uid: u32) -> bool {
         uid == 0 || self.uid == uid
     }
 
+    /// Tests if the current user has enough permissions to view the file, op is the operation,
+    /// like read and write, these modes are MODE_EXEC, MODE_READ, and MODE_WRITE
     pub fn permission(&self, uid: u32, gid: u32, op: u16) -> bool {
         let mut perm = self.mode & 0o7;
         if self.uid == uid {
+            // If self.mode is 101100110, >> 6 would be 000000101
+            // 0o7 is octal for 111, or, when expanded to 9 digits is 000000111
             perm |= (self.mode >> 6) & 0o7;
+            // Since we erased the GID and OTHER bits when >>6'ing, |= will keep those bits in place. 
         }
         if self.gid == gid || gid == 0 {
             perm |= (self.mode >> 3) & 0o7;
         }
         if uid == 0 {
+            //set the `other` bits to 111
             perm |= 0o7;
         }
         perm & op == op
