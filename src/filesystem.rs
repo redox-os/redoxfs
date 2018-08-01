@@ -43,6 +43,7 @@ impl<D: Disk> FileSystem<D> {
 
     /// Create a file system on a disk, with reserved data at the beginning
     /// Reserved data will be zero padded up to the nearest block
+    /// We need to pass ctime and ctime_nsec in order to initialize the unix timestamps
     pub fn create_reserved(mut disk: D, reserved: &[u8], ctime: u64, ctime_nsec: u32) -> Result<Self> {
         let size = disk.size()?;
         let block_offset = (reserved.len() as u64 + BLOCK_SIZE - 1)/BLOCK_SIZE;
@@ -80,6 +81,7 @@ impl<D: Disk> FileSystem<D> {
         }
     }
 
+    /// Read at a certain spot in the disk, returning data into buffer
     pub fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         self.disk.read_at(self.block + block, buffer)
     }

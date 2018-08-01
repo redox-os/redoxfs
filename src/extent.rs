@@ -21,7 +21,7 @@ impl Iterator<> for BlockIter {
     }
 }
 
-/// A disk extent
+/// A disk extent, [wikipedia](https://en.wikipedia.org/wiki/Extent_(file_systems))
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(packed)]
 pub struct Extent {
