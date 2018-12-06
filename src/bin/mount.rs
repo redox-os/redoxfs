@@ -1,4 +1,4 @@
-#![deny(warnings)]
+//#![deny(warnings)]
 #![cfg_attr(unix, feature(libc))]
 
 #[cfg(unix)]
@@ -15,10 +15,28 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::unix::io::FromRawFd;
 use std::process;
+use redoxfs::FileSystem;
 
-use redoxfs::{DiskCache, DiskFile, mount};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use redoxfs::{DiskCache, DiskFile, mount,Disk};
 use uuid::Uuid;
+#[cfg(target_os = "redox")]
+use syscall::{sigaction,sigreturn,SigAction,SIGKILL};
+use redoxfs::IS_UMT;
 
+#[cfg(target_os = "redox")]
+//set up a signal handler on redox, this implements unmounting. I have no idea what sa_flags is
+//for, so I put 2. I don't think 0,0 is a valid sa_mask. I don't know what i'm doing here. When u
+//send it a sigkill, it shuts off the filesystem
+fn setsig() {
+    sigaction(SIGKILL,Some(&SigAction{sa_handler:hi,sa_mask:[0,0],sa_flags:2}),None).unwrap();
+}
+
+#[cfg(unix)]
+// on linux, this is implemented properly, so no need for this unscrupulous nonsense!
+fn setsig() {
+    ()
+}
 #[cfg(unix)]
 fn fork() -> isize {
     unsafe { libc::fork() as isize }
@@ -124,6 +142,7 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, mut write: File) -> ! {
                         true
                     };
 
+                    setsig();
                     if matches {
                         match mount(filesystem, &mountpoint, || {
                             println!("redoxfs: mounted filesystem on {} to {}", path, mountpoint);
@@ -158,6 +177,7 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, mut write: File) -> ! {
 }
 
 fn main() {
+    println!("It just works");
     let mut args = env::args().skip(1);
 
     let disk_id = match args.next() {
@@ -206,7 +226,6 @@ fn main() {
         let pid = fork();
         if pid == 0 {
             drop(read);
-
             daemon(&disk_id, &mountpoint, write);
         } else if pid > 0 {
             drop(write);
@@ -221,4 +240,10 @@ fn main() {
     } else {
         panic!("redoxfs: failed to create pipe");
     }
+}
+#[cfg(target_os = "redox")]
+extern "C" fn hi(s:usize) {
+    println!("{}",s);
+    IS_UMT.store(1, Ordering::Relaxed);
+    sigreturn().unwrap();
 }

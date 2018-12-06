@@ -2,18 +2,19 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
 use std::str;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, ENOTEMPTY, EPERM, ENOENT, EBADF, ELOOP, EINVAL};
 use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK, O_NOFOLLOW};
 use syscall::scheme::Scheme;
-
+use std::sync::atomic::{AtomicUsize, Ordering};
+use syscall::EINTR;
 use BLOCK_SIZE;
 use disk::Disk;
 use filesystem::FileSystem;
 use node::Node;
+use IS_UMT;
 
 use super::resource::{Resource, DirResource, FileResource};
 use super::spin::Mutex;
@@ -251,8 +252,8 @@ pub fn canonicalize(current: &[u8], path: &[u8]) -> Vec<u8> {
 
 impl<D: Disk> Scheme for FileScheme<D> {
     fn open(&self, url: &[u8], flags: usize, uid: u32, gid: u32) -> Result<usize> {
+        //WE ARE NOT GOING TO BLOCK THE OPEN CALL AT ALL
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
-
         // println!("Open '{}' {:X}", path, flags);
 
         let mut fs = self.fs.borrow_mut();
@@ -387,6 +388,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn chmod(&self, url: &[u8], mode: u16, uid: u32, gid: u32) -> Result<usize> {
+        //block 
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Chmod '{}'", path);
@@ -408,6 +413,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn rmdir(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Rmdir '{}'", path);
@@ -445,6 +454,11 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn unlink(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
+        //block
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Unlink '{}'", path);
@@ -488,6 +502,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     /* Resource operations */
     #[allow(unused_variables)]
     fn dup(&self, old_id: usize, buf: &[u8]) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         // println!("Dup {}", old_id);
 
         if ! buf.is_empty() {
@@ -509,6 +527,13 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
     #[allow(unused_variables)]
     fn read(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
@@ -519,6 +544,15 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn write(&self, id: usize, buf: &[u8]) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
+        //block
+
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
@@ -529,6 +563,13 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn seek(&self, id: usize, pos: usize, whence: usize) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         // println!("Seek {}, {} {}", id, pos, whence);
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
@@ -539,6 +580,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fchmod(&self, id: usize, mode: u16) -> Result<usize> {
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
+        //block
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
             file.fchmod(mode, &mut self.fs.borrow_mut())
@@ -548,6 +593,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fchown(&self, id: usize, uid: u32, gid: u32) -> Result<usize> {
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
+        //block
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
             file.fchown(uid, gid, &mut self.fs.borrow_mut())
@@ -557,6 +606,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fcntl(&self, id: usize, cmd: usize, arg: usize) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
             file.fcntl(cmd, arg)
@@ -566,6 +619,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fpath(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let files = self.files.lock();
         if let Some(file) = files.get(&id) {
@@ -592,6 +649,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn frename(&self, id: usize, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
 
         // println!("Frename {}, {} from {}, {}", id, path, uid, gid);
@@ -720,6 +781,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fsync(&self, id: usize) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         // println!("Fsync {}", id);
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
@@ -730,6 +795,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn ftruncate(&self, id: usize, len: usize) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         // println!("Ftruncate {}, {}", id, len);
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
@@ -740,6 +809,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn futimens(&self, id: usize, times: &[TimeSpec]) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         // println!("Futimens {}, {}", id, times.len());
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
@@ -750,6 +823,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fmap(&self, id: usize, offset: usize, size: usize) -> Result<usize> {
+        //block
+        if 1 == IS_UMT.load(Ordering::Relaxed) {
+            return Err(Error::new(EINTR));
+        }
         // println!("Fmap {}, {}, {}", id, offset, size);
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {

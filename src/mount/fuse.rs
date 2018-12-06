@@ -7,6 +7,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{ErrorKind,Error};
 
 use BLOCK_SIZE;
 use disk::Disk;
@@ -27,7 +28,9 @@ pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: filesystem::FileSy
 
     callback();
 
-    session.run()
+    session.run()?;
+    session.filesystem.fs.close().map_err(|e| Error::new(ErrorKind::Interrupted,format!("{}",e)))
+        
 }
 
 pub struct Fuse<D: Disk> {

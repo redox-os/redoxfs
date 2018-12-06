@@ -10,6 +10,7 @@ use redoxfs::{FileSystem, DiskFile};
 use uuid::Uuid;
 
 fn main() {
+    println!("HI");
     let mut args = env::args().skip(1);
 
     let disk_path = if let Some(path) = args.next() {

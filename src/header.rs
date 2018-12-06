@@ -20,8 +20,9 @@ pub struct Header {
     pub root: u64,
     /// Block of free space node
     pub free: u64,
+    pub dirty: bool,
     /// Padding
-    pub padding: [u8; BLOCK_SIZE as usize - 56]
+    pub padding: [u8; BLOCK_SIZE as usize - 57]
 }
 
 impl Header {
@@ -33,7 +34,8 @@ impl Header {
             size: 0,
             root: 0,
             free: 0,
-            padding: [0; BLOCK_SIZE as usize - 56]
+            dirty:false,
+            padding: [0; BLOCK_SIZE as usize - 57]
         }
     }
 
@@ -46,7 +48,8 @@ impl Header {
             size: size,
             root: root,
             free: free,
-            padding: [0; BLOCK_SIZE as usize - 56]
+            dirty:false,
+            padding: [0; BLOCK_SIZE as usize - 57]
         }
     }
 
