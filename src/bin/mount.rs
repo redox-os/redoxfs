@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering;
 use uuid::Uuid;
 
 #[cfg(target_os = "redox")]
-use syscall::{sigaction, SigAction, SIGKILL};
+use syscall::{sigaction, SigAction, SIGTERM};
 use redoxfs::IS_UMT;
 
 #[cfg(target_os = "redox")]
@@ -33,11 +33,13 @@ extern "C" fn unmount_handler(_s: usize) {
 //for, so I put 2. I don't think 0,0 is a valid sa_mask. I don't know what i'm doing here. When u
 //send it a sigkill, it shuts off the filesystem
 fn setsig() {
-    sigaction(SIGKILL,Some(&SigAction{
+    let sig_action = SigAction {
         sa_handler: unmount_handler,
         sa_mask: [0,0],
         sa_flags: 0,
-    }),None).unwrap();
+    };
+
+    sigaction(SIGTERM, Some(&sig_action), None).unwrap();
 }
 
 #[cfg(unix)]
