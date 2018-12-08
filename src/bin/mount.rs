@@ -1,4 +1,4 @@
-//#![deny(warnings)]
+#![deny(warnings)]
 #![cfg_attr(unix, feature(libc))]
 
 #[cfg(unix)]
@@ -10,22 +10,19 @@ extern crate syscall;
 extern crate redoxfs;
 extern crate uuid;
 
-use redoxfs::{DiskCache, DiskFile, mount};
 use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::unix::io::FromRawFd;
 use std::process;
-use std::sync::atomic::Ordering;
+
+use redoxfs::{DiskCache, DiskFile, mount};
 use uuid::Uuid;
 
 #[cfg(target_os = "redox")]
-use syscall::{sigaction, SigAction, SIGTERM};
-use redoxfs::IS_UMT;
-
-#[cfg(target_os = "redox")]
 extern "C" fn unmount_handler(_s: usize) {
-    IS_UMT.store(1, Ordering::SeqCst);
+    use std::sync::atomic::Ordering;
+    redoxfs::IS_UMT.store(1, Ordering::SeqCst);
 }
 
 #[cfg(target_os = "redox")]
@@ -33,6 +30,8 @@ extern "C" fn unmount_handler(_s: usize) {
 //for, so I put 2. I don't think 0,0 is a valid sa_mask. I don't know what i'm doing here. When u
 //send it a sigkill, it shuts off the filesystem
 fn setsig() {
+    use syscall::{sigaction, SigAction, SIGTERM};
+
     let sig_action = SigAction {
         sa_handler: unmount_handler,
         sa_mask: [0,0],

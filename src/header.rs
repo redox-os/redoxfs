@@ -20,10 +20,8 @@ pub struct Header {
     pub root: u64,
     /// Block of free space node
     pub free: u64,
-    /// True if the filesystem is currently mounted
-    pub dirty: bool,
     /// Padding
-    pub padding: [u8; BLOCK_SIZE as usize - 57]
+    pub padding: [u8; BLOCK_SIZE as usize - 56]
 }
 
 impl Header {
@@ -35,8 +33,7 @@ impl Header {
             size: 0,
             root: 0,
             free: 0,
-            dirty:false,
-            padding: [0; BLOCK_SIZE as usize - 57]
+            padding: [0; BLOCK_SIZE as usize - 56]
         }
     }
 
@@ -49,8 +46,7 @@ impl Header {
             size: size,
             root: root,
             free: free,
-            dirty:false,
-            padding: [0; BLOCK_SIZE as usize - 57]
+            padding: [0; BLOCK_SIZE as usize - 56]
         }
     }
 

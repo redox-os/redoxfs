@@ -4,7 +4,6 @@ extern crate time;
 use std::cmp;
 use std::ffi::OsStr;
 use std::io;
-use std::io::{ErrorKind, Error};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,10 +27,7 @@ pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: filesystem::FileSy
 
     callback();
 
-    session.run()?;
-    
-    session.filesystem.fs.close().map_err(|e| Error::new(ErrorKind::Interrupted,format!("{}",e)))
-
+    session.run()
 }
 
 pub struct Fuse<D: Disk> {

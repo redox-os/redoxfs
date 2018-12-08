@@ -19,8 +19,6 @@ impl<D: Disk> FileSystem<D> {
             disk.read_at(block + header.0, &mut header.1)?;
 
             if header.1.valid() {
-                header.1.dirty = true;
-                disk.write_at(header.0, &header.1)?;
                 let mut root = (header.1.root, Node::default());
                 disk.read_at(block + root.0, &mut root.1)?;
 
@@ -36,12 +34,6 @@ impl<D: Disk> FileSystem<D> {
         }
 
         Err(Error::new(ENOENT))
-    }
-
-    pub fn close(&mut self) -> Result<()> {
-        self.header.1.dirty = false;
-        self.disk.write_at(self.header.0, &self.header.1)?;
-        Ok(())
     }
 
     /// Create a file system on a disk

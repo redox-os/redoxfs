@@ -89,7 +89,7 @@ impl Fmaps {
 
 pub struct FileScheme<D: Disk> {
     name: String,
-    pub(crate) fs: RefCell<FileSystem<D>>,
+    fs: RefCell<FileSystem<D>>,
     next_id: AtomicUsize,
     files: Mutex<BTreeMap<usize, Box<Resource<D>>>>,
     fmaps: Mutex<Fmaps>
