@@ -750,10 +750,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fmap(&self, id: usize, map: &Map) -> Result<usize> {
-        // println!("Fmap {}, {}, {}", id, offset, size);
+        // println!("Fmap {}, {:?}", id, map);
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
-            file.fmap(map.offset, map.size, &mut self.fmaps.lock(), &mut self.fs.borrow_mut())
+            file.fmap(map, &mut self.fmaps.lock(), &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }

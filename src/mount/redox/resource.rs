@@ -1,10 +1,9 @@
 use std::cmp::{min, max};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use syscall::data::TimeSpec;
+use syscall::data::{Map, Stat, TimeSpec};
 use syscall::error::{Error, Result, EBADF, EBUSY, EINVAL, EISDIR, EPERM};
-use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL, MODE_PERM};
-use syscall::{Stat, SEEK_SET, SEEK_CUR, SEEK_END};
+use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL, MODE_PERM, PROT_READ, PROT_WRITE, SEEK_SET, SEEK_CUR, SEEK_END};
 
 use disk::Disk;
 use filesystem::FileSystem;
@@ -16,7 +15,7 @@ pub trait Resource<D: Disk> {
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem<D>) -> Result<usize>;
-    fn fmap(&mut self, offset: usize, size: usize, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize>;
+    fn fmap(&mut self, map: &Map, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize>;
     fn funmap(&mut self, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize>;
     fn fchmod(&mut self, mode: u16, fs: &mut FileSystem<D>) -> Result<usize>;
     fn fchown(&mut self, uid: u32, gid: u32, fs: &mut FileSystem<D>) -> Result<usize>;
@@ -90,7 +89,7 @@ impl<D: Disk> Resource<D> for DirResource {
         Ok(self.seek)
     }
 
-    fn fmap(&mut self, _offset: usize, _size: usize, _maps: &mut Fmaps, _fs: &mut FileSystem<D>) -> Result<usize> {
+    fn fmap(&mut self, _map: &Map, _maps: &mut Fmaps, _fs: &mut FileSystem<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
     fn funmap(&mut self, _maps: &mut Fmaps, _fs: &mut FileSystem<D>) -> Result<usize> {
@@ -278,56 +277,62 @@ impl<D: Disk> Resource<D> for FileResource {
         Ok(self.seek as usize)
     }
 
-    fn fmap(&mut self, offset: usize, size: usize, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize> {
-        if self.flags & O_ACCMODE == O_RDWR {
-            let key_exact = FmapKey {
-                block: self.block,
-                offset,
-                size
-            };
-
-            let i = match maps.find_compatible(&key_exact) {
-                Ok((i, (key_existing, value))) => {
-                    value.refcount += 1;
-                    self.fmap = Some((i, key_exact));
-                    return Ok(value.buffer.as_ptr() as usize + (key_exact.offset - key_existing.offset))
-                },
-                Err(None) => {
-                    // This is bad!
-                    // We reached the limit of maps, and we can't reallocate
-                    // because that would invalidate stuff.
-                    // Sorry, nothing personal :(
-                    return Err(Error::new(EBUSY))
-                },
-                Err(Some(i)) => {
-                    // Can't do stuff in here because lifetime issues
-                    i
-                }
-            };
-            let key_round = key_exact.round();
-
-            let mut content = vec![0; key_round.size];
-            let mut count = 0;
-            while count < key_round.size {
-                match fs.read_node(self.block, key_round.offset as u64 + count as u64,
-                        &mut content[key_round.offset..][count..key_round.size])? {
-                    0 => break,
-                    n => count += n
-                }
-            }
-
-            let value = maps.insert(i, key_round, FmapValue {
-                buffer: content,
-                actual_size: count,
-                refcount: 1
-            });
-
-            self.fmap = Some((i, key_exact));
-            Ok(value.buffer.as_ptr() as usize + (key_exact.offset - key_round.offset))
-        } else {
-            Err(Error::new(EBADF))
+    fn fmap(&mut self, map: &Map, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize> {
+        let accmode = self.flags & O_ACCMODE;
+        if map.flags & PROT_READ > 0 && ! (accmode == O_RDWR || accmode == O_RDONLY) {
+            return Err(Error::new(EBADF));
         }
+        if map.flags & PROT_WRITE > 0 && ! (accmode == O_RDWR || accmode == O_WRONLY) {
+            return Err(Error::new(EBADF));
+        }
+        //TODO: PROT_EXEC?
+
+        let key_exact = FmapKey {
+            block: self.block,
+            offset: map.offset,
+            size: map.size
+        };
+
+        let i = match maps.find_compatible(&key_exact) {
+            Ok((i, (key_existing, value))) => {
+                value.refcount += 1;
+                self.fmap = Some((i, key_exact));
+                return Ok(value.buffer.as_ptr() as usize + (key_exact.offset - key_existing.offset))
+            },
+            Err(None) => {
+                // This is bad!
+                // We reached the limit of maps, and we can't reallocate
+                // because that would invalidate stuff.
+                // Sorry, nothing personal :(
+                return Err(Error::new(EBUSY))
+            },
+            Err(Some(i)) => {
+                // Can't do stuff in here because lifetime issues
+                i
+            }
+        };
+        let key_round = key_exact.round();
+
+        let mut content = vec![0; key_round.size];
+        let mut count = 0;
+        while count < key_round.size {
+            match fs.read_node(self.block, key_round.offset as u64 + count as u64,
+                    &mut content[key_round.offset..][count..key_round.size])? {
+                0 => break,
+                n => count += n
+            }
+        }
+
+        let value = maps.insert(i, key_round, FmapValue {
+            buffer: content,
+            actual_size: count,
+            refcount: 1
+        });
+
+        self.fmap = Some((i, key_exact));
+        Ok(value.buffer.as_ptr() as usize + (key_exact.offset - key_round.offset))
     }
+
     fn funmap(&mut self, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize> {
         self.sync_fmap(maps, fs)?;
         if let Some((i, _)) = self.fmap.as_ref() {
