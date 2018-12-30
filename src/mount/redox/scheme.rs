@@ -5,7 +5,7 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use syscall::data::{Stat, StatVfs, TimeSpec};
+use syscall::data::{Map, Stat, StatVfs, TimeSpec};
 use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, ENOTEMPTY, EPERM, ENOENT, EBADF, ELOOP, EINVAL};
 use syscall::flag::{O_APPEND, O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK, O_NOFOLLOW};
 use syscall::scheme::Scheme;
@@ -749,11 +749,11 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
-    fn fmap(&self, id: usize, offset: usize, size: usize) -> Result<usize> {
+    fn fmap(&self, id: usize, map: &Map) -> Result<usize> {
         // println!("Fmap {}, {}, {}", id, offset, size);
         let mut files = self.files.lock();
         if let Some(file) = files.get_mut(&id) {
-            file.fmap(offset, size, &mut self.fmaps.lock(), &mut self.fs.borrow_mut())
+            file.fmap(map.offset, map.size, &mut self.fmaps.lock(), &mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
