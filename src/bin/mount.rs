@@ -187,6 +187,18 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, mut write: File) -> ! {
     process::exit(1);
 }
 
+fn print_uuid(path: &str) {
+    match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
+        Ok(disk) => match redoxfs::FileSystem::open(disk) {
+            Ok(filesystem) => {
+                println!("{}", Uuid::from_bytes(&filesystem.header.1.uuid).unwrap().hyphenated());
+            },
+            Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err)
+        },
+        Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
+    }
+}
+
 fn main() {
     let mut args = env::args().skip(1);
 
@@ -209,6 +221,18 @@ fn main() {
             };
 
             DiskId::Uuid(uuid)
+        } else if arg == "--get-uuid" {
+            match args.next() {
+                Some(arg) => {
+                    print_uuid(&arg);
+                    process::exit(1);
+                },
+                None => {
+                    println!("redoxfs: no disk provided");
+                    usage();
+                    process::exit(1);
+                },
+            };
         } else {
             DiskId::Path(arg)
         },
