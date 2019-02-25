@@ -38,7 +38,8 @@ fn node_attr(node: &(u64, Node)) -> FileAttr {
     FileAttr {
         ino: node.0,
         size: node.1.extents[0].length,
-        blocks: (node.1.extents[0].length + BLOCK_SIZE - 1)/BLOCK_SIZE,
+        // Blocks is in 512 byte blocks, not in our block size
+        blocks: (node.1.extents[0].length + BLOCK_SIZE - 1)/BLOCK_SIZE * (BLOCK_SIZE / 512),
         atime: NULL_TIME,
         mtime: Timespec {
             sec: node.1.mtime as i64,
