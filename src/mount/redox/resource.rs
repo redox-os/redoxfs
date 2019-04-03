@@ -209,9 +209,10 @@ impl FileResource {
             // Minimum out of our size and the original file size
             let actual_size = (value.actual_size - rel_offset).min(key_exact.size);
 
+            let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+
             let mut count = 0;
             while count < actual_size {
-                let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
                 match fs.write_node(self.block, key_exact.offset as u64 + count as u64,
                         &value.buffer[rel_offset..][count..actual_size],
                         mtime.as_secs(), mtime.subsec_nanos())? {
@@ -317,7 +318,7 @@ impl<D: Disk> Resource<D> for FileResource {
         let mut count = 0;
         while count < key_round.size {
             match fs.read_node(self.block, key_round.offset as u64 + count as u64,
-                    &mut content[key_round.offset..][count..key_round.size])? {
+                    &mut content[count..key_round.size])? {
                 0 => break,
                 n => count += n
             }
