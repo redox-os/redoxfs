@@ -1,5 +1,3 @@
-extern crate spin;
-
 use syscall;
 use syscall::{Packet, Scheme};
 use std::fs::File;

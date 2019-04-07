@@ -81,6 +81,7 @@ impl<T: Disk> Disk for DiskCache<T> {
     }
 
     fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+        //TODO: Write only blocks that have changed
         // println!("Cache write at {}", block);
 
         self.inner.write_at(block, buffer)?;

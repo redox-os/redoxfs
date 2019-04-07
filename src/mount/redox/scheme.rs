@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::result::Result as StdResult;
 use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,83 +15,13 @@ use filesystem::FileSystem;
 use node::Node;
 
 use super::resource::{Resource, DirResource, FileResource};
-use super::spin::Mutex;
-
-/// The size to round offset/len up to.
-/// This ensures more fmaps can share the same memory even with different parameters.
-const PAGE_SIZE: usize = 4096;
-/// The max amount of fmaps that can be held simultaneously.
-/// This restriction is here because we can under no circumstances reallocate,
-/// that would invalidate previous mappings.
-const FMAP_AMOUNT: usize = 1024;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FmapKey {
-    pub block: u64,
-    pub offset: usize,
-    pub size: usize
-}
-impl FmapKey {
-    pub fn round(&self) -> FmapKey {
-        let remainder = self.size % PAGE_SIZE;
-        FmapKey {
-            block: self.block,
-            offset: self.offset - self.offset % PAGE_SIZE,
-            size: if remainder == 0 { self.size } else { self.size - remainder + PAGE_SIZE }
-        }
-    }
-    pub fn is_compatible(&self, other: &FmapKey) -> bool {
-        self.block == other.block
-            && self.offset <= other.offset
-            && self.offset + self.size >= other.offset + other.size
-    }
-}
-#[derive(Clone)]
-pub struct FmapValue {
-    pub buffer: Vec<u8>,
-    /// The actual file length. Syncing only writes &buffer[..actual_size].
-    pub actual_size: usize,
-    pub refcount: usize
-}
-
-// NOTE: This can NOT reallocate. That would invalidate previous mappings.
-pub struct Fmaps(Vec<Option<(FmapKey, FmapValue)>>);
-impl Default for Fmaps {
-    fn default() -> Fmaps {
-        Fmaps(vec![None; FMAP_AMOUNT])
-    }
-}
-
-impl Fmaps {
-    pub fn find_compatible(&mut self, key: &FmapKey) -> StdResult<(usize, &mut (FmapKey, FmapValue)), Option<usize>> {
-        let mut first_empty = None;
-        for (i, entry) in self.0.iter_mut().enumerate() {
-            match entry {
-                None if first_empty.is_none() => first_empty = Some(i),
-                Some(entry) if entry.0.is_compatible(key) => return Ok((i, entry)),
-                _ => ()
-            }
-        }
-        Err(first_empty)
-    }
-    pub fn index(&mut self, index: usize) -> &mut Option<(FmapKey, FmapValue)> {
-        &mut self.0[index]
-    }
-    pub fn insert(&mut self, index: usize, key: FmapKey, value: FmapValue) -> &mut FmapValue {
-        let elem = &mut self.0[index];
-        assert!(elem.is_none());
-        *elem = Some((key, value));
-
-        &mut elem.as_mut().unwrap().1
-    }
-}
 
 pub struct FileScheme<D: Disk> {
     name: String,
     fs: RefCell<FileSystem<D>>,
     next_id: AtomicUsize,
-    files: Mutex<BTreeMap<usize, Box<Resource<D>>>>,
-    fmaps: Mutex<Fmaps>
+    files: RefCell<BTreeMap<usize, Box<Resource<D>>>>,
+    fmap: RefCell<BTreeMap<usize, usize>>,
 }
 
 impl<D: Disk> FileScheme<D> {
@@ -101,8 +30,8 @@ impl<D: Disk> FileScheme<D> {
             name: name,
             fs: RefCell::new(fs),
             next_id: AtomicUsize::new(1),
-            files: Mutex::new(BTreeMap::new()),
-            fmaps: Mutex::new(Fmaps::default())
+            files: RefCell::new(BTreeMap::new()),
+            fmap: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -381,7 +310,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
         };
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        self.files.lock().insert(id, resource);
+        self.files.borrow_mut().insert(id, resource);
 
         Ok(id)
     }
@@ -494,7 +423,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
             return Err(Error::new(EINVAL));
         }
 
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         let resource = if let Some(old_resource) = files.get(&old_id) {
             old_resource.dup()?
         } else {
@@ -510,7 +439,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
     #[allow(unused_variables)]
     fn read(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
             file.read(buf, &mut self.fs.borrow_mut())
         } else {
@@ -520,7 +449,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
     fn write(&self, id: usize, buf: &[u8]) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
             file.write(buf, &mut self.fs.borrow_mut())
         } else {
@@ -530,7 +459,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
     fn seek(&self, id: usize, pos: usize, whence: usize) -> Result<usize> {
         // println!("Seek {}, {} {}", id, pos, whence);
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
             file.seek(pos, whence, &mut self.fs.borrow_mut())
         } else {
@@ -539,7 +468,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fchmod(&self, id: usize, mode: u16) -> Result<usize> {
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
             file.fchmod(mode, &mut self.fs.borrow_mut())
         } else {
@@ -548,7 +477,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fchown(&self, id: usize, uid: u32, gid: u32) -> Result<usize> {
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
             file.fchown(uid, gid, &mut self.fs.borrow_mut())
         } else {
@@ -557,7 +486,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fcntl(&self, id: usize, cmd: usize, arg: usize) -> Result<usize> {
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
             file.fcntl(cmd, arg)
         } else {
@@ -567,7 +496,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
     fn fpath(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let files = self.files.lock();
+        let files = self.files.borrow_mut();
         if let Some(file) = files.get(&id) {
             let name = self.name.as_bytes();
 
@@ -596,7 +525,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
         // println!("Frename {}, {} from {}, {}", id, path, uid, gid);
 
-        let files = self.files.lock();
+        let files = self.files.borrow_mut();
         if let Some(file) = files.get(&id) {
             //TODO: Check for EINVAL
             // The new pathname contained a path prefix of the old, or, more generally,
@@ -692,7 +621,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
     fn fstat(&self, id: usize, stat: &mut Stat) -> Result<usize> {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
-        let files = self.files.lock();
+        let files = self.files.borrow_mut();
         if let Some(file) = files.get(&id) {
             file.stat(stat, &mut self.fs.borrow_mut())
         } else {
@@ -701,7 +630,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
     }
 
     fn fstatvfs(&self, id: usize, stat: &mut StatVfs) -> Result<usize> {
-        let files = self.files.lock();
+        let files = self.files.borrow_mut();
         if let Some(_file) = files.get(&id) {
             let mut fs = self.fs.borrow_mut();
 
@@ -721,9 +650,9 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
     fn fsync(&self, id: usize) -> Result<usize> {
         // println!("Fsync {}", id);
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
-            file.sync(&mut self.fmaps.lock(), &mut self.fs.borrow_mut())
+            file.sync(&mut self.fs.borrow_mut())
         } else {
             Err(Error::new(EBADF))
         }
@@ -731,7 +660,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
     fn ftruncate(&self, id: usize, len: usize) -> Result<usize> {
         // println!("Ftruncate {}, {}", id, len);
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
             file.truncate(len, &mut self.fs.borrow_mut())
         } else {
@@ -741,7 +670,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
     fn futimens(&self, id: usize, times: &[TimeSpec]) -> Result<usize> {
         // println!("Futimens {}, {}", id, times.len());
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
             file.utimens(times, &mut self.fs.borrow_mut())
         } else {
@@ -751,19 +680,33 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
     fn fmap(&self, id: usize, map: &Map) -> Result<usize> {
         // println!("Fmap {}, {:?}", id, map);
-        let mut files = self.files.lock();
+        let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
-            file.fmap(map, &mut self.fmaps.lock(), &mut self.fs.borrow_mut())
+            let address = file.fmap(map, &mut self.fs.borrow_mut())?;
+            self.fmap.borrow_mut().insert(address, id);
+            Ok(address)
         } else {
             Err(Error::new(EBADF))
         }
     }
 
+    fn funmap(&self, address: usize) -> Result<usize> {
+        if let Some(id) = self.fmap.borrow_mut().remove(&address) {
+            let mut files = self.files.borrow_mut();
+            if let Some(file) = files.get_mut(&id) {
+                file.funmap(address, &mut self.fs.borrow_mut())
+            } else {
+                Err(Error::new(EINVAL))
+            }
+        } else {
+            Err(Error::new(EINVAL))
+        }
+    }
+
     fn close(&self, id: usize) -> Result<usize> {
         // println!("Close {}", id);
-        let mut files = self.files.lock();
-        if let Some(mut file) = files.remove(&id) {
-            let _ = file.funmap(&mut self.fmaps.lock(), &mut self.fs.borrow_mut());
+        let mut files = self.files.borrow_mut();
+        if files.remove(&id).is_some() {
             Ok(0)
         } else {
             Err(Error::new(EBADF))

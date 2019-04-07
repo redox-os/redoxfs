@@ -1,13 +1,14 @@
 use std::cmp::{min, max};
+use std::collections::BTreeMap;
+use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::{Map, Stat, TimeSpec};
-use syscall::error::{Error, Result, EBADF, EBUSY, EINVAL, EISDIR, EPERM};
+use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, ENOMEM, EPERM};
 use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL, MODE_PERM, PROT_READ, PROT_WRITE, SEEK_SET, SEEK_CUR, SEEK_END};
 
 use disk::Disk;
 use filesystem::FileSystem;
-use super::scheme::{Fmaps, FmapKey, FmapValue};
 
 pub trait Resource<D: Disk> {
     fn block(&self) -> u64;
@@ -15,14 +16,14 @@ pub trait Resource<D: Disk> {
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem<D>) -> Result<usize>;
-    fn fmap(&mut self, map: &Map, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize>;
-    fn funmap(&mut self, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize>;
+    fn fmap(&mut self, map: &Map, fs: &mut FileSystem<D>) -> Result<usize>;
+    fn funmap(&mut self, address: usize, fs: &mut FileSystem<D>) -> Result<usize>;
     fn fchmod(&mut self, mode: u16, fs: &mut FileSystem<D>) -> Result<usize>;
     fn fchown(&mut self, uid: u32, gid: u32, fs: &mut FileSystem<D>) -> Result<usize>;
     fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize>;
     fn path(&self, buf: &mut [u8]) -> Result<usize>;
     fn stat(&self, _stat: &mut Stat, fs: &mut FileSystem<D>) -> Result<usize>;
-    fn sync(&mut self, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize>;
+    fn sync(&mut self, fs: &mut FileSystem<D>) -> Result<usize>;
     fn truncate(&mut self, len: usize, fs: &mut FileSystem<D>) -> Result<usize>;
     fn utimens(&mut self, times: &[TimeSpec], fs: &mut FileSystem<D>) -> Result<usize>;
 }
@@ -89,10 +90,10 @@ impl<D: Disk> Resource<D> for DirResource {
         Ok(self.seek)
     }
 
-    fn fmap(&mut self, _map: &Map, _maps: &mut Fmaps, _fs: &mut FileSystem<D>) -> Result<usize> {
+    fn fmap(&mut self, _map: &Map, _fs: &mut FileSystem<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
-    fn funmap(&mut self, _maps: &mut Fmaps, _fs: &mut FileSystem<D>) -> Result<usize> {
+    fn funmap(&mut self, _address: usize, _fs: &mut FileSystem<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 
@@ -167,7 +168,7 @@ impl<D: Disk> Resource<D> for DirResource {
         Ok(0)
     }
 
-    fn sync(&mut self, _maps: &mut Fmaps, _fs: &mut FileSystem<D>) -> Result<usize> {
+    fn sync(&mut self, _fs: &mut FileSystem<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 
@@ -180,13 +181,78 @@ impl<D: Disk> Resource<D> for DirResource {
     }
 }
 
+pub struct Fmap {
+    block: u64,
+    offset: usize,
+    flags: usize,
+    data: &'static mut [u8],
+}
+
+impl Fmap {
+    pub unsafe fn new<D: Disk>(block: u64, map: &Map, fs: &mut FileSystem<D>) -> Result<Self> {
+        extern "C" {
+            fn memalign(align: usize, size: usize) -> *mut u8;
+            fn free(ptr: *mut u8);
+        }
+
+        // Memory provided to fmap must be page aligned and sized
+        let align = 4096;
+        let address = memalign(align, ((map.size + align - 1) / align) * align);
+        if address.is_null() {
+            return Err(Error::new(ENOMEM));
+        }
+
+        // Read buffer from disk
+        let buf = slice::from_raw_parts_mut(address, map.size);
+        let count = match fs.read_node(block, map.offset as u64, buf) {
+            Ok(ok) => ok,
+            Err(err) => {
+                free(address);
+                return Err(err);
+            }
+        };
+
+        // Make sure remaining data is zeroed
+        for i in count..buf.len() {
+            buf[i] = 0;
+        }
+
+        Ok(Self {
+            block,
+            offset: map.offset,
+            flags: map.flags,
+            data: &mut buf[..count],
+        })
+    }
+
+    pub fn sync<D: Disk>(&mut self, fs: &mut FileSystem<D>) -> Result<()> {
+        if self.flags & PROT_WRITE == PROT_WRITE {
+            let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            fs.write_node(self.block, self.offset as u64, &self.data, mtime.as_secs(), mtime.subsec_nanos())?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Fmap {
+    fn drop(&mut self) {
+        unsafe {
+            extern "C" {
+                fn free(ptr: *mut u8);
+            }
+
+            free(self.data.as_mut_ptr());
+        }
+    }
+}
+
 pub struct FileResource {
     path: String,
     block: u64,
     flags: usize,
     seek: u64,
     uid: u32,
-    fmap: Option<(usize, FmapKey)>
+    fmaps: BTreeMap<usize, Fmap>,
 }
 
 impl FileResource {
@@ -197,34 +263,8 @@ impl FileResource {
             flags: flags,
             seek: seek,
             uid: uid,
-            fmap: None
+            fmaps: BTreeMap::new(),
         }
-    }
-
-    fn sync_fmap<D: Disk>(&mut self, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<()> {
-        if let Some((i, key_exact)) = self.fmap.as_ref() {
-            let (key_round, value) = maps.index(*i).as_mut().expect("mapping dropped while still referenced");
-
-            let rel_offset = key_exact.offset - key_round.offset;
-            // Minimum out of our size and the original file size
-            let actual_size = (value.actual_size - rel_offset).min(key_exact.size);
-
-            let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-
-            let mut count = 0;
-            while count < actual_size {
-                match fs.write_node(self.block, key_exact.offset as u64 + count as u64,
-                        &value.buffer[rel_offset..][count..actual_size],
-                        mtime.as_secs(), mtime.subsec_nanos())? {
-                    0 => {
-                        eprintln!("Fmap failed to write whole buffer, encountered EOF early.");
-                        break;
-                    }
-                    n => count += n,
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -240,7 +280,7 @@ impl<D: Disk> Resource<D> for FileResource {
             flags: self.flags,
             seek: self.seek,
             uid: self.uid,
-            fmap: None
+            fmaps: BTreeMap::new(),
         }))
     }
 
@@ -278,7 +318,7 @@ impl<D: Disk> Resource<D> for FileResource {
         Ok(self.seek as usize)
     }
 
-    fn fmap(&mut self, map: &Map, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize> {
+    fn fmap(&mut self, map: &Map, fs: &mut FileSystem<D>) -> Result<usize> {
         let accmode = self.flags & O_ACCMODE;
         if map.flags & PROT_READ > 0 && ! (accmode == O_RDWR || accmode == O_RDONLY) {
             return Err(Error::new(EBADF));
@@ -288,66 +328,20 @@ impl<D: Disk> Resource<D> for FileResource {
         }
         //TODO: PROT_EXEC?
 
-        let key_exact = FmapKey {
-            block: self.block,
-            offset: map.offset,
-            size: map.size
-        };
-
-        let i = match maps.find_compatible(&key_exact) {
-            Ok((i, (key_existing, value))) => {
-                value.refcount += 1;
-                self.fmap = Some((i, key_exact));
-                return Ok(value.buffer.as_ptr() as usize + (key_exact.offset - key_existing.offset))
-            },
-            Err(None) => {
-                // This is bad!
-                // We reached the limit of maps, and we can't reallocate
-                // because that would invalidate stuff.
-                // Sorry, nothing personal :(
-                return Err(Error::new(EBUSY))
-            },
-            Err(Some(i)) => {
-                // Can't do stuff in here because lifetime issues
-                i
-            }
-        };
-        let key_round = key_exact.round();
-
-        let mut content = vec![0; key_round.size];
-        let mut count = 0;
-        while count < key_round.size {
-            match fs.read_node(self.block, key_round.offset as u64 + count as u64,
-                    &mut content[count..key_round.size])? {
-                0 => break,
-                n => count += n
-            }
-        }
-
-        let value = maps.insert(i, key_round, FmapValue {
-            buffer: content,
-            actual_size: count,
-            refcount: 1
-        });
-
-        self.fmap = Some((i, key_exact));
-        Ok(value.buffer.as_ptr() as usize + (key_exact.offset - key_round.offset))
+        let map = unsafe { Fmap::new(self.block, map, fs)? };
+        let address = map.data.as_ptr() as usize;
+        self.fmaps.insert(address, map);
+        Ok(address)
     }
 
-    fn funmap(&mut self, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize> {
-        self.sync_fmap(maps, fs)?;
-        if let Some((i, _)) = self.fmap.as_ref() {
-            let value = maps.index(*i);
-            let clear = {
-                let (_, value) = value.as_mut().expect("mapping dropped while still referenced");
-                value.refcount -= 1;
-                value.refcount == 0
-            };
-            if clear {
-                *value = None;
-            }
+    fn funmap(&mut self, address: usize, fs: &mut FileSystem<D>) -> Result<usize> {
+        if let Some(mut fmap) = self.fmaps.remove(&address) {
+            fmap.sync(fs)?;
+
+            Ok(0)
+        } else {
+            Err(Error::new(EINVAL))
         }
-        Ok(0)
     }
 
     fn fchmod(&mut self, mode: u16, fs: &mut FileSystem<D>) -> Result<usize> {
@@ -428,8 +422,11 @@ impl<D: Disk> Resource<D> for FileResource {
         Ok(0)
     }
 
-    fn sync(&mut self, maps: &mut Fmaps, fs: &mut FileSystem<D>) -> Result<usize> {
-        self.sync_fmap(maps, fs)?;
+    fn sync(&mut self, fs: &mut FileSystem<D>) -> Result<usize> {
+        for fmap in self.fmaps.values_mut() {
+            fmap.sync(fs)?;
+        }
+
         Ok(0)
     }
 
@@ -459,6 +456,14 @@ impl<D: Disk> Resource<D> for FileResource {
             }
         } else {
             Err(Error::new(EPERM))
+        }
+    }
+}
+
+impl Drop for FileResource {
+    fn drop(&mut self) {
+        if ! self.fmaps.is_empty() {
+            eprintln!("redoxfs: file {} still has {} fmaps!", self.path, self.fmaps.len());
         }
     }
 }
