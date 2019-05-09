@@ -494,6 +494,16 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
+    fn fevent(&self, id: usize, flags: usize) -> Result<usize> {
+        let files = self.files.borrow_mut();
+        if let Some(file) = files.get(&id) {
+            // EPERM is returned for files that are always readable or writable
+            Err(Error::new(EPERM))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
     fn fpath(&self, id: usize, buf: &mut [u8]) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let files = self.files.borrow_mut();

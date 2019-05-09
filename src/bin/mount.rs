@@ -1,6 +1,6 @@
-#![cfg_attr(unix, feature(libc))]
+#![cfg_attr(not(target_os = "redox"), feature(libc))]
 
-#[cfg(unix)]
+#[cfg(not(target_os = "redox"))]
 extern crate libc;
 
 #[cfg(target_os = "redox")]
@@ -12,7 +12,7 @@ extern crate uuid;
 use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::unix::io::FromRawFd;
+use std::os::unix::io::{FromRawFd, RawFd};
 use std::process;
 
 use redoxfs::{DiskCache, DiskFile, mount};
@@ -40,18 +40,18 @@ fn setsig() {
     sigaction(SIGTERM, Some(&sig_action), None).unwrap();
 }
 
-#[cfg(unix)]
+#[cfg(not(target_os = "redox"))]
 // on linux, this is implemented properly, so no need for this unscrupulous nonsense!
 fn setsig() {
     ()
 }
 
-#[cfg(unix)]
+#[cfg(not(target_os = "redox"))]
 fn fork() -> isize {
     unsafe { libc::fork() as isize }
 }
 
-#[cfg(unix)]
+#[cfg(not(target_os = "redox"))]
 fn pipe(pipes: &mut [i32; 2]) -> isize {
     unsafe { libc::pipe(pipes.as_mut_ptr()) as isize }
 }
@@ -253,8 +253,8 @@ fn main() {
 
     let mut pipes = [0; 2];
     if pipe(&mut pipes) == 0 {
-        let mut read = unsafe { File::from_raw_fd(pipes[0]) };
-        let write = unsafe { File::from_raw_fd(pipes[1]) };
+        let mut read = unsafe { File::from_raw_fd(pipes[0] as RawFd) };
+        let write = unsafe { File::from_raw_fd(pipes[1] as RawFd) };
 
         let pid = fork();
         if pid == 0 {

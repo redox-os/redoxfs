@@ -4,13 +4,13 @@ use std::path::Path;
 use disk::Disk;
 use filesystem::FileSystem;
 
-#[cfg(unix)]
+#[cfg(not(target_os = "redox"))]
 mod fuse;
 
 #[cfg(target_os = "redox")]
 mod redox;
 
-#[cfg(all(unix, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: &P, callback: F) -> io::Result<()> {
     use std::ffi::OsStr;
 
@@ -24,7 +24,7 @@ pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mou
     ])
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "redox")))]
 pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: &P, callback: F) -> io::Result<()> {
     fuse::mount(filesystem, mountpoint, callback, &[])
 }

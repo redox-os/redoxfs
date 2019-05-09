@@ -30,7 +30,7 @@ doc = false
 redox_syscall = "0.1"
 uuid = { version = "0.5", features = ["v4"] }
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(not(target_os = "redox"))'.dependencies]
 fuse = "0.3"
 libc = "0.2"
 time = "0.1"
