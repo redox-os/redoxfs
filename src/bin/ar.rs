@@ -7,7 +7,7 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use redoxfs::{BLOCK_SIZE, Disk, DiskFile, Extent, FileSystem, Node};
+use redoxfs::{BLOCK_SIZE, Disk, DiskSparse, Extent, FileSystem, Node};
 use uuid::Uuid;
 
 fn syscall_err(err: syscall::Error) -> io::Error {
@@ -72,14 +72,15 @@ fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, ctim
     let free_block = fs.header.1.free;
     let mut free = fs.node(free_block).map_err(syscall_err)?;
     let end_block = free.1.extents[0].block;
+    let end_size = end_block * BLOCK_SIZE;
     free.1.extents[0] = Extent::default();
     fs.write_at(free.0, &free.1).map_err(syscall_err)?;
 
-    fs.header.1.size = end_block;
+    fs.header.1.size = end_size;
     let header = fs.header;
     fs.write_at(header.0, &header.1).map_err(syscall_err)?;
 
-    Ok(end_block * BLOCK_SIZE)
+    Ok(end_size)
 }
 
 fn main() {
@@ -103,7 +104,7 @@ fn main() {
 
     let bootloader_path_opt = args.next();
 
-    let disk = match DiskFile::open(&disk_path) {
+    let disk = match DiskSparse::create(&disk_path) {
         Ok(disk) => disk,
         Err(err) => {
             println!("redoxfs-ar: failed to open image {}: {}", disk_path, err);

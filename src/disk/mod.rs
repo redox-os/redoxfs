@@ -2,9 +2,11 @@ use syscall::error::Result;
 
 pub use self::cache::DiskCache;
 pub use self::file::DiskFile;
+pub use self::sparse::DiskSparse;
 
 mod cache;
 mod file;
+mod sparse;
 
 /// A disk
 pub trait Disk {
