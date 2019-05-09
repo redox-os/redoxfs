@@ -16,7 +16,7 @@ macro_rules! try_disk {
 }
 
 pub struct DiskFile {
-    file: File
+    pub file: File
 }
 
 impl DiskFile {

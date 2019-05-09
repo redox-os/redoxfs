@@ -2,19 +2,19 @@ extern crate redoxfs;
 extern crate syscall;
 extern crate uuid;
 
-use std::{env, fs, process, time};
+use std::{env, fs, process};
 use std::io::{self, Read};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use redoxfs::{Disk, DiskFile, FileSystem, Node};
+use redoxfs::{BLOCK_SIZE, Disk, DiskFile, Extent, FileSystem, Node};
 use uuid::Uuid;
 
 fn syscall_err(err: syscall::Error) -> io::Error {
     io::Error::from_raw_os_error(err.errno)
 }
 
-fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_block: u64, parent_path: P) -> io::Result<()> {
+fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, ctime: &Duration, parent_block: u64) -> io::Result<()> {
     for entry_res in fs::read_dir(parent_path)? {
         let entry = entry_res?;
 
@@ -36,7 +36,6 @@ fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_block: u64, p
         };
 
         let mode = mode_type | (mode_perm & Node::MODE_PERM);
-        let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut node = fs.create_node(
             mode,
             &name,
@@ -49,7 +48,7 @@ fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_block: u64, p
         fs.write_at(node.0, &node.1).map_err(syscall_err)?;
 
         if dir {
-            archive(fs, node.0, path)?;
+            archive_at(fs, path, ctime, node.0)?;
         } else {
             let data = fs::read(path)?;
             fs.write_node(
@@ -63,6 +62,24 @@ fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_block: u64, p
     }
 
     Ok(())
+}
+
+
+fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, ctime: &Duration) -> io::Result<u64> {
+    let root_block = fs.header.1.root;
+    archive_at(fs, parent_path, ctime, root_block)?;
+
+    let free_block = fs.header.1.free;
+    let mut free = fs.node(free_block).map_err(syscall_err)?;
+    let end_block = free.1.extents[0].block;
+    free.1.extents[0] = Extent::default();
+    fs.write_at(free.0, &free.1).map_err(syscall_err)?;
+
+    fs.header.1.size = end_block;
+    let header = fs.header;
+    fs.write_at(header.0, &header.1).map_err(syscall_err)?;
+
+    Ok(end_block * BLOCK_SIZE)
 }
 
 fn main() {
@@ -111,21 +128,34 @@ fn main() {
         }
     };
 
-    let ctime = time::SystemTime::now().duration_since(time::UNIX_EPOCH).unwrap();
+    let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     match FileSystem::create_reserved(disk, &bootloader, ctime.as_secs(), ctime.subsec_nanos()) {
-        Ok(mut filesystem) => {
-            let root = filesystem.header.1.root;
-            if let Err(err) = archive(&mut filesystem, root, &folder_path) {
-                println!("redoxfs-ar: failed to archive {}: {}", folder_path, err);
+        Ok(mut fs) => {
+            let size = match archive(&mut fs, &folder_path, &ctime) {
+                Ok(ok) => ok,
+                Err(err) => {
+                    println!("redoxfs-ar: failed to archive {}: {}", folder_path, err);
+                    process::exit(1);
+                }
+            };
+
+            if let Err(err) = fs.disk.file.set_len(size) {
+                println!("redoxfs-ar: failed to truncate {} to {}: {}", disk_path, size, err);
                 process::exit(1);
             }
 
-            let uuid = Uuid::from_bytes(&filesystem.header.1.uuid).unwrap();
-            println!("redoxfs-ar: created filesystem on {}, reserved {} blocks, size {} MB, uuid {}", disk_path, filesystem.block, filesystem.header.1.size/1000/1000, uuid.hyphenated());
+            let uuid = Uuid::from_bytes(&fs.header.1.uuid).unwrap();
+            println!(
+                "redoxfs-ar: created filesystem on {}, reserved {} blocks, size {} MB, uuid {}",
+                disk_path,
+                fs.block,
+                fs.header.1.size/1000/1000,
+                uuid.hyphenated()
+            );
         },
         Err(err) => {
             println!("redoxfs-ar: failed to create filesystem on {}: {}", disk_path, err);
             process::exit(1);
         }
-    }
+    };
 }

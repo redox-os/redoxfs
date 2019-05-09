@@ -6,6 +6,7 @@ use uuid::Uuid;
 use {BLOCK_SIZE, SIGNATURE, VERSION};
 
 /// The header of the filesystem
+#[derive(Clone, Copy)]
 #[repr(packed)]
 pub struct Header {
     /// Signature, should be SIGNATURE
