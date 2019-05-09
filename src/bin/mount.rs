@@ -1,4 +1,3 @@
-#![deny(warnings)]
 #![cfg_attr(unix, feature(libc))]
 
 #[cfg(unix)]

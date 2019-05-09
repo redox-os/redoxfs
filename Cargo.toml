@@ -17,6 +17,11 @@ path = "src/bin/mount.rs"
 doc = false
 
 [[bin]]
+name = "redoxfs-ar"
+path = "src/bin/ar.rs"
+doc = false
+
+[[bin]]
 name = "redoxfs-mkfs"
 path = "src/bin/mkfs.rs"
 doc = false

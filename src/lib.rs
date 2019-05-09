@@ -1,8 +1,6 @@
 #![crate_name="redoxfs"]
 #![crate_type="lib"]
 
-//#![deny(warnings)]
-
 extern crate syscall;
 extern crate uuid;
 
