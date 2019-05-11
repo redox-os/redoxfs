@@ -6,7 +6,7 @@ use std::{env, fs, process};
 use std::io::{self, Read};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::MetadataExt;
 
 use redoxfs::{BLOCK_SIZE, Disk, DiskSparse, Extent, FileSystem, Node};
 use uuid::Uuid;
@@ -20,7 +20,6 @@ fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, c
         let entry = entry_res?;
 
         let metadata = entry.metadata()?;
-        let permissions = metadata.permissions();
         let file_type = metadata.file_type();
 
         let name = entry.file_name().into_string().map_err(|_|
@@ -43,16 +42,16 @@ fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, c
             ));
         };
 
-        let mode = mode_type | (permissions.mode() as u16 & Node::MODE_PERM);
+        let mode = mode_type | (metadata.mode() as u16 & Node::MODE_PERM);
         let mut node = fs.create_node(
             mode,
             &name,
             parent_block,
-            ctime.as_secs(),
-            ctime.subsec_nanos()
+            metadata.ctime() as u64,
+            metadata.ctime_nsec() as u32
         ).map_err(syscall_err)?;
-        node.1.uid = 0;
-        node.1.gid = 0;
+        node.1.uid = metadata.uid();
+        node.1.gid = metadata.gid();
         fs.write_at(node.0, &node.1).map_err(syscall_err)?;
 
         let path = entry.path();
@@ -64,8 +63,8 @@ fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, c
                 node.0,
                 0,
                 &data,
-                ctime.as_secs(),
-                ctime.subsec_nanos()
+                metadata.mtime() as u64,
+                metadata.mtime_nsec() as u32
             ).map_err(syscall_err)?;
         } else {
             return Err(io::Error::new(
