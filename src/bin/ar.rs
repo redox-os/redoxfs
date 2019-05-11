@@ -6,6 +6,7 @@ use std::{env, fs, process};
 use std::io::{self, Read};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::os::unix::fs::PermissionsExt;
 
 use redoxfs::{BLOCK_SIZE, Disk, DiskSparse, Extent, FileSystem, Node};
 use uuid::Uuid;
@@ -18,24 +19,31 @@ fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, c
     for entry_res in fs::read_dir(parent_path)? {
         let entry = entry_res?;
 
+        let metadata = entry.metadata()?;
+        let permissions = metadata.permissions();
+        let file_type = metadata.file_type();
+
         let name = entry.file_name().into_string().map_err(|_|
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "filename is not valid UTF-8"
             )
         )?;
-        let path = entry.path();
 
-        let dir = path.is_dir();
-        let (mode_type, mode_perm) = if dir {
-            (Node::MODE_DIR, 0o755)
-        } /* else if flags & O_SYMLINK == O_SYMLINK {
+        let mode_type = if file_type.is_dir() {
+            Node::MODE_DIR
+        } else if file_type.is_file() {
+            Node::MODE_FILE
+        } else if file_type.is_symlink() {
             Node::MODE_SYMLINK
-        } */ else {
-            (Node::MODE_FILE, 0o644)
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Does not support parsing {:?}", file_type)
+            ));
         };
 
-        let mode = mode_type | (mode_perm & Node::MODE_PERM);
+        let mode = mode_type | (permissions.mode() as u16 & Node::MODE_PERM);
         let mut node = fs.create_node(
             mode,
             &name,
@@ -47,9 +55,10 @@ fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, c
         node.1.gid = 0;
         fs.write_at(node.0, &node.1).map_err(syscall_err)?;
 
-        if dir {
+        let path = entry.path();
+        if file_type.is_dir() {
             archive_at(fs, path, ctime, node.0)?;
-        } else {
+        } else if file_type.is_file() {
             let data = fs::read(path)?;
             fs.write_node(
                 node.0,
@@ -58,6 +67,11 @@ fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, c
                 ctime.as_secs(),
                 ctime.subsec_nanos()
             ).map_err(syscall_err)?;
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Does not support creating {:?}", file_type)
+            ));
         }
     }
 
