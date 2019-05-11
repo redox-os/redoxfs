@@ -5,7 +5,7 @@ extern crate uuid;
 use std::{env, fs, process};
 use std::io::{self, Read};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::os::unix::fs::MetadataExt;
 
 use redoxfs::{BLOCK_SIZE, Disk, DiskSparse, Extent, FileSystem, Node};
@@ -15,7 +15,7 @@ fn syscall_err(err: syscall::Error) -> io::Error {
     io::Error::from_raw_os_error(err.errno)
 }
 
-fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, ctime: &Duration, parent_block: u64) -> io::Result<()> {
+fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, parent_block: u64) -> io::Result<()> {
     for entry_res in fs::read_dir(parent_path)? {
         let entry = entry_res?;
 
@@ -56,7 +56,7 @@ fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, c
 
         let path = entry.path();
         if file_type.is_dir() {
-            archive_at(fs, path, ctime, node.0)?;
+            archive_at(fs, path, node.0)?;
         } else if file_type.is_file() {
             let data = fs::read(path)?;
             fs.write_node(
@@ -78,9 +78,9 @@ fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, c
 }
 
 
-fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, ctime: &Duration) -> io::Result<u64> {
+fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P) -> io::Result<u64> {
     let root_block = fs.header.1.root;
-    archive_at(fs, parent_path, ctime, root_block)?;
+    archive_at(fs, parent_path, root_block)?;
 
     let free_block = fs.header.1.free;
     let mut free = fs.node(free_block).map_err(syscall_err)?;
@@ -145,7 +145,7 @@ fn main() {
     let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     match FileSystem::create_reserved(disk, &bootloader, ctime.as_secs(), ctime.subsec_nanos()) {
         Ok(mut fs) => {
-            let size = match archive(&mut fs, &folder_path, &ctime) {
+            let size = match archive(&mut fs, &folder_path) {
                 Ok(ok) => ok,
                 Err(err) => {
                     println!("redoxfs-ar: failed to archive {}: {}", folder_path, err);
