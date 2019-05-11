@@ -6,6 +6,7 @@ use std::{env, fs, process};
 use std::io::{self, Read};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 
 use redoxfs::{BLOCK_SIZE, Disk, DiskSparse, Extent, FileSystem, Node};
@@ -66,6 +67,16 @@ fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, p
                 metadata.mtime() as u64,
                 metadata.mtime_nsec() as u32
             ).map_err(syscall_err)?;
+        } else if file_type.is_symlink() {
+            let destination = fs::read_link(path)?;
+            let data = destination.as_os_str().as_bytes();
+            fs.write_node(
+                node.0,
+                0,
+                &data,
+                metadata.mtime() as u64,
+                metadata.mtime_nsec() as u32
+            ).map_err(syscall_err)?;
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -93,7 +104,7 @@ fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P) -> i
     let header = fs.header;
     fs.write_at(header.0, &header.1).map_err(syscall_err)?;
 
-    Ok(end_size)
+    Ok(header.0 * BLOCK_SIZE + end_size)
 }
 
 fn main() {
