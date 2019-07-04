@@ -11,6 +11,7 @@ pub const SIGNATURE: &'static [u8; 8] = b"RedoxFS\0";
 pub const VERSION: u64 = 3;
 pub static IS_UMT: AtomicUsize = AtomicUsize::new(0);
 
+pub use self::archive::archive;
 pub use self::disk::{Disk, DiskCache, DiskFile, DiskSparse};
 pub use self::ex_node::ExNode;
 pub use self::extent::Extent;
@@ -19,6 +20,7 @@ pub use self::header::Header;
 pub use self::mount::mount;
 pub use self::node::Node;
 
+mod archive;
 mod disk;
 mod ex_node;
 mod extent;
