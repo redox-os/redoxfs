@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
+use std::path::Path;
 use std::u64;
 use syscall::error::{Error, Result, EIO};
 
@@ -21,7 +22,7 @@ pub struct DiskSparse {
 }
 
 impl DiskSparse {
-    pub fn create(path: &str) -> Result<DiskSparse> {
+    pub fn create<P: AsRef<Path>>(path: P) -> Result<DiskSparse> {
         let file = try_disk!(OpenOptions::new().read(true).write(true).create(true).open(path));
         Ok(DiskSparse {
             file

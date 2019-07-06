@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
+use std::path::Path;
 use syscall::error::{Error, Result, EIO};
 
 use BLOCK_SIZE;
@@ -20,14 +21,14 @@ pub struct DiskFile {
 }
 
 impl DiskFile {
-    pub fn open(path: &str) -> Result<DiskFile> {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<DiskFile> {
         let file = try_disk!(OpenOptions::new().read(true).write(true).open(path));
         Ok(DiskFile {
             file: file
         })
     }
 
-    pub fn create(path: &str, size: u64) -> Result<DiskFile> {
+    pub fn create<P: AsRef<Path>>(path: P, size: u64) -> Result<DiskFile> {
         let file = try_disk!(OpenOptions::new().read(true).write(true).create(true).open(path));
         try_disk!(file.set_len(size));
         Ok(DiskFile {
