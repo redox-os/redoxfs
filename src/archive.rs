@@ -10,7 +10,7 @@ fn syscall_err(err: syscall::Error) -> io::Error {
     io::Error::from_raw_os_error(err.errno)
 }
 
-fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, parent_block: u64) -> io::Result<()> {
+pub fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, parent_block: u64) -> io::Result<()> {
     for entry_res in fs::read_dir(parent_path)? {
         let entry = entry_res?;
 
