@@ -18,12 +18,10 @@ build:redox:
 
 test:linux:
     stage: test
-    dependencies:
-        - build:linux
+    dependencies: build:linux
     script: cargo +nightly test --verbose
 
 test:redox:
     stage: test
-    dependencies:
-        - test:redox
+    dependencies: build:redox
     script: redoxer test --verbose
