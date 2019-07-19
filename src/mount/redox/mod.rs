@@ -14,7 +14,7 @@ use self::scheme::FileScheme;
 pub mod resource;
 pub mod scheme;
 
-pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: &P, mut callback: F) -> io::Result<()> {
+pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: P, mut callback: F) -> io::Result<()> {
     let mountpoint = mountpoint.as_ref();
     let mut socket = File::create(format!(":{}", mountpoint.display()))?;
 

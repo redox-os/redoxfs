@@ -11,7 +11,7 @@ mod fuse;
 mod redox;
 
 #[cfg(target_os = "macos")]
-pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: &P, callback: F) -> io::Result<()> {
+pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: P, callback: F) -> io::Result<()> {
     use std::ffi::OsStr;
 
     fuse::mount(filesystem, mountpoint, callback, &[
@@ -25,11 +25,11 @@ pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mou
 }
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "redox")))]
-pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: &P, callback: F) -> io::Result<()> {
+pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: P, callback: F) -> io::Result<()> {
     fuse::mount(filesystem, mountpoint, callback, &[])
 }
 
 #[cfg(target_os = "redox")]
-pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: &P, callback: F) -> io::Result<()> {
+pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: FileSystem<D>, mountpoint: P, callback: F) -> io::Result<()> {
     redox::mount(filesystem, mountpoint, callback)
 }

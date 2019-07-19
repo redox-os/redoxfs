@@ -20,7 +20,7 @@ const TTL: Timespec = Timespec { sec: 1, nsec: 0 };                 // 1 second
 
 const NULL_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
 
-pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: filesystem::FileSystem<D>, mountpoint: &P, mut callback: F, options: &[&OsStr]) -> io::Result<()> {
+pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: filesystem::FileSystem<D>, mountpoint: P, mut callback: F, options: &[&OsStr]) -> io::Result<()> {
     let mut session = Session::new(Fuse {
         fs: filesystem
     }, mountpoint.as_ref(), options)?;
