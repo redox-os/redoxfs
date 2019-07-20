@@ -28,3 +28,6 @@ mod filesystem;
 mod header;
 mod mount;
 mod node;
+
+#[cfg(test)]
+mod tests;

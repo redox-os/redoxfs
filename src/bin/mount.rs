@@ -56,6 +56,11 @@ fn pipe(pipes: &mut [i32; 2]) -> isize {
     unsafe { libc::pipe(pipes.as_mut_ptr()) as isize }
 }
 
+#[cfg(not(target_os = "redox"))]
+fn capability_mode() {
+    ()
+}
+
 #[cfg(target_os = "redox")]
 fn fork() -> isize {
     unsafe { syscall::Error::mux(syscall::clone(0)) as isize }
@@ -64,6 +69,11 @@ fn fork() -> isize {
 #[cfg(target_os = "redox")]
 fn pipe(pipes: &mut [usize; 2]) -> isize {
     syscall::Error::mux(syscall::pipe2(pipes, 0)) as isize
+}
+
+#[cfg(target_os = "redox")]
+fn capability_mode() {
+    syscall::setrens(0, 0).expect("redoxfs: failed to enter null namespace");
 }
 
 fn usage() {
@@ -154,8 +164,10 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, mut write: File) -> ! {
                     };
 
                     if matches {
-                        match mount(filesystem, &mountpoint, || {
-                            println!("redoxfs: mounted filesystem on {} to {}", path, mountpoint);
+                        match mount(filesystem, &mountpoint, |mounted_path| {
+                            capability_mode();
+
+                            println!("redoxfs: mounted filesystem on {} to {}", path, mounted_path.display());
                             let _ = write.write(&[0]);
                         }) {
                             Ok(()) => {
