@@ -20,14 +20,40 @@ const TTL: Timespec = Timespec { sec: 1, nsec: 0 };                 // 1 second
 
 const NULL_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
 
-pub fn mount<D: Disk, P: AsRef<Path>, F: FnMut()>(filesystem: filesystem::FileSystem<D>, mountpoint: P, mut callback: F, options: &[&OsStr]) -> io::Result<()> {
-    let mut session = Session::new(Fuse {
-        fs: filesystem
-    }, mountpoint.as_ref(), options)?;
+pub fn mount<D, P, T, F>(filesystem: filesystem::FileSystem<D>, mountpoint: P, mut callback: F)
+    -> io::Result<T> where
+        D: Disk,
+        P: AsRef<Path>,
+        F: FnMut(&Path) -> T
+{
+    let mountpoint = mountpoint.as_ref();
 
-    callback();
+    // One of the uses of this redoxfs fuse wrapper is to populate a filesystem
+    // while building the Redox OS kernel. This means that we need to write on
+    // a filesystem that belongs to `root`, which in turn means that we need to
+    // be `root`, thus that we need to allow `root` to have access.
+    let defer_permissions = [
+        OsStr::new("-o"),
+        OsStr::new("defer_permissions"),
+    ];
 
-    session.run()
+    let mut session = Session::new(
+        Fuse {
+            fs: filesystem
+        },
+        mountpoint,
+        if cfg!(target_os = "macos") {
+            &defer_permissions
+        } else {
+            &[]
+        }
+    )?;
+
+    let res = callback(&mountpoint);
+
+    session.run()?;
+
+    Ok(res)
 }
 
 pub struct Fuse<D: Disk> {

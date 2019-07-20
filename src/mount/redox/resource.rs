@@ -221,7 +221,7 @@ impl Fmap {
             block,
             offset: map.offset,
             flags: map.flags,
-            data: &mut buf[..count],
+            data: buf,
         })
     }
 
