@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::{Map, Stat, TimeSpec};
 use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, ENOMEM, EPERM};
-use syscall::flag::{O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL, MODE_PERM, PROT_READ, PROT_WRITE, SEEK_SET, SEEK_CUR, SEEK_END};
+use syscall::flag::{O_ACCMODE, O_APPEND, O_RDONLY, O_WRONLY, O_RDWR, F_GETFL, F_SETFL, MODE_PERM, PROT_READ, PROT_WRITE, SEEK_SET, SEEK_CUR, SEEK_END};
 
 use disk::Disk;
 use filesystem::FileSystem;
@@ -256,13 +256,13 @@ pub struct FileResource {
 }
 
 impl FileResource {
-    pub fn new(path: String, block: u64, flags: usize, seek: u64, uid: u32) -> FileResource {
+    pub fn new(path: String, block: u64, flags: usize, uid: u32) -> FileResource {
         FileResource {
-            path: path,
-            block: block,
-            flags: flags,
-            seek: seek,
-            uid: uid,
+            path,
+            block,
+            flags,
+            seek: 0,
+            uid,
             fmaps: BTreeMap::new(),
         }
     }
@@ -296,6 +296,9 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
+            if self.flags & O_APPEND == O_APPEND {
+                self.seek = fs.node_len(self.block)?;
+            }
             let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
             let count = fs.write_node(self.block, self.seek, buf, mtime.as_secs(), mtime.subsec_nanos())?;
             self.seek += count as u64;
