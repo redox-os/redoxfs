@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::{Map, Stat, StatVfs, TimeSpec};
-use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, ENOTEMPTY, EPERM, ENOENT, EBADF, ELOOP, EINVAL};
+use syscall::error::{Error, Result, EACCES, EEXIST, EISDIR, ENOTDIR, ENOTEMPTY, EPERM, ENOENT, EBADF, ELOOP, EINVAL, EXDEV};
 use syscall::flag::{O_CREAT, O_DIRECTORY, O_STAT, O_EXCL, O_TRUNC, O_ACCMODE, O_RDONLY, O_WRONLY, O_RDWR, MODE_PERM, O_SYMLINK, O_NOFOLLOW};
 use syscall::scheme::Scheme;
 
@@ -37,7 +37,7 @@ impl<D: Disk> FileScheme<D> {
 
     fn resolve_symlink(&self, fs: &mut FileSystem<D>, uid: u32, gid: u32, url: &[u8], node: (u64, Node), nodes: &mut Vec<(u64, Node)>) -> Result<Vec<u8>> {
         let mut node = node;
-        for _ in 1..10 { // XXX What should the limit be?
+        for _ in 0..32 { // XXX What should the limit be?
             let mut buf = [0; 4096];
             let count = fs.read_node(node.0, 0, &mut buf)?;
             let scheme = format!("{}:", &self.name);
@@ -50,8 +50,7 @@ impl<D: Disk> FileScheme<D> {
                         nodes.push(next_node);
                         return Ok(canon[scheme.len()..].to_vec());
                     } else {
-                        // TODO: Find way to support symlink to another scheme
-                        return Err(Error::new(ENOENT));
+                        return Err(Error::new(EXDEV));
                     }
                 }
                 node = next_node;
@@ -218,7 +217,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
                 } else {
                     Box::new(DirResource::new(path.to_string(), node.0, None, uid))
                 }
-            } else if node.1.is_symlink() && !(flags & O_STAT == O_STAT && flags  & O_NOFOLLOW == O_NOFOLLOW) && flags & O_SYMLINK != O_SYMLINK {
+            } else if node.1.is_symlink() && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW) && flags & O_SYMLINK != O_SYMLINK {
                 let mut resolve_nodes = Vec::new();
                 let resolved = self.resolve_symlink(&mut fs, uid, gid, url, node, &mut resolve_nodes)?;
                 drop(fs);
