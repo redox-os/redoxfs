@@ -522,8 +522,8 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
         // println!("Frename {}, {} from {}, {}", id, path, uid, gid);
 
-        let files = self.files.borrow_mut();
-        if let Some(file) = files.get(&id) {
+        let mut files = self.files.borrow_mut();
+        if let Some(file) = files.get_mut(&id) {
             //TODO: Check for EINVAL
             // The new pathname contained a path prefix of the old, or, more generally,
             // an attempt was made to make a directory a subdirectory of itself.
@@ -607,6 +607,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
                     fs.insert_blocks(orig.0, BLOCK_SIZE, parent.0)?;
                 }
 
+                file.set_path(path);
                 Ok(0)
             } else {
                 Err(Error::new(EPERM))
