@@ -13,6 +13,7 @@ use filesystem::FileSystem;
 pub trait Resource<D: Disk> {
     fn block(&self) -> u64;
     fn dup(&self) -> Result<Box<Resource<D>>>;
+    fn set_path(&mut self, path: &str);
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem<D>) -> Result<usize>;
@@ -61,6 +62,10 @@ impl<D: Disk> Resource<D> for DirResource {
             seek: self.seek,
             uid: self.uid
         }))
+    }
+
+    fn set_path(&mut self, path: &str) {
+        self.path = path.to_string();
     }
 
     fn read(&mut self, buf: &mut [u8], _fs: &mut FileSystem<D>) -> Result<usize> {
@@ -282,6 +287,10 @@ impl<D: Disk> Resource<D> for FileResource {
             uid: self.uid,
             fmaps: BTreeMap::new(),
         }))
+    }
+
+    fn set_path(&mut self, path: &str) {
+        self.path = path.to_string();
     }
 
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize> {
