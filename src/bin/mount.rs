@@ -77,7 +77,7 @@ fn capability_mode() {
 }
 
 fn usage() {
-    println!("redoxfs [--uuid] [disk or uuid] [mountpoint]");
+    println!("redoxfs [--uuid] [disk or uuid] [mountpoint] [block in hex]");
 }
 
 enum DiskId {
@@ -127,7 +127,7 @@ fn disk_paths(paths: &mut Vec<String>) {
     }
 }
 
-fn daemon(disk_id: &DiskId, mountpoint: &str, mut write: File) -> ! {
+fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write: File) -> ! {
     setsig();
 
     let mut paths = vec![];
@@ -146,7 +146,7 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, mut write: File) -> ! {
     for path in paths {
         println!("redoxfs: opening {}", path);
         match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
-            Ok(disk) => match redoxfs::FileSystem::open(disk) {
+            Ok(disk) => match redoxfs::FileSystem::open(disk, block_opt) {
                 Ok(filesystem) => {
                     println!("redoxfs: opened filesystem on {} with uuid {}", path,
                              Uuid::from_bytes(&filesystem.header.1.uuid).unwrap().hyphenated());
@@ -200,7 +200,7 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, mut write: File) -> ! {
 
 fn print_uuid(path: &str) {
     match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
-        Ok(disk) => match redoxfs::FileSystem::open(disk) {
+        Ok(disk) => match redoxfs::FileSystem::open(disk, None) {
             Ok(filesystem) => {
                 println!("{}", Uuid::from_bytes(&filesystem.header.1.uuid).unwrap().hyphenated());
             },
@@ -263,6 +263,18 @@ fn main() {
         }
     };
 
+    let block_opt = match args.next() {
+        Some(arg) => match u64::from_str_radix(&arg, 16) {
+            Ok(block) => Some(block),
+            Err(err) => {
+                println!("redoxfs: invalid block '{}': {}", arg, err);
+                usage();
+                process::exit(1);
+            }
+        },
+        None => None,
+    };
+
     let mut pipes = [0; 2];
     if pipe(&mut pipes) == 0 {
         let mut read = unsafe { File::from_raw_fd(pipes[0] as RawFd) };
@@ -272,7 +284,7 @@ fn main() {
         if pid == 0 {
             drop(read);
 
-            daemon(&disk_id, &mountpoint, write);
+            daemon(&disk_id, &mountpoint, block_opt, write);
         } else if pid > 0 {
             drop(write);
 

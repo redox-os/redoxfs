@@ -13,8 +13,8 @@ pub struct FileSystem<D: Disk> {
 
 impl<D: Disk> FileSystem<D> {
     /// Open a file system on a disk
-    pub fn open(mut disk: D) -> Result<Self> {
-        for block in 0..65536 {
+    pub fn open(mut disk: D, block_opt: Option<u64>) -> Result<Self> {
+        for block in block_opt.map_or(0..65536, |x| x..x + 1) {
             let mut header = (0, Header::default());
             disk.read_at(block + header.0, &mut header.1)?;
 
