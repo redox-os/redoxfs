@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::error::{Result, Error, EEXIST, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
 
@@ -428,6 +429,7 @@ impl<D: Disk> FileSystem<D> {
     }
 
     pub fn read_node(&mut self, block: u64, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let block_offset = offset / BLOCK_SIZE;
         let mut byte_offset = (offset % BLOCK_SIZE) as usize;
 
@@ -481,6 +483,20 @@ impl<D: Disk> FileSystem<D> {
 
             assert_eq!(length, 0);
             assert_eq!(block, extent.block + (extent.length + BLOCK_SIZE - 1)/BLOCK_SIZE);
+        }
+
+        if i > 0 {
+            let atime_nsec = atime.subsec_nanos();
+            let atime = atime.as_secs();
+            let mut node = self.node(block)?;
+            if atime > node.1.atime || (atime == node.1.atime && atime_nsec > node.1.atime_nsec) {
+                let is_old = atime - node.1.atime > 3600; // Last read was more than a day ago
+                node.1.atime = atime;
+                node.1.atime_nsec = atime_nsec;
+                if is_old {
+                    self.write_at(node.0, &node.1)?;
+                }
+            }
         }
 
         Ok(i)

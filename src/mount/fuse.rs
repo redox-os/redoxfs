@@ -117,7 +117,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
 
     fn setattr(&mut self, _req: &Request, block: u64, mode: Option<u32>,
                 uid: Option<u32>, gid: Option<u32>, size: Option<u64>,
-                _atime: Option<Timespec>, mtime: Option<Timespec>, _fh: Option<u64>,
+                atime: Option<Timespec>, mtime: Option<Timespec>, _fh: Option<u64>,
                 _crtime: Option<Timespec>, _chgtime: Option<Timespec>, _bkuptime: Option<Timespec>,
                 _flags: Option<u32>, reply: ReplyAttr) {
         if let Some(mode) = mode {
@@ -176,11 +176,20 @@ impl<D: Disk> Filesystem for Fuse<D> {
             }
         }
 
-        if let Some(mtime) = mtime {
+        let need_update = atime.is_some() || mtime.is_some();
+        if need_update {
             match self.fs.node(block) {
                 Ok(mut node) => {
-                    node.1.mtime = mtime.sec as u64;
-                    node.1.mtime_nsec = mtime.nsec as u32;
+                    if let Some(atime) = atime {
+                        node.1.atime = atime.sec as u64;
+                        node.1.atime_nsec = atime.nsec as u32;
+                    }
+
+                    if let Some(mtime) = mtime {
+                        node.1.mtime = mtime.sec as u64;
+                        node.1.mtime_nsec = mtime.nsec as u32;
+                    }
+
                     if let Err(err) = self.fs.write_at(node.0, &node.1) {
                         reply.error(err.errno as i32);
                         return;
