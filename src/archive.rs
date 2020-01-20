@@ -1,28 +1,29 @@
 use std::fs;
 use std::io;
-use std::path::Path;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 
-use crate::{BLOCK_SIZE, Disk, Extent, FileSystem, Node};
+use crate::{Disk, Extent, FileSystem, Node, BLOCK_SIZE};
 
 fn syscall_err(err: syscall::Error) -> io::Error {
     io::Error::from_raw_os_error(err.errno)
 }
 
-pub fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P, parent_block: u64) -> io::Result<()> {
+pub fn archive_at<D: Disk, P: AsRef<Path>>(
+    fs: &mut FileSystem<D>,
+    parent_path: P,
+    parent_block: u64,
+) -> io::Result<()> {
     for entry_res in fs::read_dir(parent_path)? {
         let entry = entry_res?;
 
         let metadata = entry.metadata()?;
         let file_type = metadata.file_type();
 
-        let name = entry.file_name().into_string().map_err(|_|
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "filename is not valid UTF-8"
-            )
-        )?;
+        let name = entry.file_name().into_string().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "filename is not valid UTF-8")
+        })?;
 
         let mode_type = if file_type.is_dir() {
             Node::MODE_DIR
@@ -33,18 +34,20 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: 
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("Does not support parsing {:?}", file_type)
+                format!("Does not support parsing {:?}", file_type),
             ));
         };
 
         let mode = mode_type | (metadata.mode() as u16 & Node::MODE_PERM);
-        let mut node = fs.create_node(
-            mode,
-            &name,
-            parent_block,
-            metadata.ctime() as u64,
-            metadata.ctime_nsec() as u32
-        ).map_err(syscall_err)?;
+        let mut node = fs
+            .create_node(
+                mode,
+                &name,
+                parent_block,
+                metadata.ctime() as u64,
+                metadata.ctime_nsec() as u32,
+            )
+            .map_err(syscall_err)?;
         node.1.uid = metadata.uid();
         node.1.gid = metadata.gid();
         fs.write_at(node.0, &node.1).map_err(syscall_err)?;
@@ -59,8 +62,9 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: 
                 0,
                 &data,
                 metadata.mtime() as u64,
-                metadata.mtime_nsec() as u32
-            ).map_err(syscall_err)?;
+                metadata.mtime_nsec() as u32,
+            )
+            .map_err(syscall_err)?;
         } else if file_type.is_symlink() {
             let destination = fs::read_link(path)?;
             let data = destination.as_os_str().as_bytes();
@@ -69,12 +73,13 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: 
                 0,
                 &data,
                 metadata.mtime() as u64,
-                metadata.mtime_nsec() as u32
-            ).map_err(syscall_err)?;
+                metadata.mtime_nsec() as u32,
+            )
+            .map_err(syscall_err)?;
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("Does not support creating {:?}", file_type)
+                format!("Does not support creating {:?}", file_type),
             ));
         }
     }

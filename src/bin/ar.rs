@@ -2,11 +2,11 @@ extern crate redoxfs;
 extern crate syscall;
 extern crate uuid;
 
-use std::{env, fs, process};
 use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{env, fs, process};
 
-use redoxfs::{DiskSparse, FileSystem, archive};
+use redoxfs::{archive, DiskSparse, FileSystem};
 use uuid::Uuid;
 
 fn main() {
@@ -44,12 +44,18 @@ fn main() {
             Ok(mut file) => match file.read_to_end(&mut bootloader) {
                 Ok(_) => (),
                 Err(err) => {
-                    println!("redoxfs-ar: failed to read bootloader {}: {}", bootloader_path, err);
+                    println!(
+                        "redoxfs-ar: failed to read bootloader {}: {}",
+                        bootloader_path, err
+                    );
                     process::exit(1);
                 }
             },
             Err(err) => {
-                println!("redoxfs-ar: failed to open bootloader {}: {}", bootloader_path, err);
+                println!(
+                    "redoxfs-ar: failed to open bootloader {}: {}",
+                    bootloader_path, err
+                );
                 process::exit(1);
             }
         }
@@ -67,7 +73,10 @@ fn main() {
             };
 
             if let Err(err) = fs.disk.file.set_len(size) {
-                println!("redoxfs-ar: failed to truncate {} to {}: {}", disk_path, size, err);
+                println!(
+                    "redoxfs-ar: failed to truncate {} to {}: {}",
+                    disk_path, size, err
+                );
                 process::exit(1);
             }
 
@@ -76,12 +85,15 @@ fn main() {
                 "redoxfs-ar: created filesystem on {}, reserved {} blocks, size {} MB, uuid {}",
                 disk_path,
                 fs.block,
-                fs.header.1.size/1000/1000,
+                fs.header.1.size / 1000 / 1000,
                 uuid.hyphenated()
             );
-        },
+        }
         Err(err) => {
-            println!("redoxfs-ar: failed to create filesystem on {}: {}", disk_path, err);
+            println!(
+                "redoxfs-ar: failed to create filesystem on {}: {}",
+                disk_path, err
+            );
             process::exit(1);
         }
     };

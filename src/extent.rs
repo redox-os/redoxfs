@@ -5,14 +5,17 @@ use BLOCK_SIZE;
 pub struct BlockIter {
     block: u64,
     length: u64,
-    i: u64
+    i: u64,
 }
 
-impl Iterator<> for BlockIter {
+impl Iterator for BlockIter {
     type Item = (u64, u64);
     fn next(&mut self) -> Option<Self::Item> {
-        if self.i < (self.length + BLOCK_SIZE - 1)/BLOCK_SIZE {
-            let ret = Some((self.block + self.i, min(BLOCK_SIZE, self.length - self.i * BLOCK_SIZE)));
+        if self.i < (self.length + BLOCK_SIZE - 1) / BLOCK_SIZE {
+            let ret = Some((
+                self.block + self.i,
+                min(BLOCK_SIZE, self.length - self.i * BLOCK_SIZE),
+            ));
             self.i += 1;
             ret
         } else {
@@ -33,14 +36,14 @@ impl Extent {
     pub fn default() -> Extent {
         Extent {
             block: 0,
-            length: 0
+            length: 0,
         }
     }
 
     pub fn new(block: u64, length: u64) -> Extent {
         Extent {
             block: block,
-            length: length
+            length: length,
         }
     }
 
@@ -48,7 +51,7 @@ impl Extent {
         BlockIter {
             block: self.block,
             length: self.length,
-            i: 0
+            i: 0,
         }
     }
 }
