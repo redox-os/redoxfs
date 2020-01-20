@@ -165,6 +165,8 @@ impl<D: Disk> Resource<D> for DirResource {
             st_size: fs.node_len(self.block)?,
             st_mtime: node.1.mtime,
             st_mtime_nsec: node.1.mtime_nsec,
+            st_atime: node.1.atime,
+            st_atime_nsec: node.1.atime_nsec,
             st_ctime: node.1.ctime,
             st_ctime_nsec: node.1.ctime_nsec,
             ..Default::default()
@@ -426,6 +428,8 @@ impl<D: Disk> Resource<D> for FileResource {
             st_size: fs.node_len(self.block)?,
             st_mtime: node.1.mtime,
             st_mtime_nsec: node.1.mtime_nsec,
+            st_atime: node.1.atime,
+            st_atime_nsec: node.1.atime_nsec,
             st_ctime: node.1.ctime,
             st_ctime_nsec: node.1.ctime_nsec,
             ..Default::default()
@@ -455,17 +459,16 @@ impl<D: Disk> Resource<D> for FileResource {
         let mut node = fs.node(self.block)?;
 
         if node.1.uid == self.uid || self.uid == 0 {
-            if let Some(mtime) = times.get(1) {
+            if let &[atime, mtime] = times {
 
                 node.1.mtime = mtime.tv_sec as u64;
                 node.1.mtime_nsec = mtime.tv_nsec as u32;
+                node.1.atime = atime.tv_sec as u64;
+                node.1.atime_nsec = atime.tv_nsec as u32;
 
                 fs.write_at(node.0, &node.1)?;
-
-                Ok(0)
-            } else {
-                Ok(0)
             }
+            Ok(0)
         } else {
             Err(Error::new(EPERM))
         }
