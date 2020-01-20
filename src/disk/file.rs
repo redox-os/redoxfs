@@ -1,39 +1,41 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use syscall::error::{Error, Result, EIO};
 
-use BLOCK_SIZE;
 use disk::Disk;
+use BLOCK_SIZE;
 
 macro_rules! try_disk {
-    ($expr:expr) => (match $expr {
-        Ok(val) => val,
-        Err(err) => {
-            eprintln!("Disk I/O Error: {}", err);
-            return Err(Error::new(EIO));
+    ($expr:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(err) => {
+                eprintln!("Disk I/O Error: {}", err);
+                return Err(Error::new(EIO));
+            }
         }
-    })
+    };
 }
 
 pub struct DiskFile {
-    pub file: File
+    pub file: File,
 }
 
 impl DiskFile {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<DiskFile> {
         let file = try_disk!(OpenOptions::new().read(true).write(true).open(path));
-        Ok(DiskFile {
-            file: file
-        })
+        Ok(DiskFile { file: file })
     }
 
     pub fn create<P: AsRef<Path>>(path: P, size: u64) -> Result<DiskFile> {
-        let file = try_disk!(OpenOptions::new().read(true).write(true).create(true).open(path));
+        let file = try_disk!(OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path));
         try_disk!(file.set_len(size));
-        Ok(DiskFile {
-            file: file
-        })
+        Ok(DiskFile { file: file })
     }
 }
 

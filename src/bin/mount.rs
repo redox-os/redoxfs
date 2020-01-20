@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::process;
 
-use redoxfs::{DiskCache, DiskFile, mount};
+use redoxfs::{mount, DiskCache, DiskFile};
 use uuid::Uuid;
 
 #[cfg(target_os = "redox")]
@@ -33,7 +33,7 @@ fn setsig() {
 
     let sig_action = SigAction {
         sa_handler: unmount_handler,
-        sa_mask: [0,0],
+        sa_mask: [0, 0],
         sa_flags: 0,
     };
 
@@ -94,17 +94,19 @@ fn disk_paths(paths: &mut Vec<String>) {
 
     let mut schemes = vec![];
     match fs::read_dir(":") {
-        Ok(entries) => for entry_res in entries {
-            if let Ok(entry) = entry_res {
-                if let Ok(path) = entry.path().into_os_string().into_string() {
-                    let scheme = path.trim_start_matches(':').trim_matches('/');
-                    if scheme.starts_with("disk") {
-                        println!("redoxfs: found scheme {}", scheme);
-                        schemes.push(format!("{}:", scheme));
+        Ok(entries) => {
+            for entry_res in entries {
+                if let Ok(entry) = entry_res {
+                    if let Ok(path) = entry.path().into_os_string().into_string() {
+                        let scheme = path.trim_start_matches(':').trim_matches('/');
+                        if scheme.starts_with("disk") {
+                            println!("redoxfs: found scheme {}", scheme);
+                            schemes.push(format!("{}:", scheme));
+                        }
                     }
                 }
             }
-        },
+        }
         Err(err) => {
             println!("redoxfs: failed to list schemes: {}", err);
         }
@@ -112,14 +114,16 @@ fn disk_paths(paths: &mut Vec<String>) {
 
     for scheme in schemes {
         match fs::read_dir(&scheme) {
-            Ok(entries) => for entry_res in entries {
-                if let Ok(entry) = entry_res {
-                    if let Ok(path) = entry.path().into_os_string().into_string() {
-                        println!("redoxfs: found path {}", path);
-                        paths.push(path);
+            Ok(entries) => {
+                for entry_res in entries {
+                    if let Ok(entry) = entry_res {
+                        if let Ok(path) = entry.path().into_os_string().into_string() {
+                            println!("redoxfs: found path {}", path);
+                            paths.push(path);
+                        }
                     }
                 }
-            },
+            }
             Err(err) => {
                 println!("redoxfs: failed to list '{}': {}", scheme, err);
             }
@@ -136,11 +140,11 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write:
     match *disk_id {
         DiskId::Path(ref path) => {
             paths.push(path.clone());
-        },
+        }
         DiskId::Uuid(ref uuid) => {
             disk_paths(&mut paths);
             uuid_opt = Some(uuid.clone());
-        },
+        }
     }
 
     for path in paths {
@@ -148,15 +152,28 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write:
         match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
             Ok(disk) => match redoxfs::FileSystem::open(disk, block_opt) {
                 Ok(filesystem) => {
-                    println!("redoxfs: opened filesystem on {} with uuid {}", path,
-                             Uuid::from_bytes(&filesystem.header.1.uuid).unwrap().hyphenated());
+                    println!(
+                        "redoxfs: opened filesystem on {} with uuid {}",
+                        path,
+                        Uuid::from_bytes(&filesystem.header.1.uuid)
+                            .unwrap()
+                            .hyphenated()
+                    );
 
                     let matches = if let Some(uuid) = uuid_opt {
                         if &filesystem.header.1.uuid == uuid.as_bytes() {
-                            println!("redoxfs: filesystem on {} matches uuid {}", path, uuid.hyphenated());
+                            println!(
+                                "redoxfs: filesystem on {} matches uuid {}",
+                                path,
+                                uuid.hyphenated()
+                            );
                             true
                         } else {
-                            println!("redoxfs: filesystem on {} does not match uuid {}", path, uuid.hyphenated());
+                            println!(
+                                "redoxfs: filesystem on {} does not match uuid {}",
+                                path,
+                                uuid.hyphenated()
+                            );
                             false
                         }
                     } else {
@@ -167,31 +184,38 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write:
                         match mount(filesystem, &mountpoint, |mounted_path| {
                             capability_mode();
 
-                            println!("redoxfs: mounted filesystem on {} to {}", path, mounted_path.display());
+                            println!(
+                                "redoxfs: mounted filesystem on {} to {}",
+                                path,
+                                mounted_path.display()
+                            );
                             let _ = write.write(&[0]);
                         }) {
                             Ok(()) => {
                                 process::exit(0);
-                            },
+                            }
                             Err(err) => {
-                                println!("redoxfs: failed to mount {} to {}: {}", path, mountpoint, err);
+                                println!(
+                                    "redoxfs: failed to mount {} to {}: {}",
+                                    path, mountpoint, err
+                                );
                             }
                         }
                     }
-                },
-                Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err)
+                }
+                Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err),
             },
-            Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
+            Err(err) => println!("redoxfs: failed to open image {}: {}", path, err),
         }
     }
 
     match *disk_id {
         DiskId::Path(ref path) => {
             println!("redoxfs: not able to mount path {}", path);
-        },
+        }
         DiskId::Uuid(ref uuid) => {
             println!("redoxfs: not able to mount uuid {}", uuid.hyphenated());
-        },
+        }
     }
 
     let _ = write.write(&[1]);
@@ -202,11 +226,16 @@ fn print_uuid(path: &str) {
     match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
         Ok(disk) => match redoxfs::FileSystem::open(disk, None) {
             Ok(filesystem) => {
-                println!("{}", Uuid::from_bytes(&filesystem.header.1.uuid).unwrap().hyphenated());
-            },
-            Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err)
+                println!(
+                    "{}",
+                    Uuid::from_bytes(&filesystem.header.1.uuid)
+                        .unwrap()
+                        .hyphenated()
+                );
+            }
+            Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err),
         },
-        Err(err) => println!("redoxfs: failed to open image {}: {}", path, err)
+        Err(err) => println!("redoxfs: failed to open image {}: {}", path, err),
     }
 }
 
@@ -214,39 +243,41 @@ fn main() {
     let mut args = env::args().skip(1);
 
     let disk_id = match args.next() {
-        Some(arg) => if arg == "--uuid" {
-            let uuid = match args.next() {
-                Some(arg) => match Uuid::parse_str(&arg) {
-                    Ok(uuid) => uuid,
-                    Err(err) => {
-                        println!("redoxfs: invalid uuid '{}': {}", arg, err);
+        Some(arg) => {
+            if arg == "--uuid" {
+                let uuid = match args.next() {
+                    Some(arg) => match Uuid::parse_str(&arg) {
+                        Ok(uuid) => uuid,
+                        Err(err) => {
+                            println!("redoxfs: invalid uuid '{}': {}", arg, err);
+                            usage();
+                            process::exit(1);
+                        }
+                    },
+                    None => {
+                        println!("redoxfs: no uuid provided");
                         usage();
                         process::exit(1);
                     }
-                },
-                None => {
-                    println!("redoxfs: no uuid provided");
-                    usage();
-                    process::exit(1);
-                }
-            };
+                };
 
-            DiskId::Uuid(uuid)
-        } else if arg == "--get-uuid" {
-            match args.next() {
-                Some(arg) => {
-                    print_uuid(&arg);
-                    process::exit(1);
-                },
-                None => {
-                    println!("redoxfs: no disk provided");
-                    usage();
-                    process::exit(1);
-                },
-            };
-        } else {
-            DiskId::Path(arg)
-        },
+                DiskId::Uuid(uuid)
+            } else if arg == "--get-uuid" {
+                match args.next() {
+                    Some(arg) => {
+                        print_uuid(&arg);
+                        process::exit(1);
+                    }
+                    None => {
+                        println!("redoxfs: no disk provided");
+                        usage();
+                        process::exit(1);
+                    }
+                };
+            } else {
+                DiskId::Path(arg)
+            }
+        }
         None => {
             println!("redoxfs: no disk provided");
             usage();

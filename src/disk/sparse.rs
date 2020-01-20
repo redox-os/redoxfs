@@ -1,20 +1,22 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::u64;
 use syscall::error::{Error, Result, EIO};
 
-use BLOCK_SIZE;
 use disk::Disk;
+use BLOCK_SIZE;
 
 macro_rules! try_disk {
-    ($expr:expr) => (match $expr {
-        Ok(val) => val,
-        Err(err) => {
-            eprintln!("Disk I/O Error: {}", err);
-            return Err(Error::new(EIO));
+    ($expr:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(err) => {
+                eprintln!("Disk I/O Error: {}", err);
+                return Err(Error::new(EIO));
+            }
         }
-    })
+    };
 }
 
 pub struct DiskSparse {
@@ -23,10 +25,12 @@ pub struct DiskSparse {
 
 impl DiskSparse {
     pub fn create<P: AsRef<Path>>(path: P) -> Result<DiskSparse> {
-        let file = try_disk!(OpenOptions::new().read(true).write(true).create(true).open(path));
-        Ok(DiskSparse {
-            file
-        })
+        let file = try_disk!(OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path));
+        Ok(DiskSparse { file })
     }
 }
 

@@ -1,5 +1,5 @@
-use std::{fmt, mem, slice};
 use std::ops::{Deref, DerefMut};
+use std::{fmt, mem, slice};
 
 use uuid::Uuid;
 
@@ -22,7 +22,7 @@ pub struct Header {
     /// Block of free space node
     pub free: u64,
     /// Padding
-    pub padding: [u8; BLOCK_SIZE as usize - 56]
+    pub padding: [u8; BLOCK_SIZE as usize - 56],
 }
 
 impl Header {
@@ -34,7 +34,7 @@ impl Header {
             size: 0,
             root: 0,
             free: 0,
-            padding: [0; BLOCK_SIZE as usize - 56]
+            padding: [0; BLOCK_SIZE as usize - 56],
         }
     }
 
@@ -47,7 +47,7 @@ impl Header {
             size: size,
             root: root,
             free: free,
-            padding: [0; BLOCK_SIZE as usize - 56]
+            padding: [0; BLOCK_SIZE as usize - 56],
         }
     }
 
@@ -75,7 +75,8 @@ impl Deref for Header {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         unsafe {
-            slice::from_raw_parts(self as *const Header as *const u8, mem::size_of::<Header>()) as &[u8]
+            slice::from_raw_parts(self as *const Header as *const u8, mem::size_of::<Header>())
+                as &[u8]
         }
     }
 }
@@ -83,7 +84,8 @@ impl Deref for Header {
 impl DerefMut for Header {
     fn deref_mut(&mut self) -> &mut [u8] {
         unsafe {
-            slice::from_raw_parts_mut(self as *mut Header as *mut u8, mem::size_of::<Header>()) as &mut [u8]
+            slice::from_raw_parts_mut(self as *mut Header as *mut u8, mem::size_of::<Header>())
+                as &mut [u8]
         }
     }
 }

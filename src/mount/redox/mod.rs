@@ -1,23 +1,23 @@
-use syscall::{Packet, Scheme};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use syscall::{Packet, Scheme};
 
-use IS_UMT;
 use disk::Disk;
 use filesystem::FileSystem;
+use IS_UMT;
 
 use self::scheme::FileScheme;
 
 pub mod resource;
 pub mod scheme;
 
-pub fn mount<D, P, T, F>(filesystem: FileSystem<D>, mountpoint: P, mut callback: F)
-    -> io::Result<T> where
-        D: Disk,
-        P: AsRef<Path>,
-        F: FnMut(&Path) -> T
+pub fn mount<D, P, T, F>(filesystem: FileSystem<D>, mountpoint: P, mut callback: F) -> io::Result<T>
+where
+    D: Disk,
+    P: AsRef<Path>,
+    F: FnMut(&Path) -> T,
 {
     let mountpoint = mountpoint.as_ref();
     let socket_path = format!(":{}", mountpoint.display());
@@ -36,10 +36,12 @@ pub fn mount<D, P, T, F>(filesystem: FileSystem<D>, mountpoint: P, mut callback:
         match socket.read(&mut packet) {
             Ok(0) => break Ok(res),
             Ok(_ok) => (),
-            Err(err) => if err.kind() == io::ErrorKind::Interrupted {
-                continue;
-            } else {
-                break Err(err);
+            Err(err) => {
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                } else {
+                    break Err(err);
+                }
             }
         }
 

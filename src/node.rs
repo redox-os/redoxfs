@@ -1,8 +1,8 @@
 use std::{fmt, mem, ops, slice, str};
 
-use BLOCK_SIZE;
 use super::Extent;
 use syscall;
+use BLOCK_SIZE;
 
 /// A file/folder node
 #[repr(packed)]
@@ -19,7 +19,7 @@ pub struct Node {
     pub name: [u8; 226],
     pub parent: u64,
     pub next: u64,
-    pub extents: [Extent; (BLOCK_SIZE as usize - 288)/16],
+    pub extents: [Extent; (BLOCK_SIZE as usize - 288) / 16],
 }
 
 impl Node {
@@ -47,11 +47,17 @@ impl Node {
             name: [0; 226],
             parent: 0,
             next: 0,
-            extents: [Extent::default(); (BLOCK_SIZE as usize - 288)/16],
+            extents: [Extent::default(); (BLOCK_SIZE as usize - 288) / 16],
         }
     }
 
-    pub fn new(mode: u16, name: &str, parent: u64, ctime: u64, ctime_nsec: u32) -> syscall::Result<Node> {
+    pub fn new(
+        mode: u16,
+        name: &str,
+        parent: u64,
+        ctime: u64,
+        ctime_nsec: u32,
+    ) -> syscall::Result<Node> {
         let mut bytes = [0; 226];
         if name.len() > bytes.len() {
             return Err(syscall::Error::new(syscall::ENAMETOOLONG));
@@ -73,7 +79,7 @@ impl Node {
             name: bytes,
             parent: parent,
             next: 0,
-            extents: [Extent::default(); (BLOCK_SIZE as usize - 288)/16],
+            extents: [Extent::default(); (BLOCK_SIZE as usize - 288) / 16],
         })
     }
 
@@ -129,7 +135,7 @@ impl Node {
             // If self.mode is 101100110, >> 6 would be 000000101
             // 0o7 is octal for 111, or, when expanded to 9 digits is 000000111
             perm |= (self.mode >> 6) & 0o7;
-            // Since we erased the GID and OTHER bits when >>6'ing, |= will keep those bits in place. 
+            // Since we erased the GID and OTHER bits when >>6'ing, |= will keep those bits in place.
         }
         if self.gid == gid || gid == 0 {
             perm |= (self.mode >> 3) & 0o7;
@@ -142,13 +148,19 @@ impl Node {
     }
 
     pub fn size(&self) -> u64 {
-        self.extents.iter().fold(0, |size, extent| size + extent.length)
+        self.extents
+            .iter()
+            .fold(0, |size, extent| size + extent.length)
     }
 }
 
 impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let extents: Vec<&Extent> = self.extents.iter().filter(|extent| -> bool { extent.length > 0 }).collect();
+        let extents: Vec<&Extent> = self
+            .extents
+            .iter()
+            .filter(|extent| -> bool { extent.length > 0 })
+            .collect();
         unsafe {
             f.debug_struct("Node")
                 .field("mode", &self.mode)
@@ -170,7 +182,8 @@ impl ops::Deref for Node {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         unsafe {
-            slice::from_raw_parts(self as *const Node as *const u8, mem::size_of::<Node>()) as &[u8]
+            slice::from_raw_parts(self as *const Node as *const u8, mem::size_of::<Node>())
+                as &[u8]
         }
     }
 }
@@ -178,7 +191,8 @@ impl ops::Deref for Node {
 impl ops::DerefMut for Node {
     fn deref_mut(&mut self) -> &mut [u8] {
         unsafe {
-            slice::from_raw_parts_mut(self as *mut Node as *mut u8, mem::size_of::<Node>()) as &mut [u8]
+            slice::from_raw_parts_mut(self as *mut Node as *mut u8, mem::size_of::<Node>())
+                as &mut [u8]
         }
     }
 }

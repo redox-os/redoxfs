@@ -1,15 +1,15 @@
 use std::cmp::min;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use syscall::error::{Result, Error, EEXIST, EISDIR, EINVAL, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
+use syscall::error::{Error, Result, EEXIST, EINVAL, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
 
-use {BLOCK_SIZE, Disk, ExNode, Extent, Header, Node};
+use {Disk, ExNode, Extent, Header, Node, BLOCK_SIZE};
 
 /// A file system
 pub struct FileSystem<D: Disk> {
     pub disk: D,
     pub block: u64,
-    pub header: (u64, Header)
+    pub header: (u64, Header),
 }
 
 impl<D: Disk> FileSystem<D> {
@@ -29,7 +29,7 @@ impl<D: Disk> FileSystem<D> {
                 return Ok(FileSystem {
                     disk: disk,
                     block: block,
-                    header: header
+                    header: header,
                 });
             }
         }
@@ -45,16 +45,24 @@ impl<D: Disk> FileSystem<D> {
     /// Create a file system on a disk, with reserved data at the beginning
     /// Reserved data will be zero padded up to the nearest block
     /// We need to pass ctime and ctime_nsec in order to initialize the unix timestamps
-    pub fn create_reserved(mut disk: D, reserved: &[u8], ctime: u64, ctime_nsec: u32) -> Result<Self> {
+    pub fn create_reserved(
+        mut disk: D,
+        reserved: &[u8],
+        ctime: u64,
+        ctime_nsec: u32,
+    ) -> Result<Self> {
         let size = disk.size()?;
-        let block_offset = (reserved.len() as u64 + BLOCK_SIZE - 1)/BLOCK_SIZE;
+        let block_offset = (reserved.len() as u64 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
         if size >= (block_offset + 4) * BLOCK_SIZE {
             let mut free = (2, Node::new(Node::MODE_FILE, "free", 0, ctime, ctime_nsec)?);
             free.1.extents[0] = Extent::new(4, size - (block_offset + 4) * BLOCK_SIZE);
             disk.write_at(block_offset + free.0, &free.1)?;
 
-            let root = (1, Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec)?);
+            let root = (
+                1,
+                Node::new(Node::MODE_DIR | 0o755, "root", 0, ctime, ctime_nsec)?,
+            );
             disk.write_at(block_offset + root.0, &root.1)?;
 
             let header = (0, Header::new(size, root.0, free.0));
@@ -75,7 +83,7 @@ impl<D: Disk> FileSystem<D> {
             Ok(FileSystem {
                 disk: disk,
                 block: block_offset,
-                header: header
+                header: header,
             })
         } else {
             Err(Error::new(ENOSPC))
@@ -97,7 +105,7 @@ impl<D: Disk> FileSystem<D> {
         let mut free = self.node(free_block)?;
         let mut block_option = None;
         for extent in free.1.extents.iter_mut() {
-            if extent.length/BLOCK_SIZE >= length {
+            if extent.length / BLOCK_SIZE >= length {
                 block_option = Some(extent.block);
                 extent.length -= length * BLOCK_SIZE;
                 extent.block += length;
@@ -129,7 +137,11 @@ impl<D: Disk> FileSystem<D> {
         Ok((block, node))
     }
 
-    pub fn child_nodes(&mut self, children: &mut Vec<(u64, Node)>, parent_block: u64) -> Result<()> {
+    pub fn child_nodes(
+        &mut self,
+        children: &mut Vec<(u64, Node)>,
+        parent_block: u64,
+    ) -> Result<()> {
         if parent_block == 0 {
             return Ok(());
         }
@@ -189,13 +201,15 @@ impl<D: Disk> FileSystem<D> {
                 extent.block = block;
                 extent.length = length;
                 break;
-            } else if length % BLOCK_SIZE == 0 && extent.block == block + length/BLOCK_SIZE {
+            } else if length % BLOCK_SIZE == 0 && extent.block == block + length / BLOCK_SIZE {
                 //At beginning
                 inserted = true;
                 extent.block = block;
                 extent.length += length;
                 break;
-            } else if extent.length % BLOCK_SIZE == 0 && extent.block + extent.length/BLOCK_SIZE == block {
+            } else if extent.length % BLOCK_SIZE == 0
+                && extent.block + extent.length / BLOCK_SIZE == block
+            {
                 //At end
                 inserted = true;
                 extent.length += length;
@@ -222,7 +236,14 @@ impl<D: Disk> FileSystem<D> {
         }
     }
 
-    pub fn create_node(&mut self, mode: u16, name: &str, parent_block: u64, ctime: u64, ctime_nsec: u32) -> Result<(u64, Node)> {
+    pub fn create_node(
+        &mut self,
+        mode: u16,
+        name: &str,
+        parent_block: u64,
+        ctime: u64,
+        ctime_nsec: u32,
+    ) -> Result<(u64, Node)> {
         if name.contains(':') {
             Err(Error::new(EINVAL))
         } else if self.find_node(name, parent_block).is_ok() {
@@ -247,12 +268,16 @@ impl<D: Disk> FileSystem<D> {
         let mut replace_option = None;
         let mut parent = self.node(parent_block)?;
         for extent in parent.1.extents.iter_mut() {
-            if block >= extent.block && block + length <= extent.block + extent.length/BLOCK_SIZE {
+            if block >= extent.block && block + length <= extent.block + extent.length / BLOCK_SIZE
+            {
                 //Inside
                 removed = true;
 
                 let left = Extent::new(extent.block, (block - extent.block) * BLOCK_SIZE);
-                let right = Extent::new(block + length, ((extent.block + extent.length/BLOCK_SIZE) - (block + length)) * BLOCK_SIZE);
+                let right = Extent::new(
+                    block + length,
+                    ((extent.block + extent.length / BLOCK_SIZE) - (block + length)) * BLOCK_SIZE,
+                );
 
                 if left.length > 0 {
                     *extent = left;
@@ -289,7 +314,7 @@ impl<D: Disk> FileSystem<D> {
             if node.1.is_dir() {
                 let mut children = Vec::new();
                 self.child_nodes(&mut children, node.0)?;
-                if ! children.is_empty() {
+                if !children.is_empty() {
                     return Err(Error::new(ENOTEMPTY));
                 }
             }
@@ -322,7 +347,7 @@ impl<D: Disk> FileSystem<D> {
                 break;
             } else {
                 changed = true;
-                let allocated = ((extent.length + BLOCK_SIZE - 1)/BLOCK_SIZE) * BLOCK_SIZE;
+                let allocated = ((extent.length + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE;
                 if allocated >= length {
                     extent.length = length;
                     length = 0;
@@ -342,7 +367,7 @@ impl<D: Disk> FileSystem<D> {
             if node.1.next > 0 {
                 self.node_ensure_len(node.1.next, length)
             } else {
-                let new_block = self.allocate((length + BLOCK_SIZE - 1)/BLOCK_SIZE)?;
+                let new_block = self.allocate((length + BLOCK_SIZE - 1) / BLOCK_SIZE)?;
                 self.insert_blocks(new_block, length, block)?;
                 Ok(())
             }
@@ -362,8 +387,8 @@ impl<D: Disk> FileSystem<D> {
         let mut node = self.node(block)?;
         for extent in node.1.extents.iter_mut() {
             if extent.length > length {
-                let start = (length + BLOCK_SIZE - 1)/BLOCK_SIZE;
-                let end = (extent.length + BLOCK_SIZE - 1)/BLOCK_SIZE;
+                let start = (length + BLOCK_SIZE - 1) / BLOCK_SIZE;
+                let end = (extent.length + BLOCK_SIZE - 1) / BLOCK_SIZE;
                 if end > start {
                     self.deallocate(extent.block + start, (end - start) * BLOCK_SIZE)?;
                 }
@@ -386,7 +411,13 @@ impl<D: Disk> FileSystem<D> {
         }
     }
 
-    fn node_extents(&mut self, block: u64, mut offset: u64, mut len: usize, extents: &mut Vec<Extent>) -> Result<()> {
+    fn node_extents(
+        &mut self,
+        block: u64,
+        mut offset: u64,
+        mut len: usize,
+        extents: &mut Vec<Extent>,
+    ) -> Result<()> {
         if block == 0 {
             return Ok(());
         }
@@ -446,7 +477,10 @@ impl<D: Disk> FileSystem<D> {
                 self.read_at(block, &mut sector)?;
 
                 let sector_size = min(sector.len() as u64, length) as usize;
-                for (s_b, b) in sector[byte_offset..sector_size].iter().zip(buf[i..].iter_mut()) {
+                for (s_b, b) in sector[byte_offset..sector_size]
+                    .iter()
+                    .zip(buf[i..].iter_mut())
+                {
                     *b = *s_b;
                     i += 1;
                 }
@@ -457,13 +491,14 @@ impl<D: Disk> FileSystem<D> {
                 byte_offset = 0;
             }
 
-            let length_aligned = ((min(length, (buf.len() - i) as u64)/BLOCK_SIZE) * BLOCK_SIZE) as usize;
+            let length_aligned =
+                ((min(length, (buf.len() - i) as u64) / BLOCK_SIZE) * BLOCK_SIZE) as usize;
 
             if length_aligned > 0 {
                 let extent_buf = &mut buf[i..i + length_aligned];
                 self.read_at(block, extent_buf)?;
                 i += length_aligned;
-                block += (length_aligned as u64)/BLOCK_SIZE;
+                block += (length_aligned as u64) / BLOCK_SIZE;
                 length -= length_aligned as u64;
             }
 
@@ -482,7 +517,10 @@ impl<D: Disk> FileSystem<D> {
             }
 
             assert_eq!(length, 0);
-            assert_eq!(block, extent.block + (extent.length + BLOCK_SIZE - 1)/BLOCK_SIZE);
+            assert_eq!(
+                block,
+                extent.block + (extent.length + BLOCK_SIZE - 1) / BLOCK_SIZE
+            );
         }
 
         if i > 0 {
@@ -502,11 +540,21 @@ impl<D: Disk> FileSystem<D> {
         Ok(i)
     }
 
-    pub fn write_node(&mut self, block: u64, offset: u64, buf: &[u8], mtime: u64, mtime_nsec: u32) -> Result<usize> {
+    pub fn write_node(
+        &mut self,
+        block: u64,
+        offset: u64,
+        buf: &[u8],
+        mtime: u64,
+        mtime_nsec: u32,
+    ) -> Result<usize> {
         let block_offset = offset / BLOCK_SIZE;
         let mut byte_offset = (offset % BLOCK_SIZE) as usize;
 
-        self.node_ensure_len(block, block_offset as u64 * BLOCK_SIZE + (byte_offset + buf.len()) as u64)?;
+        self.node_ensure_len(
+            block,
+            block_offset as u64 * BLOCK_SIZE + (byte_offset + buf.len()) as u64,
+        )?;
 
         let mut extents = Vec::new();
         self.node_extents(block, block_offset, byte_offset + buf.len(), &mut extents)?;
@@ -521,7 +569,10 @@ impl<D: Disk> FileSystem<D> {
                 self.read_at(block, &mut sector)?;
 
                 let sector_size = min(sector.len() as u64, length) as usize;
-                for (s_b, b) in sector[byte_offset..sector_size].iter_mut().zip(buf[i..].iter()) {
+                for (s_b, b) in sector[byte_offset..sector_size]
+                    .iter_mut()
+                    .zip(buf[i..].iter())
+                {
                     *s_b = *b;
                     i += 1;
                 }
@@ -534,13 +585,14 @@ impl<D: Disk> FileSystem<D> {
                 byte_offset = 0;
             }
 
-            let length_aligned = ((min(length, (buf.len() - i) as u64)/BLOCK_SIZE) * BLOCK_SIZE) as usize;
+            let length_aligned =
+                ((min(length, (buf.len() - i) as u64) / BLOCK_SIZE) * BLOCK_SIZE) as usize;
 
             if length_aligned > 0 {
                 let extent_buf = &buf[i..i + length_aligned];
                 self.write_at(block, extent_buf)?;
                 i += length_aligned;
-                block += (length_aligned as u64)/BLOCK_SIZE;
+                block += (length_aligned as u64) / BLOCK_SIZE;
                 length -= length_aligned as u64;
             }
 
@@ -561,7 +613,10 @@ impl<D: Disk> FileSystem<D> {
             }
 
             assert_eq!(length, 0);
-            assert_eq!(block, extent.block + (extent.length + BLOCK_SIZE - 1)/BLOCK_SIZE);
+            assert_eq!(
+                block,
+                extent.block + (extent.length + BLOCK_SIZE - 1) / BLOCK_SIZE
+            );
         }
 
         if i > 0 {
