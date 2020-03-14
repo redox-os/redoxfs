@@ -632,14 +632,9 @@ impl<D: Disk> Scheme for FileScheme<D> {
 
                 let orig_parent = orig.1.parent;
 
-                orig.1.set_name(&last_part)?;
-                orig.1.parent = parent.0;
-
                 if parent.0 != orig_parent {
                     fs.remove_blocks(orig.0, 1, orig_parent)?;
                 }
-
-                fs.write_at(orig.0, &orig.1)?;
 
                 if let Some(node) = node_opt {
                     if node.0 != orig.0 {
@@ -649,6 +644,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
                         fs.deallocate(node.0, BLOCK_SIZE)?;
                     }
                 }
+
+                orig.1.set_name(&last_part)?;
+                orig.1.parent = parent.0;
+                fs.write_at(orig.0, &orig.1)?;
 
                 if parent.0 != orig_parent {
                     fs.insert_blocks(orig.0, BLOCK_SIZE, parent.0)?;

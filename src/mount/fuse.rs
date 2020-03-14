@@ -493,4 +493,38 @@ impl<D: Disk> Filesystem for Fuse<D> {
             }
         }
     }
+
+    fn rename(&mut self, _req: &Request, orig_parent: u64, name: &OsStr, new_parent: u64, new_name: &OsStr, reply: ReplyEmpty) {
+        let rename_inner = |fs: &mut filesystem::FileSystem<D>| -> syscall::Result<()> {
+            let mut orig = fs.find_node(name.to_str().unwrap(), orig_parent)?;
+
+            if new_parent != orig_parent {
+                fs.remove_blocks(orig.0, 1, orig_parent)?;
+            }
+
+            if let Ok(node) = fs.find_node(new_name.to_str().unwrap(), new_parent) {
+                if node.0 != orig.0 {
+                    fs.node_set_len(node.0, 0)?;
+                    fs.remove_blocks(node.0, 1, new_parent)?;
+                    fs.write_at(node.0, &Node::default())?;
+                    fs.deallocate(node.0, BLOCK_SIZE)?;
+                }
+            }
+
+            orig.1.set_name(&new_name.to_str().unwrap())?;
+            orig.1.parent = new_parent;
+            fs.write_at(orig.0, &orig.1)?;
+
+            if new_parent != orig_parent {
+                fs.insert_blocks(orig.0, BLOCK_SIZE, new_parent)?;
+            }
+
+            Ok(())
+        };
+
+        match rename_inner(&mut self.fs) {
+            Ok(()) => reply.ok(),
+            Err(err) => reply.error(err.errno as i32),
+        }
+    }
 }
