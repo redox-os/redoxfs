@@ -2,7 +2,7 @@
 name = "redoxfs"
 description = "The Redox Filesystem"
 repository = "https://gitlab.redox-os.org/redox-os/redoxfs"
-version = "0.4.1"
+version = "0.4.3"
 license-file = "LICENSE"
 readme = "README.md"
 authors = ["Jeremy Soller <jackpot51@gmail.com>"]
@@ -27,7 +27,7 @@ path = "src/bin/mkfs.rs"
 doc = false
 
 [dependencies]
-redox_syscall = "0.1"
+redox_syscall = "0.2"
 uuid = { version = "0.5", features = ["v4"] }
 
 [target.'cfg(not(target_os = "redox"))'.dependencies]

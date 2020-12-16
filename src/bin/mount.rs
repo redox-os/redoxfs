@@ -29,12 +29,12 @@ extern "C" fn unmount_handler(_s: usize) {
 //for, so I put 2. I don't think 0,0 is a valid sa_mask. I don't know what i'm doing here. When u
 //send it a sigkill, it shuts off the filesystem
 fn setsig() {
-    use syscall::{sigaction, SigAction, SIGTERM};
+    use syscall::{sigaction, SigAction, SigActionFlags, SIGTERM};
 
     let sig_action = SigAction {
-        sa_handler: unmount_handler,
+        sa_handler: Some(unmount_handler),
         sa_mask: [0, 0],
-        sa_flags: 0,
+        sa_flags: SigActionFlags::empty(),
     };
 
     sigaction(SIGTERM, Some(&sig_action), None).unwrap();
@@ -63,7 +63,7 @@ fn capability_mode() {
 
 #[cfg(target_os = "redox")]
 fn fork() -> isize {
-    unsafe { syscall::Error::mux(syscall::clone(0)) as isize }
+    unsafe { syscall::Error::mux(syscall::clone(syscall::CloneFlags::empty())) as isize }
 }
 
 #[cfg(target_os = "redox")]

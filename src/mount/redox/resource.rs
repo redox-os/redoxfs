@@ -7,7 +7,7 @@ use syscall::data::{Map, Stat, TimeSpec};
 use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, ENOMEM, EPERM};
 use syscall::flag::{
     F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY, PROT_READ,
-    PROT_WRITE, SEEK_CUR, SEEK_END, SEEK_SET,
+    PROT_WRITE, SEEK_CUR, SEEK_END, SEEK_SET, MapFlags,
 };
 
 use disk::Disk;
@@ -19,7 +19,7 @@ pub trait Resource<D: Disk> {
     fn set_path(&mut self, path: &str);
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize>;
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize>;
-    fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem<D>) -> Result<usize>;
+    fn seek(&mut self, offset: isize, whence: usize, fs: &mut FileSystem<D>) -> Result<isize>;
     fn fmap(&mut self, map: &Map, fs: &mut FileSystem<D>) -> Result<usize>;
     fn funmap(&mut self, address: usize, fs: &mut FileSystem<D>) -> Result<usize>;
     fn fchmod(&mut self, mode: u16, fs: &mut FileSystem<D>) -> Result<usize>;
@@ -36,7 +36,7 @@ pub struct DirResource {
     path: String,
     block: u64,
     data: Option<Vec<u8>>,
-    seek: usize,
+    seek: isize,
     uid: u32,
 }
 
@@ -73,9 +73,10 @@ impl<D: Disk> Resource<D> for DirResource {
 
     fn read(&mut self, buf: &mut [u8], _fs: &mut FileSystem<D>) -> Result<usize> {
         let data = self.data.as_ref().ok_or(Error::new(EISDIR))?;
+        let size = data.len() as isize;
         let mut i = 0;
-        while i < buf.len() && self.seek < data.len() {
-            buf[i] = data[self.seek];
+        while i < buf.len() && self.seek < size {
+            buf[i] = data[self.seek as usize];
             i += 1;
             self.seek += 1;
         }
@@ -86,21 +87,15 @@ impl<D: Disk> Resource<D> for DirResource {
         Err(Error::new(EBADF))
     }
 
-    fn seek(&mut self, offset: usize, whence: usize, _fs: &mut FileSystem<D>) -> Result<usize> {
+    fn seek(&mut self, offset: isize, whence: usize, _fs: &mut FileSystem<D>) -> Result<isize> {
         let data = self.data.as_ref().ok_or(Error::new(EBADF))?;
+        let size = data.len() as isize;
         self.seek = match whence {
-            SEEK_SET => max(0, min(data.len() as isize, offset as isize)) as usize,
-            SEEK_CUR => max(
-                0,
-                min(data.len() as isize, self.seek as isize + offset as isize),
-            ) as usize,
-            SEEK_END => max(
-                0,
-                min(data.len() as isize, data.len() as isize + offset as isize),
-            ) as usize,
+            SEEK_SET => max(0, min(size, offset)),
+            SEEK_CUR => max(0, min(size, self.seek + offset)),
+            SEEK_END => max(0, min(size, size + offset)),
             _ => return Err(Error::new(EINVAL)),
         };
-
         Ok(self.seek)
     }
 
@@ -200,7 +195,7 @@ impl<D: Disk> Resource<D> for DirResource {
 pub struct Fmap {
     block: u64,
     offset: usize,
-    flags: usize,
+    flags: MapFlags,
     data: &'static mut [u8],
 }
 
@@ -272,7 +267,7 @@ pub struct FileResource {
     path: String,
     block: u64,
     flags: usize,
-    seek: u64,
+    seek: isize,
     uid: u32,
     fmaps: BTreeMap<usize, Fmap>,
 }
@@ -312,8 +307,8 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_RDONLY {
-            let count = fs.read_node(self.block, self.seek, buf)?;
-            self.seek += count as u64;
+            let count = fs.read_node(self.block, self.seek as u64, buf)?;
+            self.seek += count as isize;
             Ok(count)
         } else {
             Err(Error::new(EBADF))
@@ -323,42 +318,40 @@ impl<D: Disk> Resource<D> for FileResource {
     fn write(&mut self, buf: &[u8], fs: &mut FileSystem<D>) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
             if self.flags & O_APPEND == O_APPEND {
-                self.seek = fs.node_len(self.block)?;
+                self.seek = fs.node_len(self.block)? as isize;
             }
             let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
             let count = fs.write_node(
                 self.block,
-                self.seek,
+                self.seek as u64,
                 buf,
                 mtime.as_secs(),
                 mtime.subsec_nanos(),
             )?;
-            self.seek += count as u64;
+            self.seek += count as isize;
             Ok(count)
         } else {
             Err(Error::new(EBADF))
         }
     }
 
-    fn seek(&mut self, offset: usize, whence: usize, fs: &mut FileSystem<D>) -> Result<usize> {
-        let size = fs.node_len(self.block)?;
-
+    fn seek(&mut self, offset: isize, whence: usize, fs: &mut FileSystem<D>) -> Result<isize> {
+        let size = fs.node_len(self.block)? as isize;
         self.seek = match whence {
-            SEEK_SET => max(0, offset as i64) as u64,
-            SEEK_CUR => max(0, self.seek as i64 + offset as i64) as u64,
-            SEEK_END => max(0, size as i64 + offset as i64) as u64,
+            SEEK_SET => max(0, offset),
+            SEEK_CUR => max(0, self.seek + offset),
+            SEEK_END => max(0, size + offset),
             _ => return Err(Error::new(EINVAL)),
         };
-
-        Ok(self.seek as usize)
+        Ok(self.seek)
     }
 
     fn fmap(&mut self, map: &Map, fs: &mut FileSystem<D>) -> Result<usize> {
         let accmode = self.flags & O_ACCMODE;
-        if map.flags & PROT_READ > 0 && !(accmode == O_RDWR || accmode == O_RDONLY) {
+        if map.flags.contains(PROT_READ) && !(accmode == O_RDWR || accmode == O_RDONLY) {
             return Err(Error::new(EBADF));
         }
-        if map.flags & PROT_WRITE > 0 && !(accmode == O_RDWR || accmode == O_WRONLY) {
+        if map.flags.contains(PROT_WRITE) && !(accmode == O_RDWR || accmode == O_WRONLY) {
             return Err(Error::new(EBADF));
         }
         //TODO: PROT_EXEC?

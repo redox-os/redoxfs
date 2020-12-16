@@ -6,12 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::{Map, Stat, StatVfs, TimeSpec};
 use syscall::error::{
-    Error, Result, EACCES, EBADF, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY, EPERM,
-    EXDEV,
+    Error, Result, EACCES, EBADF, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
+    ENOSYS, EPERM, EXDEV,
 };
 use syscall::flag::{
     MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_STAT,
-    O_SYMLINK, O_TRUNC, O_WRONLY,
+    O_SYMLINK, O_TRUNC, O_WRONLY, EventFlags,
 };
 use syscall::scheme::Scheme;
 
@@ -491,7 +491,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
-    fn seek(&self, id: usize, pos: usize, whence: usize) -> Result<usize> {
+    fn seek(&self, id: usize, pos: isize, whence: usize) -> Result<isize> {
         // println!("Seek {}, {} {}", id, pos, whence);
         let mut files = self.files.borrow_mut();
         if let Some(file) = files.get_mut(&id) {
@@ -528,7 +528,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
-    fn fevent(&self, id: usize, flags: usize) -> Result<usize> {
+    fn fevent(&self, id: usize, _flags: EventFlags) -> Result<EventFlags> {
         let files = self.files.borrow_mut();
         if let Some(file) = files.get(&id) {
             // EPERM is returned for files that are always readable or writable
@@ -734,7 +734,7 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
-    fn funmap(&self, address: usize) -> Result<usize> {
+    fn funmap_old(&self, address: usize) -> Result<usize> {
         if let Some(id) = self.fmap.borrow_mut().remove(&address) {
             let mut files = self.files.borrow_mut();
             if let Some(file) = files.get_mut(&id) {
@@ -745,6 +745,12 @@ impl<D: Disk> Scheme for FileScheme<D> {
         } else {
             Err(Error::new(EINVAL))
         }
+    }
+
+    //TODO: implement
+    fn funmap(&self, address: usize, length: usize) -> Result<usize> {
+        println!("redoxfs: funmap 0x{:X}, {}", address, length);
+        Err(Error::new(ENOSYS))
     }
 
     fn close(&self, id: usize) -> Result<usize> {
