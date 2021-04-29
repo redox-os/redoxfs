@@ -204,8 +204,8 @@ pub fn canonicalize(current: &[u8], path: &[u8]) -> Vec<u8> {
 }
 
 impl<D: Disk> Scheme for FileScheme<D> {
-    fn open(&self, url: &[u8], flags: usize, uid: u32, gid: u32) -> Result<usize> {
-        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
+    fn open(&self, url: &str, flags: usize, uid: u32, gid: u32) -> Result<usize> {
+        let path = url.trim_matches('/');
 
         // println!("Open '{}' {:X}", path, flags);
 
@@ -250,9 +250,10 @@ impl<D: Disk> Scheme for FileScheme<D> {
                 {
                     let mut resolve_nodes = Vec::new();
                     let resolved =
-                        self.resolve_symlink(&mut fs, uid, gid, url, node, &mut resolve_nodes)?;
+                        self.resolve_symlink(&mut fs, uid, gid, url.as_bytes(), node, &mut resolve_nodes)?;
                     drop(fs);
-                    return self.open(&resolved, flags, uid, gid);
+                    let resolved_utf8 = str::from_utf8(&resolved).map_err(|_| Error::new(EINVAL))?;
+                    return self.open(resolved_utf8, flags, uid, gid);
                 } else if !node.1.is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));
                 } else {
@@ -346,8 +347,8 @@ impl<D: Disk> Scheme for FileScheme<D> {
         Ok(id)
     }
 
-    fn chmod(&self, url: &[u8], mode: u16, uid: u32, gid: u32) -> Result<usize> {
-        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
+    fn chmod(&self, url: &str, mode: u16, uid: u32, gid: u32) -> Result<usize> {
+        let path = url.trim_matches('/');
 
         // println!("Chmod '{}'", path);
 
@@ -367,8 +368,8 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
-    fn rmdir(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
-        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
+    fn rmdir(&self, url: &str, uid: u32, gid: u32) -> Result<usize> {
+        let path = url.trim_matches('/');
 
         // println!("Rmdir '{}'", path);
 
@@ -405,8 +406,8 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
-    fn unlink(&self, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
-        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
+    fn unlink(&self, url: &str, uid: u32, gid: u32) -> Result<usize> {
+        let path = url.trim_matches('/');
 
         // println!("Unlink '{}'", path);
 
@@ -564,8 +565,8 @@ impl<D: Disk> Scheme for FileScheme<D> {
         }
     }
 
-    fn frename(&self, id: usize, url: &[u8], uid: u32, gid: u32) -> Result<usize> {
-        let path = str::from_utf8(url).unwrap_or("").trim_matches('/');
+    fn frename(&self, id: usize, url: &str, uid: u32, gid: u32) -> Result<usize> {
+        let path = url.trim_matches('/');
 
         // println!("Frename {}, {} from {}, {}", id, path, uid, gid);
 

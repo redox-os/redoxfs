@@ -27,7 +27,7 @@ path = "src/bin/mkfs.rs"
 doc = false
 
 [dependencies]
-redox_syscall = "0.2"
+redox_syscall = "0.2.7"
 uuid = { version = "0.5", features = ["v4"] }
 
 [target.'cfg(not(target_os = "redox"))'.dependencies]
