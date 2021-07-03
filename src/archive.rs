@@ -113,7 +113,7 @@ pub fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P) 
             // Squash alloc log
             tx.sync(true)?;
 
-            let mut end_block = tx.header.size() / BLOCK_SIZE;
+            let end_block = tx.header.size() / BLOCK_SIZE;
             /* TODO: Cut off any free blocks at the end of the filesystem
             let mut end_changed = true;
             while end_changed {

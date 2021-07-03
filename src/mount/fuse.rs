@@ -1,5 +1,4 @@
-extern crate fuse;
-extern crate time;
+extern crate fuser;
 
 use std::cmp;
 use std::ffi::OsStr;
@@ -8,17 +7,22 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use self::fuser::MountOption;
+use self::fuser::TimeOrNow;
+use crate::mount::fuse::TimeOrNow::Now;
+use crate::mount::fuse::TimeOrNow::SpecificTime;
+
 use crate::{filesystem, Disk, Node, TreeData, TreePtr, BLOCK_SIZE};
 
-use self::fuse::{
+use self::fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
     ReplyEntry, ReplyStatfs, ReplyWrite, Request, Session,
 };
-use self::time::Timespec;
+use std::time::Duration;
 
-const TTL: Timespec = Timespec { sec: 1, nsec: 0 }; // 1 second
+const TTL: Duration = Duration::new(1, 0); // 1 second
 
-const NULL_TIME: Timespec = Timespec { sec: 0, nsec: 0 };
+const NULL_TIME: Duration = Duration::new(0, 0);
 
 pub fn mount<D, P, T, F>(
     filesystem: filesystem::FileSystem<D>,
@@ -36,7 +40,7 @@ where
     // while building the Redox OS kernel. This means that we need to write on
     // a filesystem that belongs to `root`, which in turn means that we need to
     // be `root`, thus that we need to allow `root` to have access.
-    let defer_permissions = [OsStr::new("-o"), OsStr::new("defer_permissions")];
+    let defer_permissions = [MountOption::CUSTOM("defer_permissions".to_owned())];
 
     let mut session = Session::new(
         Fuse { fs: filesystem },
@@ -65,19 +69,11 @@ fn node_attr(node: &TreeData<Node>) -> FileAttr {
         size: node.data().size(),
         // Blocks is in 512 byte blocks, not in our block size
         blocks: (node.data().size() + BLOCK_SIZE - 1) / BLOCK_SIZE * (BLOCK_SIZE / 512),
-        atime: Timespec {
-            sec: node.data().atime().0 as i64,
-            nsec: node.data().atime().1 as i32,
-        },
-        mtime: Timespec {
-            sec: node.data().mtime().0 as i64,
-            nsec: node.data().mtime().1 as i32,
-        },
-        ctime: Timespec {
-            sec: node.data().ctime().0 as i64,
-            nsec: node.data().ctime().1 as i32,
-        },
-        crtime: NULL_TIME,
+        blksize: 512,
+        atime: SystemTime::UNIX_EPOCH + Duration::new(node.data().atime().0, node.data().atime().1),
+        mtime: SystemTime::UNIX_EPOCH + Duration::new(node.data().mtime().0, node.data().mtime().1),
+        ctime: SystemTime::UNIX_EPOCH + Duration::new(node.data().ctime().0, node.data().ctime().1),
+        crtime: UNIX_EPOCH + NULL_TIME,
         kind: if node.data().is_dir() {
             FileType::Directory
         } else if node.data().is_symlink() {
@@ -130,12 +126,13 @@ impl<D: Disk> Filesystem for Fuse<D> {
         uid: Option<u32>,
         gid: Option<u32>,
         size: Option<u64>,
-        atime: Option<Timespec>,
-        mtime: Option<Timespec>,
+        atime: Option<TimeOrNow>,
+        mtime: Option<TimeOrNow>,
+        _ctime: Option<SystemTime>,
         _fh: Option<u64>,
-        _crtime: Option<Timespec>,
-        _chgtime: Option<Timespec>,
-        _bkuptime: Option<Timespec>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
@@ -174,14 +171,22 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
 
         if let Some(atime) = atime {
+            let atime_c = match atime {
+                SpecificTime(st) => st.duration_since(UNIX_EPOCH).unwrap(),
+                Now => SystemTime::now().duration_since(UNIX_EPOCH).unwrap(),
+            };
             node.data_mut()
-                .set_atime(atime.sec as u64, atime.nsec as u32);
+                .set_atime(atime_c.as_secs(), atime_c.subsec_nanos());
             node_changed = true;
         }
 
         if let Some(mtime) = mtime {
+            let mtime_c = match mtime {
+                SpecificTime(st) => st.duration_since(UNIX_EPOCH).unwrap(),
+                Now => SystemTime::now().duration_since(UNIX_EPOCH).unwrap(),
+            };
             node.data_mut()
-                .set_mtime(mtime.sec as u64, mtime.nsec as u32);
+                .set_mtime(mtime_c.as_secs(), mtime_c.subsec_nanos());
             node_changed = true;
         }
 
@@ -218,6 +223,8 @@ impl<D: Disk> Filesystem for Fuse<D> {
         _fh: u64,
         offset: i64,
         size: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
         let node_ptr = TreePtr::<Node>::new(node_id as u32);
@@ -249,7 +256,9 @@ impl<D: Disk> Filesystem for Fuse<D> {
         _fh: u64,
         offset: i64,
         data: &[u8],
-        _flags: u32,
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
         let node_ptr = TreePtr::<Node>::new(node_id as u32);
@@ -298,9 +307,10 @@ impl<D: Disk> Filesystem for Fuse<D> {
                 if offset == 0 {
                     skip = 0;
                     i = 0;
-                    reply.add(parent_id, i, FileType::Directory, ".");
+                    let _full = reply.add(parent_id, i, FileType::Directory, ".");
+
                     i += 1;
-                    reply.add(
+                    let _full = reply.add(
                         //TODO: get parent?
                         parent_id,
                         i,
@@ -354,7 +364,8 @@ impl<D: Disk> Filesystem for Fuse<D> {
         parent_id: u64,
         name: &OsStr,
         mode: u32,
-        flags: u32,
+        _umask: u32,
+        flags: i32,
         reply: ReplyCreate,
     ) {
         let parent_ptr = TreePtr::<Node>::new(parent_id as u32);
@@ -370,7 +381,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }) {
             Ok(node) => {
                 // println!("Create {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
-                reply.created(&TTL, &node_attr(&node), 0, 0, flags);
+                reply.created(&TTL, &node_attr(&node), 0, 0, flags as u32);
             }
             Err(error) => {
                 reply.error(error.errno as i32);
@@ -384,6 +395,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         parent_id: u64,
         name: &OsStr,
         mode: u32,
+        _umask: u32,
         reply: ReplyEntry,
     ) {
         let parent_ptr = TreePtr::<Node>::new(parent_id as u32);
@@ -512,6 +524,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
         orig_name: &OsStr,
         new_parent: u64,
         new_name: &OsStr,
+        _flags: u32,
         reply: ReplyEmpty,
     ) {
         let orig_parent_ptr = TreePtr::<Node>::new(orig_parent as u32);
