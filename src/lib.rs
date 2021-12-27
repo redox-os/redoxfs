@@ -13,7 +13,6 @@ pub static IS_UMT: AtomicUsize = AtomicUsize::new(0);
 
 pub use self::archive::{archive, archive_at};
 pub use self::disk::{Disk, DiskCache, DiskFile, DiskSparse};
-pub use self::ex_node::ExNode;
 pub use self::extent::Extent;
 pub use self::filesystem::FileSystem;
 pub use self::header::Header;
@@ -22,7 +21,6 @@ pub use self::node::Node;
 
 mod archive;
 mod disk;
-mod ex_node;
 mod extent;
 mod filesystem;
 mod header;

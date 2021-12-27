@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::error::{Error, Result, EEXIST, EINVAL, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
 
-use {Disk, ExNode, Extent, Header, Node, BLOCK_SIZE};
+use {Disk, Extent, Header, Node, BLOCK_SIZE};
 
 /// A file system
 pub struct FileSystem<D: Disk> {
@@ -127,12 +127,6 @@ impl<D: Disk> FileSystem<D> {
 
     pub fn node(&mut self, block: u64) -> Result<(u64, Node)> {
         let mut node = Node::default();
-        self.read_at(block, &mut node)?;
-        Ok((block, node))
-    }
-
-    pub fn ex_node(&mut self, block: u64) -> Result<(u64, ExNode)> {
-        let mut node = ExNode::default();
         self.read_at(block, &mut node)?;
         Ok((block, node))
     }
