@@ -2,8 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::{cmp, ptr};
 use syscall::error::Result;
 
-use disk::Disk;
-use BLOCK_SIZE;
+use crate::disk::Disk;
+use crate::BLOCK_SIZE;
 
 fn copy_memory(src: &[u8], dest: &mut [u8]) -> usize {
     let len = cmp::min(src.len(), dest.len());
@@ -21,7 +21,7 @@ pub struct DiskCache<T> {
 impl<T: Disk> DiskCache<T> {
     pub fn new(inner: T) -> Self {
         DiskCache {
-            inner: inner,
+            inner,
             cache: HashMap::new(),
             order: VecDeque::new(),
             size: 65536, // 256 MB cache
@@ -40,7 +40,7 @@ impl<T: Disk> DiskCache<T> {
 }
 
 impl<T: Disk> Disk for DiskCache<T> {
-    fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         // println!("Cache read at {}", block);
 
         let mut read = 0;
@@ -80,7 +80,7 @@ impl<T: Disk> Disk for DiskCache<T> {
         Ok(read)
     }
 
-    fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         //TODO: Write only blocks that have changed
         // println!("Cache write at {}", block);
 

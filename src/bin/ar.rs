@@ -10,6 +10,8 @@ use redoxfs::{archive, DiskSparse, FileSystem};
 use uuid::Uuid;
 
 fn main() {
+    env_logger::init();
+
     let mut args = env::args().skip(1);
 
     let disk_path = if let Some(path) = args.next() {
@@ -30,7 +32,7 @@ fn main() {
 
     let bootloader_path_opt = args.next();
 
-    let disk = match DiskSparse::create(&disk_path) {
+    let disk = match DiskSparse::create(&disk_path, 1024 * 1024 * 1024 /*TODO: make argument*/) {
         Ok(disk) => disk,
         Err(err) => {
             println!("redoxfs-ar: failed to open image {}: {}", disk_path, err);
@@ -62,7 +64,13 @@ fn main() {
     };
 
     let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    match FileSystem::create_reserved(disk, &bootloader, ctime.as_secs(), ctime.subsec_nanos()) {
+    match FileSystem::create_reserved(
+        disk,
+        None,
+        &bootloader,
+        ctime.as_secs(),
+        ctime.subsec_nanos(),
+    ) {
         Ok(mut fs) => {
             let size = match archive(&mut fs, &folder_path) {
                 Ok(ok) => ok,
@@ -80,12 +88,12 @@ fn main() {
                 process::exit(1);
             }
 
-            let uuid = Uuid::from_bytes(&fs.header.1.uuid).unwrap();
+            let uuid = Uuid::from_bytes(&fs.header.uuid()).unwrap();
             println!(
                 "redoxfs-ar: created filesystem on {}, reserved {} blocks, size {} MB, uuid {}",
                 disk_path,
                 fs.block,
-                fs.header.1.size / 1000 / 1000,
+                fs.header.size() / 1000 / 1000,
                 uuid.hyphenated()
             );
         }

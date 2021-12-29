@@ -2,11 +2,9 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use syscall::{Packet, Scheme};
+use syscall::{Packet, SchemeMut};
 
-use disk::Disk;
-use filesystem::FileSystem;
-use IS_UMT;
+use crate::{Disk, FileSystem, IS_UMT};
 
 use self::scheme::FileScheme;
 
@@ -26,7 +24,7 @@ where
     let mounted_path = format!("{}:", mountpoint.display());
     let res = callback(Path::new(&mounted_path));
 
-    let scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem);
+    let mut scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem);
     loop {
         if IS_UMT.load(Ordering::SeqCst) > 0 {
             break Ok(res);

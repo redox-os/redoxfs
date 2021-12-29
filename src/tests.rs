@@ -14,7 +14,7 @@ where
     let mount_path = "image";
 
     let res = {
-        let disk = DiskSparse::create(dbg!(disk_path)).unwrap();
+        let disk = DiskSparse::create(dbg!(disk_path), 1024 * 1024 * 1024).unwrap();
 
         if cfg!(not(target_os = "redox")) {
             if !Path::new(mount_path).exists() {
@@ -23,8 +23,7 @@ where
         }
 
         let ctime = dbg!(time::SystemTime::now().duration_since(time::UNIX_EPOCH)).unwrap();
-        let fs =
-            FileSystem::create_reserved(disk, &[], ctime.as_secs(), ctime.subsec_nanos()).unwrap();
+        let fs = FileSystem::create(disk, None, ctime.as_secs(), ctime.subsec_nanos()).unwrap();
 
         let callback_mutex = sync::Arc::new(sync::Mutex::new(callback));
         let join_handle = crate::mount(fs, dbg!(mount_path), move |real_path| {
@@ -40,6 +39,10 @@ where
                 if cfg!(target_os = "redox") {
                     dbg!(fs::remove_file(dbg!(format!(":{}", mount_path)))).unwrap();
                 } else {
+                    if !dbg!(Command::new("sync").status()).unwrap().success() {
+                        panic!("sync failed");
+                    }
+
                     let status_res = if cfg!(target_os = "linux") {
                         Command::new("fusermount")
                             .arg("-u")
@@ -82,7 +85,6 @@ fn simple() {
 #[cfg(target_os = "redox")]
 #[test]
 fn mmap() {
-    use std::os::unix::ffi::OsStrExt;
     use syscall;
 
     //TODO

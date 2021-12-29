@@ -8,10 +8,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use disk::Disk;
-use filesystem;
-use node::Node;
-use BLOCK_SIZE;
+use crate::{filesystem, Disk, Node, TreeData, TreePtr, BLOCK_SIZE};
 
 use self::fuse::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
@@ -51,7 +48,7 @@ where
         },
     )?;
 
-    let res = callback(&mountpoint);
+    let res = callback(mountpoint);
 
     session.run()?;
 
@@ -62,41 +59,48 @@ pub struct Fuse<D: Disk> {
     pub fs: filesystem::FileSystem<D>,
 }
 
-fn node_attr(node: &(u64, Node)) -> FileAttr {
+fn node_attr(node: &TreeData<Node>) -> FileAttr {
     FileAttr {
-        ino: node.0,
-        size: node.1.extents[0].length,
+        ino: node.id() as u64,
+        size: node.data().size(),
         // Blocks is in 512 byte blocks, not in our block size
-        blocks: (node.1.extents[0].length + BLOCK_SIZE - 1) / BLOCK_SIZE * (BLOCK_SIZE / 512),
-        atime: NULL_TIME,
+        blocks: (node.data().size() + BLOCK_SIZE - 1) / BLOCK_SIZE * (BLOCK_SIZE / 512),
+        atime: Timespec {
+            sec: node.data().atime().0 as i64,
+            nsec: node.data().atime().1 as i32,
+        },
         mtime: Timespec {
-            sec: node.1.mtime as i64,
-            nsec: node.1.mtime_nsec as i32,
+            sec: node.data().mtime().0 as i64,
+            nsec: node.data().mtime().1 as i32,
         },
         ctime: Timespec {
-            sec: node.1.ctime as i64,
-            nsec: node.1.ctime_nsec as i32,
+            sec: node.data().ctime().0 as i64,
+            nsec: node.data().ctime().1 as i32,
         },
         crtime: NULL_TIME,
-        kind: if node.1.is_dir() {
+        kind: if node.data().is_dir() {
             FileType::Directory
-        } else if node.1.is_symlink() {
+        } else if node.data().is_symlink() {
             FileType::Symlink
         } else {
             FileType::RegularFile
         },
-        perm: node.1.mode & Node::MODE_PERM,
-        nlink: 1,
-        uid: node.1.uid,
-        gid: node.1.gid,
+        perm: node.data().mode() & Node::MODE_PERM,
+        nlink: node.data().links(),
+        uid: node.data().uid(),
+        gid: node.data().gid(),
         rdev: 0,
         flags: 0,
     }
 }
 
 impl<D: Disk> Filesystem for Fuse<D> {
-    fn lookup(&mut self, _req: &Request, parent_block: u64, name: &OsStr, reply: ReplyEntry) {
-        match self.fs.find_node(name.to_str().unwrap(), parent_block) {
+    fn lookup(&mut self, _req: &Request, parent_id: u64, name: &OsStr, reply: ReplyEntry) {
+        let parent_ptr = TreePtr::new(parent_id as u32);
+        match self
+            .fs
+            .tx(|tx| tx.find_node(parent_ptr, name.to_str().unwrap()))
+        {
             Ok(node) => {
                 reply.entry(&TTL, &node_attr(&node), 0);
             }
@@ -106,8 +110,9 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn getattr(&mut self, _req: &Request, block: u64, reply: ReplyAttr) {
-        match self.fs.node(block) {
+    fn getattr(&mut self, _req: &Request, node_id: u64, reply: ReplyAttr) {
+        let node_ptr = TreePtr::<Node>::new(node_id as u32);
+        match self.fs.tx(|tx| tx.read_tree(node_ptr)) {
             Ok(node) => {
                 reply.attr(&TTL, &node_attr(&node));
             }
@@ -120,7 +125,7 @@ impl<D: Disk> Filesystem for Fuse<D> {
     fn setattr(
         &mut self,
         _req: &Request,
-        block: u64,
+        node_id: u64,
         mode: Option<u32>,
         uid: Option<u32>,
         gid: Option<u32>,
@@ -134,53 +139,57 @@ impl<D: Disk> Filesystem for Fuse<D> {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
+        let node_ptr = TreePtr::<Node>::new(node_id as u32);
+
+        let mut node = match self.fs.tx(|tx| tx.read_tree(node_ptr)) {
+            Ok(ok) => ok,
+            Err(err) => {
+                reply.error(err.errno as i32);
+                return;
+            }
+        };
+        let mut node_changed = false;
+
         if let Some(mode) = mode {
-            match self.fs.node(block) {
-                Ok(mut node) => {
-                    if node.1.mode & Node::MODE_PERM != mode as u16 & Node::MODE_PERM {
-                        // println!("Chmod {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
-                        node.1.mode =
-                            (node.1.mode & Node::MODE_TYPE) | (mode as u16 & Node::MODE_PERM);
-                        if let Err(err) = self.fs.write_at(node.0, &node.1) {
-                            reply.error(err.errno as i32);
-                            return;
-                        }
-                    }
-                }
-                Err(err) => {
-                    reply.error(err.errno as i32);
-                    return;
-                }
+            if node.data().mode() & Node::MODE_PERM != mode as u16 & Node::MODE_PERM {
+                let new_mode =
+                    (node.data().mode() & Node::MODE_TYPE) | (mode as u16 & Node::MODE_PERM);
+                node.data_mut().set_mode(new_mode);
+                node_changed = true;
             }
         }
 
         if let Some(uid) = uid {
-            match self.fs.node(block) {
-                Ok(mut node) => {
-                    if node.1.uid != uid {
-                        node.1.uid = uid;
-                        if let Err(err) = self.fs.write_at(node.0, &node.1) {
-                            reply.error(err.errno as i32);
-                            return;
-                        }
-                    }
-                }
-                Err(err) => {
-                    reply.error(err.errno as i32);
-                    return;
-                }
+            if node.data().uid() != uid {
+                node.data_mut().set_uid(uid);
+                node_changed = true;
             }
         }
 
         if let Some(gid) = gid {
-            match self.fs.node(block) {
-                Ok(mut node) => {
-                    if node.1.gid != gid {
-                        node.1.gid = gid;
-                        if let Err(err) = self.fs.write_at(node.0, &node.1) {
-                            reply.error(err.errno as i32);
-                            return;
-                        }
+            if node.data().gid() != gid {
+                node.data_mut().set_gid(gid);
+                node_changed = true;
+            }
+        }
+
+        if let Some(atime) = atime {
+            node.data_mut()
+                .set_atime(atime.sec as u64, atime.nsec as u32);
+            node_changed = true;
+        }
+
+        if let Some(mtime) = mtime {
+            node.data_mut()
+                .set_mtime(mtime.sec as u64, mtime.nsec as u32);
+            node_changed = true;
+        }
+
+        if let Some(size) = size {
+            match self.fs.tx(|tx| tx.truncate_node_inner(&mut node, size)) {
+                Ok(ok) => {
+                    if ok {
+                        node_changed = true;
                     }
                 }
                 Err(err) => {
@@ -190,67 +199,40 @@ impl<D: Disk> Filesystem for Fuse<D> {
             }
         }
 
-        if let Some(size) = size {
-            if let Err(err) = self.fs.node_set_len(block, size) {
+        let attr = node_attr(&node);
+
+        if node_changed {
+            if let Err(err) = self.fs.tx(|tx| tx.sync_tree(node)) {
                 reply.error(err.errno as i32);
                 return;
             }
         }
 
-        let need_update = atime.is_some() || mtime.is_some();
-        if need_update {
-            match self.fs.node(block) {
-                Ok(mut node) => {
-                    if let Some(atime) = atime {
-                        node.1.atime = atime.sec as u64;
-                        node.1.atime_nsec = atime.nsec as u32;
-                    }
-
-                    if let Some(mtime) = mtime {
-                        node.1.mtime = mtime.sec as u64;
-                        node.1.mtime_nsec = mtime.nsec as u32;
-                    }
-
-                    if let Err(err) = self.fs.write_at(node.0, &node.1) {
-                        reply.error(err.errno as i32);
-                        return;
-                    }
-                }
-                Err(err) => {
-                    reply.error(err.errno as i32);
-                    return;
-                }
-            }
-        }
-
-        match self.fs.node(block) {
-            Ok(node) => {
-                reply.attr(&TTL, &node_attr(&node));
-            }
-            Err(err) => {
-                reply.error(err.errno as i32);
-            }
-        }
+        reply.attr(&TTL, &attr);
     }
 
     fn read(
         &mut self,
         _req: &Request,
-        block: u64,
+        node_id: u64,
         _fh: u64,
         offset: i64,
         size: u32,
         reply: ReplyData,
     ) {
+        let node_ptr = TreePtr::<Node>::new(node_id as u32);
+
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut data = vec![0; size as usize];
-        match self.fs.read_node(
-            block,
-            cmp::max(0, offset) as u64,
-            &mut data,
-            atime.as_secs(),
-            atime.subsec_nanos(),
-        ) {
+        match self.fs.tx(|tx| {
+            tx.read_node(
+                node_ptr,
+                cmp::max(0, offset) as u64,
+                &mut data,
+                atime.as_secs(),
+                atime.subsec_nanos(),
+            )
+        }) {
             Ok(count) => {
                 reply.data(&data[..count]);
             }
@@ -263,21 +245,25 @@ impl<D: Disk> Filesystem for Fuse<D> {
     fn write(
         &mut self,
         _req: &Request,
-        block: u64,
+        node_id: u64,
         _fh: u64,
         offset: i64,
         data: &[u8],
         _flags: u32,
         reply: ReplyWrite,
     ) {
+        let node_ptr = TreePtr::<Node>::new(node_id as u32);
+
         let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        match self.fs.write_node(
-            block,
-            cmp::max(0, offset) as u64,
-            &data,
-            mtime.as_secs(),
-            mtime.subsec_nanos(),
-        ) {
+        match self.fs.tx(|tx| {
+            tx.write_node(
+                node_ptr,
+                cmp::max(0, offset) as u64,
+                data,
+                mtime.as_secs(),
+                mtime.subsec_nanos(),
+            )
+        }) {
             Ok(count) => {
                 reply.written(count as u32);
             }
@@ -298,23 +284,25 @@ impl<D: Disk> Filesystem for Fuse<D> {
     fn readdir(
         &mut self,
         _req: &Request,
-        parent_block: u64,
+        parent_id: u64,
         _fh: u64,
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
+        let parent_ptr = TreePtr::new(parent_id as u32);
         let mut children = Vec::new();
-        match self.fs.child_nodes(&mut children, parent_block) {
+        match self.fs.tx(|tx| tx.child_nodes(parent_ptr, &mut children)) {
             Ok(()) => {
                 let mut i;
                 let skip;
                 if offset == 0 {
                     skip = 0;
                     i = 0;
-                    reply.add(parent_block - self.fs.header.0, i, FileType::Directory, ".");
+                    reply.add(parent_id, i, FileType::Directory, ".");
                     i += 1;
                     reply.add(
-                        parent_block - self.fs.header.0,
+                        //TODO: get parent?
+                        parent_id,
                         i,
                         FileType::Directory,
                         "..",
@@ -326,15 +314,24 @@ impl<D: Disk> Filesystem for Fuse<D> {
                 }
 
                 for child in children.iter().skip(skip) {
+                    //TODO: make it possible to get file type from directory entry
+                    let node = match self.fs.tx(|tx| tx.read_tree(child.node_ptr())) {
+                        Ok(ok) => ok,
+                        Err(err) => {
+                            reply.error(err.errno as i32);
+                            return;
+                        }
+                    };
+
                     let full = reply.add(
-                        child.0 - self.fs.header.0,
+                        child.node_ptr().id() as u64,
                         i,
-                        if child.1.is_dir() {
+                        if node.data().is_dir() {
                             FileType::Directory
                         } else {
                             FileType::RegularFile
                         },
-                        child.1.name().unwrap(),
+                        child.name().unwrap(),
                     );
 
                     if full {
@@ -354,20 +351,23 @@ impl<D: Disk> Filesystem for Fuse<D> {
     fn create(
         &mut self,
         _req: &Request,
-        parent_block: u64,
+        parent_id: u64,
         name: &OsStr,
         mode: u32,
         flags: u32,
         reply: ReplyCreate,
     ) {
+        let parent_ptr = TreePtr::<Node>::new(parent_id as u32);
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        match self.fs.create_node(
-            Node::MODE_FILE | (mode as u16 & Node::MODE_PERM),
-            name.to_str().unwrap(),
-            parent_block,
-            ctime.as_secs(),
-            ctime.subsec_nanos(),
-        ) {
+        match self.fs.tx(|tx| {
+            tx.create_node(
+                parent_ptr,
+                name.to_str().unwrap(),
+                Node::MODE_FILE | (mode as u16 & Node::MODE_PERM),
+                ctime.as_secs(),
+                ctime.subsec_nanos(),
+            )
+        }) {
             Ok(node) => {
                 // println!("Create {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
                 reply.created(&TTL, &node_attr(&node), 0, 0, flags);
@@ -381,19 +381,22 @@ impl<D: Disk> Filesystem for Fuse<D> {
     fn mkdir(
         &mut self,
         _req: &Request,
-        parent_block: u64,
+        parent_id: u64,
         name: &OsStr,
         mode: u32,
         reply: ReplyEntry,
     ) {
+        let parent_ptr = TreePtr::<Node>::new(parent_id as u32);
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        match self.fs.create_node(
-            Node::MODE_DIR | (mode as u16 & Node::MODE_PERM),
-            name.to_str().unwrap(),
-            parent_block,
-            ctime.as_secs(),
-            ctime.subsec_nanos(),
-        ) {
+        match self.fs.tx(|tx| {
+            tx.create_node(
+                parent_ptr,
+                name.to_str().unwrap(),
+                Node::MODE_DIR | (mode as u16 & Node::MODE_PERM),
+                ctime.as_secs(),
+                ctime.subsec_nanos(),
+            )
+        }) {
             Ok(node) => {
                 // println!("Mkdir {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
                 reply.entry(&TTL, &node_attr(&node), 0);
@@ -404,10 +407,11 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn rmdir(&mut self, _req: &Request, parent_block: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn rmdir(&mut self, _req: &Request, parent_id: u64, name: &OsStr, reply: ReplyEmpty) {
+        let parent_ptr = TreePtr::<Node>::new(parent_id as u32);
         match self
             .fs
-            .remove_node(Node::MODE_DIR, name.to_str().unwrap(), parent_block)
+            .tx(|tx| tx.remove_node(parent_ptr, name.to_str().unwrap(), Node::MODE_DIR))
         {
             Ok(()) => {
                 reply.ok();
@@ -418,10 +422,11 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn unlink(&mut self, _req: &Request, parent_block: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn unlink(&mut self, _req: &Request, parent_id: u64, name: &OsStr, reply: ReplyEmpty) {
+        let parent_ptr = TreePtr::<Node>::new(parent_id as u32);
         match self
             .fs
-            .remove_node(Node::MODE_FILE, name.to_str().unwrap(), parent_block)
+            .tx(|tx| tx.remove_node(parent_ptr, name.to_str().unwrap(), Node::MODE_FILE))
         {
             Ok(()) => {
                 reply.ok();
@@ -433,52 +438,44 @@ impl<D: Disk> Filesystem for Fuse<D> {
     }
 
     fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
-        let free = self.fs.header.1.free;
-        match self.fs.node_len(free) {
-            Ok(free_size) => {
-                let bsize = BLOCK_SIZE;
-                let blocks = self.fs.header.1.size / bsize;
-                let bfree = free_size / bsize;
-                reply.statfs(blocks, bfree, bfree, 0, 0, bsize as u32, 256, 0);
-            }
-            Err(err) => {
-                reply.error(err.errno as i32);
-            }
-        }
+        let bsize = BLOCK_SIZE;
+        let blocks = self.fs.header.size() / bsize;
+        let bfree = self.fs.allocator().free();
+        reply.statfs(blocks, bfree, bfree, 0, 0, bsize as u32, 256, 0);
     }
 
     fn symlink(
         &mut self,
         _req: &Request,
-        parent_block: u64,
+        parent_id: u64,
         name: &OsStr,
         link: &Path,
         reply: ReplyEntry,
     ) {
+        let parent_ptr = TreePtr::<Node>::new(parent_id as u32);
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        match self.fs.create_node(
-            Node::MODE_SYMLINK | 0o777,
-            name.to_str().unwrap(),
-            parent_block,
-            ctime.as_secs(),
-            ctime.subsec_nanos(),
-        ) {
+        match self.fs.tx(|tx| {
+            let node = tx.create_node(
+                parent_ptr,
+                name.to_str().unwrap(),
+                Node::MODE_SYMLINK | 0o777,
+                ctime.as_secs(),
+                ctime.subsec_nanos(),
+            )?;
+
+            let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            tx.write_node(
+                node.ptr(),
+                0,
+                link.as_os_str().as_bytes(),
+                mtime.as_secs(),
+                mtime.subsec_nanos(),
+            )?;
+
+            Ok(node)
+        }) {
             Ok(node) => {
-                let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                match self.fs.write_node(
-                    node.0,
-                    0,
-                    link.as_os_str().as_bytes(),
-                    mtime.as_secs(),
-                    mtime.subsec_nanos(),
-                ) {
-                    Ok(_count) => {
-                        reply.entry(&TTL, &node_attr(&node), 0);
-                    }
-                    Err(err) => {
-                        reply.error(err.errno as i32);
-                    }
-                }
+                reply.entry(&TTL, &node_attr(&node), 0);
             }
             Err(error) => {
                 reply.error(error.errno as i32);
@@ -486,13 +483,19 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn readlink(&mut self, _req: &Request, ino: u64, reply: ReplyData) {
+    fn readlink(&mut self, _req: &Request, node_id: u64, reply: ReplyData) {
+        let node_ptr = TreePtr::<Node>::new(node_id as u32);
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut data = vec![0; 4096];
-        match self
-            .fs
-            .read_node(ino, 0, &mut data, atime.as_secs(), atime.subsec_nanos())
-        {
+        match self.fs.tx(|tx| {
+            tx.read_node(
+                node_ptr,
+                0,
+                &mut data,
+                atime.as_secs(),
+                atime.subsec_nanos(),
+            )
+        }) {
             Ok(count) => {
                 reply.data(&data[..count]);
             }
@@ -506,39 +509,27 @@ impl<D: Disk> Filesystem for Fuse<D> {
         &mut self,
         _req: &Request,
         orig_parent: u64,
-        name: &OsStr,
+        orig_name: &OsStr,
         new_parent: u64,
         new_name: &OsStr,
         reply: ReplyEmpty,
     ) {
-        let rename_inner = |fs: &mut filesystem::FileSystem<D>| -> syscall::Result<()> {
-            let mut orig = fs.find_node(name.to_str().unwrap(), orig_parent)?;
+        let orig_parent_ptr = TreePtr::<Node>::new(orig_parent as u32);
+        let orig_name = orig_name.to_str().expect("name is not utf-8");
+        let new_parent_ptr = TreePtr::<Node>::new(new_parent as u32);
+        let new_name = new_name.to_str().expect("name is not utf-8");
 
-            if new_parent != orig_parent {
-                fs.remove_blocks(orig.0, 1, orig_parent)?;
-            }
-
-            if let Ok(node) = fs.find_node(new_name.to_str().unwrap(), new_parent) {
-                if node.0 != orig.0 {
-                    fs.node_set_len(node.0, 0)?;
-                    fs.remove_blocks(node.0, 1, new_parent)?;
-                    fs.write_at(node.0, &Node::default())?;
-                    fs.deallocate(node.0, BLOCK_SIZE)?;
-                }
-            }
-
-            orig.1.set_name(&new_name.to_str().unwrap())?;
-            orig.1.parent = new_parent;
-            fs.write_at(orig.0, &orig.1)?;
-
-            if new_parent != orig_parent {
-                fs.insert_blocks(orig.0, BLOCK_SIZE, new_parent)?;
-            }
-
+        // TODO: improve performance
+        match self.fs.tx(|tx| {
+            let node = tx.find_node(orig_parent_ptr, orig_name)?;
+            tx.link_node(new_parent_ptr, new_name, node.ptr())?;
+            tx.remove_node(
+                orig_parent_ptr,
+                orig_name,
+                node.data().mode() & Node::MODE_TYPE,
+            )?;
             Ok(())
-        };
-
-        match rename_inner(&mut self.fs) {
+        }) {
             Ok(()) => reply.ok(),
             Err(err) => reply.error(err.errno as i32),
         }

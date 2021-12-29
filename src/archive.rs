@@ -4,16 +4,16 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use crate::{Disk, Extent, FileSystem, Node, BLOCK_SIZE};
+use crate::{Disk, FileSystem, Node, Transaction, TreePtr, BLOCK_SIZE};
 
 fn syscall_err(err: syscall::Error) -> io::Error {
     io::Error::from_raw_os_error(err.errno)
 }
 
 pub fn archive_at<D: Disk, P: AsRef<Path>>(
-    fs: &mut FileSystem<D>,
+    tx: &mut Transaction<D>,
     parent_path: P,
-    parent_block: u64,
+    parent_ptr: TreePtr<Node>,
 ) -> io::Result<()> {
     for entry_res in fs::read_dir(parent_path)? {
         let entry = entry_res?;
@@ -38,44 +38,60 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(
             ));
         };
 
-        let mode = mode_type | (metadata.mode() as u16 & Node::MODE_PERM);
-        let mut node = fs
-            .create_node(
-                mode,
-                &name,
-                parent_block,
-                metadata.ctime() as u64,
-                metadata.ctime_nsec() as u32,
-            )
-            .map_err(syscall_err)?;
-        node.1.uid = metadata.uid();
-        node.1.gid = metadata.gid();
-        fs.write_at(node.0, &node.1).map_err(syscall_err)?;
+        let node_ptr;
+        {
+            let mode = mode_type | (metadata.mode() as u16 & Node::MODE_PERM);
+            let mut node = tx
+                .create_node(
+                    parent_ptr,
+                    &name,
+                    mode,
+                    metadata.ctime() as u64,
+                    metadata.ctime_nsec() as u32,
+                )
+                .map_err(syscall_err)?;
+
+            node_ptr = node.ptr();
+
+            if node.data().uid() != metadata.uid() || node.data().gid() != metadata.gid() {
+                node.data_mut().set_uid(metadata.uid());
+                node.data_mut().set_gid(metadata.gid());
+                tx.sync_tree(node).map_err(syscall_err)?;
+            }
+        }
 
         let path = entry.path();
         if file_type.is_dir() {
-            archive_at(fs, path, node.0)?;
+            archive_at(tx, path, node_ptr)?;
         } else if file_type.is_file() {
             let data = fs::read(path)?;
-            fs.write_node(
-                node.0,
-                0,
-                &data,
-                metadata.mtime() as u64,
-                metadata.mtime_nsec() as u32,
-            )
-            .map_err(syscall_err)?;
+            let count = tx
+                .write_node(
+                    node_ptr,
+                    0,
+                    &data,
+                    metadata.mtime() as u64,
+                    metadata.mtime_nsec() as u32,
+                )
+                .map_err(syscall_err)?;
+            if count != data.len() {
+                panic!("file write count {} != {}", count, data.len());
+            }
         } else if file_type.is_symlink() {
             let destination = fs::read_link(path)?;
             let data = destination.as_os_str().as_bytes();
-            fs.write_node(
-                node.0,
-                0,
-                &data,
-                metadata.mtime() as u64,
-                metadata.mtime_nsec() as u32,
-            )
-            .map_err(syscall_err)?;
+            let count = tx
+                .write_node(
+                    node_ptr,
+                    0,
+                    data,
+                    metadata.mtime() as u64,
+                    metadata.mtime_nsec() as u32,
+                )
+                .map_err(syscall_err)?;
+            if count != data.len() {
+                panic!("symlink write count {} != {}", count, data.len());
+            }
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -88,19 +104,43 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(
 }
 
 pub fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P) -> io::Result<u64> {
-    let root_block = fs.header.1.root;
-    archive_at(fs, parent_path, root_block)?;
+    let end_block = fs
+        .tx(|tx| {
+            // Archive_at root node
+            archive_at(tx, parent_path, TreePtr::root())
+                .map_err(|err| syscall::Error::new(err.raw_os_error().unwrap()))?;
 
-    let free_block = fs.header.1.free;
-    let mut free = fs.node(free_block).map_err(syscall_err)?;
-    let end_block = free.1.extents[0].block;
-    let end_size = end_block * BLOCK_SIZE;
-    free.1.extents[0] = Extent::default();
-    fs.write_at(free.0, &free.1).map_err(syscall_err)?;
+            // Squash alloc log
+            tx.sync(true)?;
 
-    fs.header.1.size = end_size;
-    let header = fs.header;
-    fs.write_at(header.0, &header.1).map_err(syscall_err)?;
+            let mut end_block = tx.header.size() / BLOCK_SIZE;
+            /* TODO: Cut off any free blocks at the end of the filesystem
+            let mut end_changed = true;
+            while end_changed {
+                end_changed = false;
 
-    Ok(header.0 * BLOCK_SIZE + end_size)
+                let allocator = fs.allocator();
+                let levels = allocator.levels();
+                for level in 0..levels.len() {
+                    let level_size = 1 << level;
+                    for &block in levels[level].iter() {
+                        if block < end_block && block + level_size >= end_block {
+                            end_block = block;
+                            end_changed = true;
+                        }
+                    }
+                }
+            }
+            */
+
+            // Update header
+            tx.header.size = (end_block * BLOCK_SIZE).into();
+            tx.header_changed = true;
+            tx.sync(false)?;
+
+            Ok(end_block)
+        })
+        .map_err(syscall_err)?;
+
+    Ok((fs.block + end_block) * BLOCK_SIZE)
 }
