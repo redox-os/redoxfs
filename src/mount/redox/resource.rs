@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use syscall::data::{Map, Stat, TimeSpec};
 use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, ENOMEM, EPERM};
 use syscall::flag::{
-    F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY, PROT_READ,
-    PROT_WRITE, SEEK_CUR, SEEK_END, SEEK_SET, MapFlags,
+    MapFlags, F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY,
+    PROT_READ, PROT_WRITE, SEEK_CUR, SEEK_END, SEEK_SET,
 };
 
 use disk::Disk;
@@ -214,8 +214,15 @@ impl Fmap {
         }
 
         // Read buffer from disk
+        let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let buf = slice::from_raw_parts_mut(address, map.size);
-        let count = match fs.read_node(block, map.offset as u64, buf) {
+        let count = match fs.read_node(
+            block,
+            map.offset as u64,
+            buf,
+            atime.as_secs(),
+            atime.subsec_nanos(),
+        ) {
             Ok(ok) => ok,
             Err(err) => {
                 free(address);
@@ -307,7 +314,14 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn read(&mut self, buf: &mut [u8], fs: &mut FileSystem<D>) -> Result<usize> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_RDONLY {
-            let count = fs.read_node(self.block, self.seek as u64, buf)?;
+            let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let count = fs.read_node(
+                self.block,
+                self.seek as u64,
+                buf,
+                atime.as_secs(),
+                atime.subsec_nanos(),
+            )?;
             self.seek += count as isize;
             Ok(count)
         } else {

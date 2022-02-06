@@ -93,7 +93,7 @@ fn mmap() {
 
         let mmap_inner = |write: bool| {
             let fd = dbg!(syscall::open(
-                path.as_os_str().as_bytes(),
+                path.to_str().unwrap(),
                 syscall::O_CREAT | syscall::O_RDWR | syscall::O_CLOEXEC
             ))
             .unwrap();
@@ -105,7 +105,8 @@ fn mmap() {
                         &syscall::Map {
                             offset: 0,
                             size: 128,
-                            flags: syscall::PROT_READ | syscall::PROT_WRITE
+                            flags: syscall::PROT_READ | syscall::PROT_WRITE,
+                            address: 0,
                         }
                     ))
                     .unwrap() as *mut u8,
@@ -125,7 +126,10 @@ fn mmap() {
 
             //TODO: add msync
             unsafe {
-                assert_eq!(dbg!(syscall::funmap(map.as_mut_ptr() as usize)), Ok(0));
+                assert_eq!(
+                    dbg!(syscall::funmap(map.as_mut_ptr() as usize, map.len())),
+                    Ok(0)
+                );
             }
         };
 

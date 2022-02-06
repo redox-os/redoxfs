@@ -1,7 +1,5 @@
-use std::ops::{Deref, DerefMut};
-use std::{fmt, mem, slice};
-
-use uuid::Uuid;
+use core::ops::{Deref, DerefMut};
+use core::{fmt, mem, slice};
 
 use {BLOCK_SIZE, SIGNATURE, VERSION};
 
@@ -38,8 +36,9 @@ impl Header {
         }
     }
 
+    #[cfg(feature = "std")]
     pub fn new(size: u64, root: u64, free: u64) -> Header {
-        let uuid = Uuid::new_v4();
+        let uuid = uuid::Uuid::new_v4();
         Header {
             signature: *SIGNATURE,
             version: VERSION,

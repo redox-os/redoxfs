@@ -6,12 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::{Map, Stat, StatVfs, TimeSpec};
 use syscall::error::{
-    Error, Result, EACCES, EBADF, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
-    ENOSYS, EPERM, EXDEV,
+    Error, Result, EACCES, EBADF, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOSYS, ENOTDIR,
+    ENOTEMPTY, EPERM, EXDEV,
 };
 use syscall::flag::{
-    MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_STAT,
-    O_SYMLINK, O_TRUNC, O_WRONLY, EventFlags,
+    EventFlags, MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
+    O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::scheme::Scheme;
 
@@ -53,8 +53,9 @@ impl<D: Disk> FileScheme<D> {
         let mut node = node;
         for _ in 0..32 {
             // XXX What should the limit be?
+            let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
             let mut buf = [0; 4096];
-            let count = fs.read_node(node.0, 0, &mut buf)?;
+            let count = fs.read_node(node.0, 0, &mut buf, atime.as_secs(), atime.subsec_nanos())?;
             let scheme = format!("{}:", &self.name);
             let canon = canonicalize(
                 &format!("{}{}", scheme, str::from_utf8(url).unwrap()).as_bytes(),
@@ -249,10 +250,17 @@ impl<D: Disk> Scheme for FileScheme<D> {
                     && flags & O_SYMLINK != O_SYMLINK
                 {
                     let mut resolve_nodes = Vec::new();
-                    let resolved =
-                        self.resolve_symlink(&mut fs, uid, gid, url.as_bytes(), node, &mut resolve_nodes)?;
+                    let resolved = self.resolve_symlink(
+                        &mut fs,
+                        uid,
+                        gid,
+                        url.as_bytes(),
+                        node,
+                        &mut resolve_nodes,
+                    )?;
                     drop(fs);
-                    let resolved_utf8 = str::from_utf8(&resolved).map_err(|_| Error::new(EINVAL))?;
+                    let resolved_utf8 =
+                        str::from_utf8(&resolved).map_err(|_| Error::new(EINVAL))?;
                     return self.open(resolved_utf8, flags, uid, gid);
                 } else if !node.1.is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));

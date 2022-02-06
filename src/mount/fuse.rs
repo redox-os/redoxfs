@@ -242,11 +242,15 @@ impl<D: Disk> Filesystem for Fuse<D> {
         size: u32,
         reply: ReplyData,
     ) {
+        let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut data = vec![0; size as usize];
-        match self
-            .fs
-            .read_node(block, cmp::max(0, offset) as u64, &mut data)
-        {
+        match self.fs.read_node(
+            block,
+            cmp::max(0, offset) as u64,
+            &mut data,
+            atime.as_secs(),
+            atime.subsec_nanos(),
+        ) {
             Ok(count) => {
                 reply.data(&data[..count]);
             }
@@ -483,8 +487,12 @@ impl<D: Disk> Filesystem for Fuse<D> {
     }
 
     fn readlink(&mut self, _req: &Request, ino: u64, reply: ReplyData) {
+        let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut data = vec![0; 4096];
-        match self.fs.read_node(ino, 0, &mut data) {
+        match self
+            .fs
+            .read_node(ino, 0, &mut data, atime.as_secs(), atime.subsec_nanos())
+        {
             Ok(count) => {
                 reply.data(&data[..count]);
             }
@@ -494,7 +502,15 @@ impl<D: Disk> Filesystem for Fuse<D> {
         }
     }
 
-    fn rename(&mut self, _req: &Request, orig_parent: u64, name: &OsStr, new_parent: u64, new_name: &OsStr, reply: ReplyEmpty) {
+    fn rename(
+        &mut self,
+        _req: &Request,
+        orig_parent: u64,
+        name: &OsStr,
+        new_parent: u64,
+        new_name: &OsStr,
+        reply: ReplyEmpty,
+    ) {
         let rename_inner = |fs: &mut filesystem::FileSystem<D>| -> syscall::Result<()> {
             let mut orig = fs.find_node(name.to_str().unwrap(), orig_parent)?;
 

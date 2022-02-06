@@ -1,5 +1,5 @@
-use std::cmp::min;
-use std::time::{SystemTime, UNIX_EPOCH};
+use alloc::vec::Vec;
+use core::cmp::min;
 
 use syscall::error::{Error, Result, EEXIST, EINVAL, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY};
 
@@ -38,6 +38,7 @@ impl<D: Disk> FileSystem<D> {
     }
 
     /// Create a file system on a disk
+    #[cfg(feature = "std")]
     pub fn create(disk: D, ctime: u64, ctime_nsec: u32) -> Result<Self> {
         Self::create_reserved(disk, &[], ctime, ctime_nsec)
     }
@@ -45,6 +46,7 @@ impl<D: Disk> FileSystem<D> {
     /// Create a file system on a disk, with reserved data at the beginning
     /// Reserved data will be zero padded up to the nearest block
     /// We need to pass ctime and ctime_nsec in order to initialize the unix timestamps
+    #[cfg(feature = "std")]
     pub fn create_reserved(
         mut disk: D,
         reserved: &[u8],
@@ -453,8 +455,14 @@ impl<D: Disk> FileSystem<D> {
         }
     }
 
-    pub fn read_node(&mut self, block: u64, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    pub fn read_node(
+        &mut self,
+        block: u64,
+        offset: u64,
+        buf: &mut [u8],
+        atime: u64,
+        atime_nsec: u32,
+    ) -> Result<usize> {
         let block_offset = offset / BLOCK_SIZE;
         let mut byte_offset = (offset % BLOCK_SIZE) as usize;
 
@@ -518,8 +526,6 @@ impl<D: Disk> FileSystem<D> {
         }
 
         if i > 0 {
-            let atime_nsec = atime.subsec_nanos();
-            let atime = atime.as_secs();
             let mut node = self.node(block)?;
             if atime > node.1.atime || (atime == node.1.atime && atime_nsec > node.1.atime_nsec) {
                 let is_old = atime - node.1.atime > 3600; // Last read was more than a day ago

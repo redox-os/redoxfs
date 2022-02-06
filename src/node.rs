@@ -1,4 +1,5 @@
-use std::{fmt, mem, ops, slice, str};
+use alloc::vec::Vec;
+use core::{fmt, mem, ops, slice, str};
 
 use super::Extent;
 use syscall;

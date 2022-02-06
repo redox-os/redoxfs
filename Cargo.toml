@@ -2,7 +2,7 @@
 name = "redoxfs"
 description = "The Redox Filesystem"
 repository = "https://gitlab.redox-os.org/redox-os/redoxfs"
-version = "0.4.3"
+version = "0.4.4"
 license-file = "LICENSE"
 readme = "README.md"
 authors = ["Jeremy Soller <jackpot51@gmail.com>"]
@@ -15,22 +15,32 @@ path = "src/lib.rs"
 name = "redoxfs"
 path = "src/bin/mount.rs"
 doc = false
+required-features = ["std"]
 
 [[bin]]
 name = "redoxfs-ar"
 path = "src/bin/ar.rs"
 doc = false
+required-features = ["std"]
 
 [[bin]]
 name = "redoxfs-mkfs"
 path = "src/bin/mkfs.rs"
 doc = false
+required-features = ["std"]
 
 [dependencies]
 redox_syscall = "0.2.9"
-uuid = { version = "0.5", features = ["v4"] }
+
+[dependencies.uuid]
+version = "0.5"
+default-features = false
+
+[features]
+default = ["std"]
+std = ["fuse", "time", "uuid/v4"]
 
 [target.'cfg(not(target_os = "redox"))'.dependencies]
-fuse = "0.3"
+fuse = { version = "0.3", optional = true }
 libc = "0.2"
-time = "0.1"
+time = { version = "0.1", optional = true }
