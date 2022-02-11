@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::process;
 
-use redoxfs::{mount, DiskCache, DiskFile};
+use redoxfs::{mount, DiskCache, DiskFile, FileSystem};
 use uuid::Uuid;
 
 #[cfg(target_os = "redox")]
@@ -85,14 +85,37 @@ enum DiskId {
     Uuid(Uuid),
 }
 
+fn filesystem_by_path(path: &str, block_opt: Option<u64>) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
+    println!("redoxfs: opening {}", path);
+    match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
+        Ok(disk) => match redoxfs::FileSystem::open(disk, block_opt) {
+            Ok(filesystem) => {
+                println!(
+                    "redoxfs: opened filesystem on {} with uuid {}",
+                    path,
+                    Uuid::from_bytes(&filesystem.header.1.uuid)
+                        .unwrap()
+                        .hyphenated()
+                );
+
+                return Some((path.to_string(), filesystem));
+            }
+            Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err),
+        },
+        Err(err) => println!("redoxfs: failed to open image {}: {}", path, err),
+    }
+    None
+}
+
 #[cfg(not(target_os = "redox"))]
-fn disk_paths(_paths: &mut Vec<String>) {}
+fn filesystem_by_uuid(_uuid: &Uuid, _block_opt: Option<u64>) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
+    None
+}
 
 #[cfg(target_os = "redox")]
-fn disk_paths(paths: &mut Vec<String>) {
+fn filesystem_by_uuid(uuid: &Uuid, block_opt: Option<u64>) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
     use std::fs;
 
-    let mut schemes = vec![];
     match fs::read_dir(":") {
         Ok(entries) => {
             for entry_res in entries {
@@ -101,7 +124,36 @@ fn disk_paths(paths: &mut Vec<String>) {
                         let scheme = path.trim_start_matches(':').trim_matches('/');
                         if scheme.starts_with("disk") {
                             println!("redoxfs: found scheme {}", scheme);
-                            schemes.push(format!("{}:", scheme));
+                            match fs::read_dir(&format!("{}:", scheme)) {
+                                Ok(entries) => {
+                                    for entry_res in entries {
+                                        if let Ok(entry) = entry_res {
+                                            if let Ok(path) = entry.path().into_os_string().into_string() {
+                                                println!("redoxfs: found path {}", path);
+                                                if let Some((path, filesystem)) = filesystem_by_path(&path, block_opt) {
+                                                    if &filesystem.header.1.uuid == uuid.as_bytes() {
+                                                        println!(
+                                                            "redoxfs: filesystem on {} matches uuid {}",
+                                                            path,
+                                                            uuid.hyphenated()
+                                                        );
+                                                        return Some((path, filesystem))
+                                                    } else {
+                                                        println!(
+                                                            "redoxfs: filesystem on {} does not match uuid {}",
+                                                            path,
+                                                            uuid.hyphenated()
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    println!("redoxfs: failed to list '{}': {}", scheme, err);
+                                }
+                            }
                         }
                     }
                 }
@@ -112,100 +164,41 @@ fn disk_paths(paths: &mut Vec<String>) {
         }
     }
 
-    for scheme in schemes {
-        match fs::read_dir(&scheme) {
-            Ok(entries) => {
-                for entry_res in entries {
-                    if let Ok(entry) = entry_res {
-                        if let Ok(path) = entry.path().into_os_string().into_string() {
-                            println!("redoxfs: found path {}", path);
-                            paths.push(path);
-                        }
-                    }
-                }
-            }
-            Err(err) => {
-                println!("redoxfs: failed to list '{}': {}", scheme, err);
-            }
-        }
-    }
+    None
 }
 
 fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write: File) -> ! {
     setsig();
 
-    let mut paths = vec![];
-    let mut uuid_opt = None;
-
-    match *disk_id {
+    let filesystem_opt = match *disk_id {
         DiskId::Path(ref path) => {
-            paths.push(path.clone());
+            filesystem_by_path(path, block_opt)
         }
         DiskId::Uuid(ref uuid) => {
-            disk_paths(&mut paths);
-            uuid_opt = Some(uuid.clone());
+            filesystem_by_uuid(uuid, block_opt)
         }
-    }
+    };
 
-    for path in paths {
-        println!("redoxfs: opening {}", path);
-        match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
-            Ok(disk) => match redoxfs::FileSystem::open(disk, block_opt) {
-                Ok(filesystem) => {
-                    println!(
-                        "redoxfs: opened filesystem on {} with uuid {}",
-                        path,
-                        Uuid::from_bytes(&filesystem.header.1.uuid)
-                            .unwrap()
-                            .hyphenated()
-                    );
+    if let Some((path, filesystem)) = filesystem_opt {
+        match mount(filesystem, &mountpoint, |mounted_path| {
+            capability_mode();
 
-                    let matches = if let Some(uuid) = uuid_opt {
-                        if &filesystem.header.1.uuid == uuid.as_bytes() {
-                            println!(
-                                "redoxfs: filesystem on {} matches uuid {}",
-                                path,
-                                uuid.hyphenated()
-                            );
-                            true
-                        } else {
-                            println!(
-                                "redoxfs: filesystem on {} does not match uuid {}",
-                                path,
-                                uuid.hyphenated()
-                            );
-                            false
-                        }
-                    } else {
-                        true
-                    };
-
-                    if matches {
-                        match mount(filesystem, &mountpoint, |mounted_path| {
-                            capability_mode();
-
-                            println!(
-                                "redoxfs: mounted filesystem on {} to {}",
-                                path,
-                                mounted_path.display()
-                            );
-                            let _ = write.write(&[0]);
-                        }) {
-                            Ok(()) => {
-                                process::exit(0);
-                            }
-                            Err(err) => {
-                                println!(
-                                    "redoxfs: failed to mount {} to {}: {}",
-                                    path, mountpoint, err
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err),
-            },
-            Err(err) => println!("redoxfs: failed to open image {}: {}", path, err),
+            println!(
+                "redoxfs: mounted filesystem on {} to {}",
+                path,
+                mounted_path.display()
+            );
+            let _ = write.write(&[0]);
+        }) {
+            Ok(()) => {
+                process::exit(0);
+            }
+            Err(err) => {
+                println!(
+                    "redoxfs: failed to mount {} to {}: {}",
+                    path, mountpoint, err
+                );
+            }
         }
     }
 
