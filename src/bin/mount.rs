@@ -11,11 +11,12 @@ extern crate uuid;
 
 use std::env;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::process;
 
 use redoxfs::{mount, DiskCache, DiskFile, FileSystem};
+use termion::input::TermRead;
 use uuid::Uuid;
 
 #[cfg(target_os = "redox")]
@@ -42,9 +43,7 @@ fn setsig() {
 
 #[cfg(not(target_os = "redox"))]
 // on linux, this is implemented properly, so no need for this unscrupulous nonsense!
-fn setsig() {
-    ()
-}
+fn setsig() {}
 
 #[cfg(not(target_os = "redox"))]
 fn fork() -> isize {
@@ -57,8 +56,11 @@ fn pipe(pipes: &mut [i32; 2]) -> isize {
 }
 
 #[cfg(not(target_os = "redox"))]
-fn capability_mode() {
-    ()
+fn capability_mode() {}
+
+#[cfg(not(target_os = "redox"))]
+fn bootloader_password() -> Option<Vec<u8>> {
+    None
 }
 
 #[cfg(target_os = "redox")]
@@ -76,6 +78,37 @@ fn capability_mode() {
     syscall::setrens(0, 0).expect("redoxfs: failed to enter null namespace");
 }
 
+#[cfg(target_os = "redox")]
+fn bootloader_password() -> Option<Vec<u8>> {
+    let addr_env = env::var_os("REDOXFS_PASSWORD_ADDR")?;
+    let size_env = env::var_os("REDOXFS_PASSWORD_SIZE")?;
+
+    let addr = usize::from_str_radix(
+        addr_env.to_str().expect("REDOXFS_PASSWORD_ADDR not valid"),
+        16,
+    )
+    .expect("failed to parse REDOXFS_PASSWORD_ADDR");
+
+    let size = usize::from_str_radix(
+        size_env.to_str().expect("REDOXFS_PASSWORD_SIZE not valid"),
+        16,
+    )
+    .expect("failed to parse REDOXFS_PASSWORD_SIZE");
+
+    let mut password = Vec::with_capacity(size);
+    unsafe {
+        let password_map = syscall::physmap(addr, size, syscall::PhysmapFlags::empty())
+            .expect("failed to map REDOXFS_PASSWORD");
+
+        for i in 0..size {
+            password.push(*((password_map + i) as *const u8));
+        }
+
+        let _ = syscall::physunmap(password_map);
+    }
+    Some(password)
+}
+
 fn usage() {
     println!("redoxfs [--uuid] [disk or uuid] [mountpoint] [block in hex]");
 }
@@ -85,35 +118,87 @@ enum DiskId {
     Uuid(Uuid),
 }
 
-fn filesystem_by_path(path: &str, block_opt: Option<u64>) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
+fn filesystem_by_path(
+    path: &str,
+    block_opt: Option<u64>,
+) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
     println!("redoxfs: opening {}", path);
-    match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
-        Ok(disk) => match redoxfs::FileSystem::open(disk, block_opt) {
-            Ok(filesystem) => {
-                println!(
-                    "redoxfs: opened filesystem on {} with uuid {}",
-                    path,
-                    Uuid::from_bytes(&filesystem.header.1.uuid)
-                        .unwrap()
-                        .hyphenated()
-                );
+    let attempts = 10;
+    for attempt in 0..=attempts {
+        let password_opt = if attempt > 0 {
+            eprint!("redoxfs: password: ");
 
-                return Some((path.to_string(), filesystem));
+            let password = io::stdin()
+                .read_passwd(&mut io::stderr())
+                .unwrap()
+                .unwrap_or(String::new());
+
+            eprintln!();
+
+            if password.is_empty() {
+                eprintln!("redoxfs: empty password, giving up");
+
+                // Password is empty, exit loop
+                break;
             }
-            Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err),
-        },
-        Err(err) => println!("redoxfs: failed to open image {}: {}", path, err),
+
+            Some(password.into_bytes())
+        } else {
+            bootloader_password()
+        };
+
+        match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
+            Ok(disk) => match redoxfs::FileSystem::open(
+                disk,
+                password_opt.as_ref().map(|x| x.as_slice()),
+                block_opt,
+                true,
+            ) {
+                Ok(filesystem) => {
+                    println!(
+                        "redoxfs: opened filesystem on {} with uuid {}",
+                        path,
+                        Uuid::from_bytes(&filesystem.header.uuid())
+                            .unwrap()
+                            .hyphenated()
+                    );
+
+                    return Some((path.to_string(), filesystem));
+                }
+                Err(err) => match err.errno {
+                    syscall::ENOKEY => {
+                        if password_opt.is_some() {
+                            println!("redoxfs: incorrect password ({}/{})", attempt, attempts);
+                        }
+                    }
+                    _ => {
+                        println!("redoxfs: failed to open filesystem {}: {}", path, err);
+                        break;
+                    }
+                },
+            },
+            Err(err) => {
+                println!("redoxfs: failed to open image {}: {}", path, err);
+                break;
+            }
+        }
     }
     None
 }
 
 #[cfg(not(target_os = "redox"))]
-fn filesystem_by_uuid(_uuid: &Uuid, _block_opt: Option<u64>) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
+fn filesystem_by_uuid(
+    _uuid: &Uuid,
+    _block_opt: Option<u64>,
+) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
     None
 }
 
 #[cfg(target_os = "redox")]
-fn filesystem_by_uuid(uuid: &Uuid, block_opt: Option<u64>) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
+fn filesystem_by_uuid(
+    uuid: &Uuid,
+    block_opt: Option<u64>,
+) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
     use std::fs;
 
     match fs::read_dir(":") {
@@ -128,16 +213,21 @@ fn filesystem_by_uuid(uuid: &Uuid, block_opt: Option<u64>) -> Option<(String, Fi
                                 Ok(entries) => {
                                     for entry_res in entries {
                                         if let Ok(entry) = entry_res {
-                                            if let Ok(path) = entry.path().into_os_string().into_string() {
+                                            if let Ok(path) =
+                                                entry.path().into_os_string().into_string()
+                                            {
                                                 println!("redoxfs: found path {}", path);
-                                                if let Some((path, filesystem)) = filesystem_by_path(&path, block_opt) {
-                                                    if &filesystem.header.1.uuid == uuid.as_bytes() {
+                                                if let Some((path, filesystem)) =
+                                                    filesystem_by_path(&path, block_opt)
+                                                {
+                                                    if &filesystem.header.uuid() == uuid.as_bytes()
+                                                    {
                                                         println!(
                                                             "redoxfs: filesystem on {} matches uuid {}",
                                                             path,
                                                             uuid.hyphenated()
                                                         );
-                                                        return Some((path, filesystem))
+                                                        return Some((path, filesystem));
                                                     } else {
                                                         println!(
                                                             "redoxfs: filesystem on {} does not match uuid {}",
@@ -171,12 +261,8 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write:
     setsig();
 
     let filesystem_opt = match *disk_id {
-        DiskId::Path(ref path) => {
-            filesystem_by_path(path, block_opt)
-        }
-        DiskId::Uuid(ref uuid) => {
-            filesystem_by_uuid(uuid, block_opt)
-        }
+        DiskId::Path(ref path) => filesystem_by_path(path, block_opt),
+        DiskId::Uuid(ref uuid) => filesystem_by_uuid(uuid, block_opt),
     };
 
     if let Some((path, filesystem)) = filesystem_opt {
@@ -215,24 +301,9 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write:
     process::exit(1);
 }
 
-fn print_uuid(path: &str) {
-    match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
-        Ok(disk) => match redoxfs::FileSystem::open(disk, None) {
-            Ok(filesystem) => {
-                println!(
-                    "{}",
-                    Uuid::from_bytes(&filesystem.header.1.uuid)
-                        .unwrap()
-                        .hyphenated()
-                );
-            }
-            Err(err) => println!("redoxfs: failed to open filesystem {}: {}", path, err),
-        },
-        Err(err) => println!("redoxfs: failed to open image {}: {}", path, err),
-    }
-}
-
 fn main() {
+    env_logger::init();
+
     let mut args = env::args().skip(1);
 
     let disk_id = match args.next() {
@@ -255,18 +326,6 @@ fn main() {
                 };
 
                 DiskId::Uuid(uuid)
-            } else if arg == "--get-uuid" {
-                match args.next() {
-                    Some(arg) => {
-                        print_uuid(&arg);
-                        process::exit(1);
-                    }
-                    None => {
-                        println!("redoxfs: no disk provided");
-                        usage();
-                        process::exit(1);
-                    }
-                };
             } else {
                 DiskId::Path(arg)
             }
@@ -313,7 +372,7 @@ fn main() {
             drop(write);
 
             let mut res = [0];
-            read.read(&mut res).unwrap();
+            read.read_exact(&mut res).unwrap();
 
             process::exit(res[0] as i32);
         } else {

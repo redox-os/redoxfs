@@ -4,8 +4,8 @@ use std::path::Path;
 use std::u64;
 use syscall::error::{Error, Result, EIO};
 
-use disk::Disk;
-use BLOCK_SIZE;
+use crate::disk::Disk;
+use crate::BLOCK_SIZE;
 
 macro_rules! try_disk {
     ($expr:expr) => {
@@ -21,33 +21,34 @@ macro_rules! try_disk {
 
 pub struct DiskSparse {
     pub file: File,
+    pub max_size: u64,
 }
 
 impl DiskSparse {
-    pub fn create<P: AsRef<Path>>(path: P) -> Result<DiskSparse> {
+    pub fn create<P: AsRef<Path>>(path: P, max_size: u64) -> Result<DiskSparse> {
         let file = try_disk!(OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(path));
-        Ok(DiskSparse { file })
+        Ok(DiskSparse { file, max_size })
     }
 }
 
 impl Disk for DiskSparse {
-    fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
         let count = try_disk!(self.file.read(buffer));
         Ok(count)
     }
 
-    fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
         let count = try_disk!(self.file.write(buffer));
         Ok(count)
     }
 
     fn size(&mut self) -> Result<u64> {
-        Ok(u64::MAX)
+        Ok(self.max_size)
     }
 }
