@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::{fmt, mem, ops, slice};
-use simple_endian::*;
+use redox_simple_endian::*;
 
 use crate::BlockPtr;
 

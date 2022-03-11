@@ -283,6 +283,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_simple_endian"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4e4404b4e54e59e7bb5f5236b61d8e822c2a77b2e955be8072002ff7ff8d69c"
+
+[[package]]
 name = "redox_syscall"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -312,9 +318,9 @@ dependencies = [
  "getrandom",
  "libc",
  "log 0.4.14",
+ "redox_simple_endian",
  "redox_syscall",
  "seahash",
- "simple_endian",
  "termion",
  "time",
  "uuid",
@@ -342,11 +348,6 @@ name = "seahash"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
-
-[[package]]
-name = "simple_endian"
-version = "0.2.1"
-source = "git+https://github.com/michalfita/simple-endian-rs.git?rev=7210f40881d16f7f2e3d8d40f6381fa222843caa#7210f40881d16f7f2e3d8d40f6381fa222843caa"
 
 [[package]]
 name = "subtle"
