@@ -60,7 +60,7 @@ impl<D: Disk> FileScheme<D> {
                 atime.subsec_nanos(),
             )?;
             let scheme = format!("{}:", scheme_name);
-            let canon = canonicalize(&format!("{}{}", scheme, url).as_bytes(), &buf[0..count]);
+            let canon = canonicalize(url.as_bytes(), &buf[0..count]);
             let path = str::from_utf8(&canon[scheme.len()..])
                 .unwrap_or("")
                 .trim_matches('/');
@@ -269,7 +269,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                             tx,
                             uid,
                             gid,
-                            url,
+                            &format!("{}:/{}", scheme_name, url),
                             node,
                             &mut resolve_nodes,
                         )
