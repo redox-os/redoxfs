@@ -5,8 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use syscall::data::{Map, Stat, StatVfs, TimeSpec};
 use syscall::error::{
-    Error, Result, EACCES, EBADF, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOSYS, ENOTDIR,
-    ENOTEMPTY, EPERM, EXDEV,
+    Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
+    EPERM, EXDEV,
 };
 use syscall::flag::{
     EventFlags, MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
@@ -222,6 +222,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         let node_opt = self
             .fs
             .tx(|tx| Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes))?;
+        let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
         let resource: Box<dyn Resource<D>> = match node_opt {
             Some((node, _node_name)) => {
                 if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
@@ -248,6 +249,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
 
                         Box::new(DirResource::new(
                             path.to_string(),
+                            parent_ptr_opt,
                             node.ptr(),
                             Some(data),
                             uid,
@@ -256,7 +258,13 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                         // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
                         return Err(Error::new(EISDIR));
                     } else {
-                        Box::new(DirResource::new(path.to_string(), node.ptr(), None, uid))
+                        Box::new(DirResource::new(
+                            path.to_string(),
+                            parent_ptr_opt,
+                            node.ptr(),
+                            None,
+                            uid,
+                        ))
                     }
                 } else if node.data().is_symlink()
                     && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW)
@@ -313,7 +321,13 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                         })?;
                     }
 
-                    Box::new(FileResource::new(path.to_string(), node_ptr, flags, uid))
+                    Box::new(FileResource::new(
+                        path.to_string(),
+                        parent_ptr_opt,
+                        node_ptr,
+                        flags,
+                        uid,
+                    ))
                 }
             }
             None => {
@@ -359,9 +373,21 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                             })?;
 
                             if dir {
-                                Box::new(DirResource::new(path.to_string(), node_ptr, None, uid))
+                                Box::new(DirResource::new(
+                                    path.to_string(),
+                                    parent_ptr_opt,
+                                    node_ptr,
+                                    None,
+                                    uid,
+                                ))
                             } else {
-                                Box::new(FileResource::new(path.to_string(), node_ptr, flags, uid))
+                                Box::new(FileResource::new(
+                                    path.to_string(),
+                                    parent_ptr_opt,
+                                    node_ptr,
+                                    flags,
+                                    uid,
+                                ))
                             }
                         } else {
                             return Err(Error::new(EPERM));
@@ -604,106 +630,102 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
+    //TODO: this function has too much code, try to simplify it
     fn frename(&mut self, id: usize, url: &str, uid: u32, gid: u32) -> Result<usize> {
-        unimplemented!();
-        /*TODO: FRENAME
-        let path = url.trim_matches('/');
+        let new_path = url.trim_matches('/');
 
-        // println!("Frename {}, {} from {}, {}", id, path, uid, gid);
+        // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
 
-        let mut files = self.files.borrow_mut();
-        if let Some(file) = files.get_mut(&id) {
+        if let Some(file) = self.files.get_mut(&id) {
             //TODO: Check for EINVAL
             // The new pathname contained a path prefix of the old, or, more generally,
             // an attempt was made to make a directory a subdirectory of itself.
 
-            let mut last_part = String::new();
-            for part in path.split('/') {
+            let mut old_name = String::new();
+            for part in file.path().split('/') {
                 if !part.is_empty() {
-                    last_part = part.to_string();
+                    old_name = part.to_string();
                 }
             }
-            if last_part.is_empty() {
+            if old_name.is_empty() {
                 return Err(Error::new(EPERM));
             }
 
-            let mut fs = self.fs.borrow_mut();
-
-            let mut orig = fs.node(file.block())?;
-
-            if !orig.1.owner(uid) {
-                // println!("orig not owned by caller {}", uid);
-                return Err(Error::new(EACCES));
+            let mut new_name = String::new();
+            for part in new_path.split('/') {
+                if !part.is_empty() {
+                    new_name = part.to_string();
+                }
+            }
+            if new_name.is_empty() {
+                return Err(Error::new(EPERM));
             }
 
-            let mut nodes = Vec::new();
-            let node_opt = self.path_nodes(&mut fs, path, uid, gid, &mut nodes)?;
+            let scheme_name = &self.name;
+            self.fs.tx(|tx| {
+                let orig_parent_ptr = match file.parent_ptr_opt() {
+                    Some(some) => some,
+                    None => {
+                        // println!("orig is root");
+                        return Err(Error::new(EBUSY));
+                    }
+                };
 
-            if let Some(parent) = nodes.last() {
-                if !parent.1.owner(uid) {
-                    // println!("parent not owned by caller {}", uid);
+                let mut orig_node = tx.read_tree(file.node_ptr())?;
+
+                if !orig_node.data().owner(uid) {
+                    // println!("orig_node not owned by caller {}", uid);
                     return Err(Error::new(EACCES));
                 }
 
-                if let Some(ref node) = node_opt {
-                    if !node.data().owner(uid) {
-                        // println!("new dir not owned by caller {}", uid);
+                let mut new_nodes = Vec::new();
+                let new_node_opt =
+                    Self::path_nodes(scheme_name, tx, new_path, uid, gid, &mut new_nodes)?;
+
+                if let Some((ref new_parent, _)) = new_nodes.last() {
+                    if !new_parent.data().owner(uid) {
+                        // println!("new_parent not owned by caller {}", uid);
                         return Err(Error::new(EACCES));
                     }
 
-                    if node.data().is_dir() {
-                        if !orig.1.is_dir() {
-                            // println!("orig is file, new is dir");
+                    if let Some((ref new_node, _)) = new_node_opt {
+                        if !new_node.data().owner(uid) {
+                            // println!("new dir not owned by caller {}", uid);
                             return Err(Error::new(EACCES));
                         }
 
-                        let mut children = Vec::new();
-                        fs.child_nodes(node.ptr(), &mut children)?;
+                        if new_node.data().is_dir() {
+                            if !orig_node.data().is_dir() {
+                                // println!("orig_node is file, new is dir");
+                                return Err(Error::new(EACCES));
+                            }
 
-                        if !children.is_empty() {
-                            // println!("new dir not empty");
-                            return Err(Error::new(ENOTEMPTY));
-                        }
-                    } else {
-                        if orig.1.is_dir() {
-                            // println!("orig is dir, new is file");
-                            return Err(Error::new(ENOTDIR));
+                            let mut children = Vec::new();
+                            tx.child_nodes(new_node.ptr(), &mut children)?;
+
+                            if !children.is_empty() {
+                                // println!("new dir not empty");
+                                return Err(Error::new(ENOTEMPTY));
+                            }
+                        } else {
+                            if orig_node.data().is_dir() {
+                                // println!("orig_node is dir, new is file");
+                                return Err(Error::new(ENOTDIR));
+                            }
                         }
                     }
+
+                    tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)?;
+
+                    file.set_path(new_path);
+                    Ok(0)
+                } else {
+                    Err(Error::new(EPERM))
                 }
-
-                let orig_parent = orig.1.parent;
-
-                if parent.0 != orig_parent {
-                    fs.remove_blocks(orig.0, 1, orig_parent)?;
-                }
-
-                if let Some(node) = node_opt {
-                    if node.0 != orig.0 {
-                        fs.node_set_len(node.0, 0)?;
-                        fs.remove_blocks(node.0, 1, parent.0)?;
-                        fs.write_at(node.0, &Node::default())?;
-                        fs.deallocate(node.0, BLOCK_SIZE)?;
-                    }
-                }
-
-                orig.1.set_name(&last_part)?;
-                orig.1.parent = parent.0;
-                fs.write_at(orig.0, &orig.1)?;
-
-                if parent.0 != orig_parent {
-                    fs.insert_blocks(orig.0, BLOCK_SIZE, parent.0)?;
-                }
-
-                file.set_path(path);
-                Ok(0)
-            } else {
-                Err(Error::new(EPERM))
-            }
+            })
         } else {
             Err(Error::new(EBADF))
         }
-        */
     }
 
     fn fstat(&mut self, id: usize, stat: &mut Stat) -> Result<usize> {

@@ -13,6 +13,8 @@ use syscall::flag::{
 use crate::{Disk, Node, Transaction, TreePtr};
 
 pub trait Resource<D: Disk> {
+    fn parent_ptr_opt(&self) -> Option<TreePtr<Node>>;
+
     fn node_ptr(&self) -> TreePtr<Node>;
 
     fn uid(&self) -> u32;
@@ -119,6 +121,7 @@ pub trait Resource<D: Disk> {
 
 pub struct DirResource {
     path: String,
+    parent_ptr_opt: Option<TreePtr<Node>>,
     node_ptr: TreePtr<Node>,
     data: Option<Vec<u8>>,
     seek: isize,
@@ -128,12 +131,14 @@ pub struct DirResource {
 impl DirResource {
     pub fn new(
         path: String,
+        parent_ptr_opt: Option<TreePtr<Node>>,
         node_ptr: TreePtr<Node>,
         data: Option<Vec<u8>>,
         uid: u32,
     ) -> DirResource {
         DirResource {
             path,
+            parent_ptr_opt,
             node_ptr,
             data,
             seek: 0,
@@ -143,6 +148,10 @@ impl DirResource {
 }
 
 impl<D: Disk> Resource<D> for DirResource {
+    fn parent_ptr_opt(&self) -> Option<TreePtr<Node>> {
+        self.parent_ptr_opt
+    }
+
     fn node_ptr(&self) -> TreePtr<Node> {
         self.node_ptr
     }
@@ -154,6 +163,7 @@ impl<D: Disk> Resource<D> for DirResource {
     fn dup(&self) -> Result<Box<dyn Resource<D>>> {
         Ok(Box::new(DirResource {
             path: self.path.clone(),
+            parent_ptr_opt: self.parent_ptr_opt,
             node_ptr: self.node_ptr,
             data: self.data.clone(),
             seek: self.seek,
@@ -305,6 +315,7 @@ impl Drop for Fmap {
 
 pub struct FileResource {
     path: String,
+    parent_ptr_opt: Option<TreePtr<Node>>,
     node_ptr: TreePtr<Node>,
     flags: usize,
     seek: isize,
@@ -313,9 +324,16 @@ pub struct FileResource {
 }
 
 impl FileResource {
-    pub fn new(path: String, node_ptr: TreePtr<Node>, flags: usize, uid: u32) -> FileResource {
+    pub fn new(
+        path: String,
+        parent_ptr_opt: Option<TreePtr<Node>>,
+        node_ptr: TreePtr<Node>,
+        flags: usize,
+        uid: u32,
+    ) -> FileResource {
         FileResource {
             path,
+            parent_ptr_opt,
             node_ptr,
             flags,
             seek: 0,
@@ -326,6 +344,10 @@ impl FileResource {
 }
 
 impl<D: Disk> Resource<D> for FileResource {
+    fn parent_ptr_opt(&self) -> Option<TreePtr<Node>> {
+        self.parent_ptr_opt
+    }
+
     fn node_ptr(&self) -> TreePtr<Node> {
         self.node_ptr
     }
@@ -337,6 +359,7 @@ impl<D: Disk> Resource<D> for FileResource {
     fn dup(&self) -> Result<Box<dyn Resource<D>>> {
         Ok(Box::new(FileResource {
             path: self.path.clone(),
+            parent_ptr_opt: self.parent_ptr_opt,
             node_ptr: self.node_ptr,
             flags: self.flags,
             seek: self.seek,

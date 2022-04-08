@@ -520,16 +520,10 @@ impl<D: Disk> Filesystem for Fuse<D> {
         let new_name = new_name.to_str().expect("name is not utf-8");
 
         // TODO: improve performance
-        match self.fs.tx(|tx| {
-            let node = tx.find_node(orig_parent_ptr, orig_name)?;
-            tx.link_node(new_parent_ptr, new_name, node.ptr())?;
-            tx.remove_node(
-                orig_parent_ptr,
-                orig_name,
-                node.data().mode() & Node::MODE_TYPE,
-            )?;
-            Ok(())
-        }) {
+        match self
+            .fs
+            .tx(|tx| tx.rename_node(orig_parent_ptr, orig_name, new_parent_ptr, new_name))
+        {
             Ok(()) => reply.ok(),
             Err(err) => reply.error(err.errno as i32),
         }

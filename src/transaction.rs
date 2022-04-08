@@ -507,30 +507,32 @@ impl<'a, D: Disk> Transaction<'a, D> {
         ctime_nsec: u32,
     ) -> Result<TreeData<Node>> {
         if name.contains(':') {
-            Err(Error::new(EINVAL))
-        } else if self.find_node(parent_ptr, name).is_ok() {
-            Err(Error::new(EEXIST))
-        } else {
-            unsafe {
-                let parent = self.read_tree(parent_ptr)?;
-                let node_block_data = BlockData::new(
-                    self.allocate()?,
-                    Node::new(
-                        mode,
-                        parent.data().uid(),
-                        parent.data().gid(),
-                        ctime,
-                        ctime_nsec,
-                    ),
-                );
-                let node_block_ptr = self.write_block(node_block_data)?;
-                let node_ptr = self.insert_tree(node_block_ptr)?;
+            return Err(Error::new(EINVAL));
+        }
 
-                self.link_node(parent_ptr, name, node_ptr)?;
+        if self.find_node(parent_ptr, name).is_ok() {
+            return Err(Error::new(EEXIST));
+        }
 
-                //TODO: do not re-read node
-                self.read_tree(node_ptr)
-            }
+        unsafe {
+            let parent = self.read_tree(parent_ptr)?;
+            let node_block_data = BlockData::new(
+                self.allocate()?,
+                Node::new(
+                    mode,
+                    parent.data().uid(),
+                    parent.data().gid(),
+                    ctime,
+                    ctime_nsec,
+                ),
+            );
+            let node_block_ptr = self.write_block(node_block_data)?;
+            let node_ptr = self.insert_tree(node_block_ptr)?;
+
+            self.link_node(parent_ptr, name, node_ptr)?;
+
+            //TODO: do not re-read node
+            self.read_tree(node_ptr)
         }
     }
 
@@ -540,6 +542,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         node_ptr: TreePtr<Node>,
     ) -> Result<()> {
+        if name.contains(':') {
+            return Err(Error::new(EINVAL));
+        }
+
+        if self.find_node(parent_ptr, name).is_ok() {
+            return Err(Error::new(EEXIST));
+        }
+
         let mut parent = self.read_tree(parent_ptr)?;
 
         let mut node = self.read_tree(node_ptr)?;
@@ -658,6 +668,43 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         Err(Error::new(ENOENT))
+    }
+
+    pub fn rename_node(
+        &mut self,
+        orig_parent_ptr: TreePtr<Node>,
+        orig_name: &str,
+        new_parent_ptr: TreePtr<Node>,
+        new_name: &str,
+    ) -> Result<()> {
+        let orig = self.find_node(orig_parent_ptr, orig_name)?;
+
+        //TODO: only allow ENOENT as an error?
+        if let Ok(new) = self.find_node(new_parent_ptr, new_name) {
+            // Move to same name, return
+            if new.id() == orig.id() {
+                return Ok(());
+            }
+
+            // Remove new name
+            self.remove_node(
+                new_parent_ptr,
+                new_name,
+                new.data().mode() & Node::MODE_TYPE,
+            )?;
+        }
+
+        // Link original file to new name
+        self.link_node(new_parent_ptr, new_name, orig.ptr())?;
+
+        // Remove original file
+        self.remove_node(
+            orig_parent_ptr,
+            orig_name,
+            orig.data().mode() & Node::MODE_TYPE,
+        )?;
+
+        Ok(())
     }
 
     fn node_block_ptr(
