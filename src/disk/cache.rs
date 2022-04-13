@@ -24,7 +24,7 @@ impl<T: Disk> DiskCache<T> {
             inner,
             cache: HashMap::new(),
             order: VecDeque::new(),
-            size: 65536, // 256 MB cache
+            size: 16 * 1024 * 1024 / BLOCK_SIZE as usize, // 16 MB cache
         }
     }
 
