@@ -65,7 +65,7 @@ fn bootloader_password() -> Option<Vec<u8>> {
 
 #[cfg(target_os = "redox")]
 fn fork() -> isize {
-    unsafe { syscall::Error::mux(syscall::clone(syscall::CloneFlags::empty())) as isize }
+    unsafe { libc::fork() as isize }
 }
 
 #[cfg(target_os = "redox")]
