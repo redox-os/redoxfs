@@ -20,8 +20,8 @@ pub struct DiskCache<T> {
 
 impl<T: Disk> DiskCache<T> {
     pub fn new(inner: T) -> Self {
-        // 8 MB cache
-        let size = 8 * 1024 * 1024 / BLOCK_SIZE as usize;
+        // 16 MB cache
+        let size = 16 * 1024 * 1024 / BLOCK_SIZE as usize;
         DiskCache {
             inner,
             cache: HashMap::with_capacity(size),
