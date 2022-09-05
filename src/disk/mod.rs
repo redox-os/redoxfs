@@ -5,12 +5,16 @@ pub use self::cache::DiskCache;
 #[cfg(feature = "std")]
 pub use self::file::DiskFile;
 #[cfg(feature = "std")]
+pub use self::io::DiskIo;
+#[cfg(feature = "std")]
 pub use self::sparse::DiskSparse;
 
 #[cfg(feature = "std")]
 mod cache;
 #[cfg(feature = "std")]
 mod file;
+#[cfg(feature = "std")]
+mod io;
 #[cfg(feature = "std")]
 mod sparse;
 
