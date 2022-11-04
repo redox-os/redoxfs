@@ -32,7 +32,7 @@ fn main() {
 
     let bootloader_path_opt = args.next();
 
-    let disk = match DiskSparse::create(&disk_path, 1024 * 1024 * 1024 /*TODO: make argument*/) {
+    let disk = match DiskFile::open(&disk_path) {
         Ok(disk) => disk,
         Err(err) => {
             println!("redoxfs-ar: failed to open image {}: {}", disk_path, err);
