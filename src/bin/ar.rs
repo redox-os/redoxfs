@@ -6,7 +6,7 @@ use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs, process};
 
-use redoxfs::{archive, DiskSparse, FileSystem};
+use redoxfs::{archive, DiskFile, FileSystem};
 use uuid::Uuid;
 
 fn main() {
