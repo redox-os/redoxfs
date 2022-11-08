@@ -201,6 +201,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let count = unsafe { self.fs.disk.write_at(self.fs.block + addr, &raw)? };
             if count != mem::size_of::<BlockRaw>() {
                 // Read wrong number of bytes
+                #[cfg(feature = "log")]
                 log::error!("SYNC WRITE_CACHE: WRONG NUMBER OF BYTES");
                 return Err(Error::new(EIO));
             }
@@ -223,6 +224,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         };
         if count != mem::size_of_val(&self.header) {
             // Read wrong number of bytes
+            #[cfg(feature = "log")]
             log::error!("SYNC: WRONG NUMBER OF BYTES");
             return Err(Error::new(EIO));
         }
@@ -237,6 +239,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ) -> Result<BlockData<T>> {
         if ptr.is_null() {
             // Pointer is invalid (should this return None?)
+            #[cfg(feature = "log")]
             log::error!("READ_BLOCK: POINTER IS NULL");
             return Err(Error::new(ENOENT));
         }
@@ -252,6 +255,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             };
             if count != mem::size_of::<T>() {
                 // Read wrong number of bytes
+                #[cfg(feature = "log")]
                 log::error!("READ_BLOCK: WRONG NUMBER OF BYTES");
                 return Err(Error::new(EIO));
             }
@@ -262,6 +266,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let block_ptr = block.create_ptr();
         if block_ptr.hash() != ptr.hash() {
             // Incorrect hash
+            #[cfg(feature = "log")]
             log::error!(
                 "READ_BLOCK: INCORRECT HASH {} != {} for block {}",
                 block_ptr.hash(),
@@ -316,6 +321,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ) -> Result<BlockPtr<T>> {
         if block.addr() == 0 {
             // Pointer is invalid
+            #[cfg(feature = "log")]
             log::error!("WRITE_BLOCK: POINTER IS NULL");
             return Err(Error::new(ENOENT));
         }
@@ -334,6 +340,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ) -> Result<TreeData<T>> {
         if ptr.is_null() {
             // ID is invalid (should this return None?)
+            #[cfg(feature = "log")]
             log::error!("READ_TREE: ID IS NULL");
             return Err(Error::new(ENOENT));
         }
@@ -406,6 +413,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let ptr = node.ptr();
             if ptr.is_null() {
                 // ID is invalid
+                #[cfg(feature = "log")]
                 log::error!("SYNC_TREE: ID IS NULL");
                 return Err(Error::new(ENOENT));
             }
