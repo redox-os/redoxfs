@@ -628,7 +628,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                         // Read node and test type against requested type
                         let node = self.read_tree(node_ptr)?;
                         if node.data().mode() & Node::MODE_TYPE == mode {
-                            if node.data().is_dir() && node.data().size() > 0 {
+                            if node.data().is_dir() && node.data().size() > 0 && node.data().links() == 1 {
                                 // Tried to remove directory that still has entries
                                 return Err(Error::new(ENOTEMPTY));
                             }
