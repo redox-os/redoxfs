@@ -481,6 +481,9 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         let scheme_name = &self.name;
         self.fs.tx(|tx| {
             let mut nodes = Vec::new();
+
+            // TODO: Clean up indentation using let-else, possibly elsewhere too.
+
             if let Some((child, child_name)) =
                 Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes)?
             {
@@ -491,7 +494,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                     }
 
                     if !child.data().is_dir() {
-                        if child.data().uid() != uid {
+                        if child.data().uid() != uid && uid != 0 {
                             // println!("file not owned by current user {}", parent.1.uid);
                             return Err(Error::new(EACCES));
                         }
