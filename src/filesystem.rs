@@ -1,6 +1,7 @@
 use aes::{Aes128, BlockDecrypt, BlockEncrypt};
 use alloc::{collections::VecDeque, vec::Vec};
-use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY, ENOSPC};
+use core::mem;
+use syscall::error::{Error, Result, EKEYREJECTED, EIO, ENOENT, ENOKEY, ENOSPC};
 
 use crate::{
     AllocEntry, AllocList, Allocator, BlockData, Disk, Header, Key, KeySlot, Node, Salt,
@@ -157,6 +158,18 @@ impl<D: Disk> FileSystem<D> {
                 aes_blocks: Vec::with_capacity(BLOCK_SIZE as usize / aes::BLOCK_SIZE),
             };
 
+            // Write header generation zero
+            let count = unsafe {
+                fs.disk.write_at(fs.block, &fs.header)?
+            };
+            if count != mem::size_of_val(&fs.header) {
+                // Wrote wrong number of bytes
+                #[cfg(feature = "log")]
+                log::error!("CREATE: WRONG NUMBER OF BYTES");
+                return Err(Error::new(EIO));
+            }
+
+            // Set tree and alloc pointers and write header generation one
             fs.tx(|tx| unsafe {
                 let tree = BlockData::new(HEADER_RING + 1, TreeList::default());
 
