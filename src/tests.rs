@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 use std::{fs, sync, thread, time};
 
-use crate::{DiskSparse, FileSystem};
+use crate::{unmount_path, DiskSparse, FileSystem};
 
 fn with_redoxfs<T, F>(callback: F) -> T
 where
@@ -43,17 +43,7 @@ where
                         panic!("sync failed");
                     }
 
-                    let status_res = if cfg!(target_os = "linux") {
-                        Command::new("fusermount")
-                            .arg("-u")
-                            .arg(mount_path)
-                            .status()
-                    } else {
-                        Command::new("umount").arg(mount_path).status()
-                    };
-
-                    let status = dbg!(status_res).unwrap();
-                    if !status.success() {
+                    if !unmount_path(mount_path).is_ok() {
                         panic!("umount failed");
                     }
                 }

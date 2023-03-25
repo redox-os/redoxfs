@@ -8,6 +8,7 @@ export RUST_LOG=info
 function cleanup {
     sync
     fusermount -u image || true
+    fusermount3 -u image || true
 }
 
 trap 'cleanup' ERR

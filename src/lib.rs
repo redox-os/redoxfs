@@ -27,6 +27,7 @@ pub use self::mount::mount;
 pub use self::node::{Node, NodeLevel};
 pub use self::transaction::Transaction;
 pub use self::tree::{Tree, TreeData, TreeList, TreePtr};
+pub use self::unmount::unmount_path;
 
 mod allocator;
 #[cfg(feature = "std")]
@@ -42,6 +43,8 @@ mod mount;
 mod node;
 mod transaction;
 mod tree;
+#[cfg(feature = "std")]
+mod unmount;
 
 #[cfg(all(feature = "std", test))]
 mod tests;
