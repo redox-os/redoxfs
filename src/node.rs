@@ -311,12 +311,14 @@ fn node_size_test() {
     assert_eq!(mem::size_of::<Node>(), crate::BLOCK_SIZE as usize);
 }
 
+#[cfg(kani)]
 #[kani::proof]
 fn check_node_level() {
     let offset = kani::any();
     NodeLevel::new(offset);
 }
 
+#[cfg(kani)]
 #[kani::proof]
 fn check_node_perms() {
     let mode = 0o750;
