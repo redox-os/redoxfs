@@ -310,3 +310,52 @@ impl ops::DerefMut for Node {
 fn node_size_test() {
     assert_eq!(mem::size_of::<Node>(), crate::BLOCK_SIZE as usize);
 }
+
+#[kani::proof]
+fn check_node_level() {
+    let offset = kani::any();
+    NodeLevel::new(offset);
+}
+
+#[kani::proof]
+fn check_node_perms() {
+    let mode = 0o750;
+
+    let uid = kani::any();
+    let gid = kani::any();
+
+    let ctime = kani::any();
+    let ctime_nsec = kani::any();
+
+    let node = Node::new(mode, uid, gid, ctime, ctime_nsec);
+
+    let root_uid = 0;
+    let root_gid = 0;
+
+    let other_uid = kani::any();
+    kani::assume(other_uid != uid);
+    kani::assume(other_uid != root_uid);
+    let other_gid = kani::any();
+    kani::assume(other_gid != gid);
+    kani::assume(other_gid != root_gid);
+
+    assert!(node.owner(uid));
+    assert!(node.permission(uid, gid, 0o7));
+    assert!(node.permission(uid, gid, 0o5));
+    assert!(node.permission(uid, other_gid, 0o7));
+    assert!(node.permission(uid, other_gid, 0o5));
+    assert!(!node.permission(other_uid, gid, 0o7));
+    assert!(node.permission(other_uid, gid, 0o5));
+
+    assert!(node.owner(root_uid));
+    assert!(node.permission(root_uid, root_gid, 0o7));
+    assert!(node.permission(root_uid, root_gid, 0o5));
+    assert!(node.permission(root_uid, other_gid, 0o7));
+    assert!(node.permission(root_uid, other_gid, 0o5));
+    assert!(!node.permission(other_uid, root_gid, 0o7));
+    assert!(node.permission(other_uid, root_gid, 0o5));
+
+    assert!(!node.owner(other_uid));
+    assert!(!node.permission(other_uid, other_gid, 0o7));
+    assert!(!node.permission(other_uid, other_gid, 0o5));
+}
