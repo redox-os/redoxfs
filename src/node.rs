@@ -1,5 +1,5 @@
 use core::{fmt, mem, ops, slice};
-use redox_simple_endian::*;
+use simple_endian::*;
 
 use crate::{BlockList, BlockPtr, BlockRaw};
 

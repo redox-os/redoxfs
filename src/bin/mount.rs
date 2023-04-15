@@ -1,5 +1,3 @@
-#![cfg_attr(not(target_os = "redox"), feature(libc))]
-
 #[cfg(not(target_os = "redox"))]
 extern crate libc;
 

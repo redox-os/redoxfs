@@ -1,6 +1,6 @@
 use core::ops::{Deref, DerefMut};
 use core::{fmt, mem, slice};
-use redox_simple_endian::*;
+use simple_endian::*;
 
 use aes::{Aes128, BlockDecrypt, BlockEncrypt};
 use uuid::Uuid;
