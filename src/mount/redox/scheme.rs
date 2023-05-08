@@ -674,7 +674,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                     }
                 };
 
-                let mut orig_node = tx.read_tree(file.node_ptr())?;
+                let orig_node = tx.read_tree(file.node_ptr())?;
 
                 if !orig_node.data().owner(uid) {
                     // println!("orig_node not owned by caller {}", uid);
