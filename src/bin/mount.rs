@@ -1,4 +1,3 @@
-#[cfg(not(target_os = "redox"))]
 extern crate libc;
 
 #[cfg(target_os = "redox")]
@@ -13,13 +12,19 @@ use std::io::{self, Read, Write};
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::process;
 
+#[cfg(target_os = "redox")]
+use std::{
+    mem::MaybeUninit,
+    ptr::addr_of_mut,
+    sync::atomic::Ordering,
+};
+
 use redoxfs::{mount, DiskCache, DiskFile, FileSystem};
 use termion::input::TermRead;
 use uuid::Uuid;
 
 #[cfg(target_os = "redox")]
 extern "C" fn unmount_handler(_s: usize) {
-    use std::sync::atomic::Ordering;
     redoxfs::IS_UMT.store(1, Ordering::SeqCst);
 }
 
@@ -28,27 +33,27 @@ extern "C" fn unmount_handler(_s: usize) {
 //for, so I put 2. I don't think 0,0 is a valid sa_mask. I don't know what i'm doing here. When u
 //send it a sigkill, it shuts off the filesystem
 fn setsig() {
-    use syscall::{sigaction, SigAction, SigActionFlags, SIGTERM};
+    // TODO: High-level wrapper like the nix crate?
+    unsafe {
+        let mut action = MaybeUninit::<libc::sigaction>::uninit();
 
-    let sig_action = SigAction {
-        sa_handler: Some(unmount_handler),
-        sa_mask: [0, 0],
-        sa_flags: SigActionFlags::empty(),
-    };
+        assert_eq!(libc::sigemptyset(addr_of_mut!((*action.as_mut_ptr()).sa_mask)), 0);
+        addr_of_mut!((*action.as_mut_ptr()).sa_flags).write(0);
+        addr_of_mut!((*action.as_mut_ptr()).sa_sigaction).write(unmount_handler as usize);
 
-    sigaction(SIGTERM, Some(&sig_action), None).unwrap();
+
+        assert_eq!(libc::sigaction(libc::SIGTERM, action.as_ptr(), core::ptr::null_mut()), 0);
+    }
 }
 
 #[cfg(not(target_os = "redox"))]
 // on linux, this is implemented properly, so no need for this unscrupulous nonsense!
 fn setsig() {}
 
-#[cfg(not(target_os = "redox"))]
 fn fork() -> isize {
     unsafe { libc::fork() as isize }
 }
 
-#[cfg(not(target_os = "redox"))]
 fn pipe(pipes: &mut [i32; 2]) -> isize {
     unsafe { libc::pipe(pipes.as_mut_ptr()) as isize }
 }
@@ -59,16 +64,6 @@ fn capability_mode() {}
 #[cfg(not(target_os = "redox"))]
 fn bootloader_password() -> Option<Vec<u8>> {
     None
-}
-
-#[cfg(target_os = "redox")]
-fn fork() -> isize {
-    unsafe { libc::fork() as isize }
-}
-
-#[cfg(target_os = "redox")]
-fn pipe(pipes: &mut [usize; 2]) -> isize {
-    syscall::Error::mux(syscall::pipe2(pipes, 0)) as isize
 }
 
 #[cfg(target_os = "redox")]
