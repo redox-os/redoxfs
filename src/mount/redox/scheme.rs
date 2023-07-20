@@ -9,8 +9,8 @@ use syscall::error::{
     EPERM, EXDEV,
 };
 use syscall::flag::{
-    EventFlags, MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
-    O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
+    EventFlags, MapFlags, MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY,
+    O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::scheme::SchemeMut;
 
@@ -23,7 +23,7 @@ pub struct FileScheme<D: Disk> {
     fs: FileSystem<D>,
     next_id: AtomicUsize,
     files: BTreeMap<usize, Box<dyn Resource<D>>>,
-    fmap: BTreeMap<usize, usize>,
+    fmap: BTreeMap<u64, usize>,
 }
 
 impl<D: Disk> FileScheme<D> {
@@ -780,29 +780,20 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
-    fn fmap(&mut self, id: usize, map: &Map) -> Result<usize> {
-        // println!("Fmap {}, {:?}", id, map);
-        if let Some(file) = self.files.get_mut(&id) {
-            let address = self.fs.tx(|tx| file.fmap(map, tx))?;
-            self.fmap.insert(address, id);
-            Ok(address)
-        } else {
-            Err(Error::new(EBADF))
-        }
+    fn mmap_prep(&mut self, id: usize, flags: MapFlags, size: usize, offset: u64) -> Result<usize> {
+        println!("Mmap {}, {:?} {} {}", id, flags, size, offset);
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+
+        self.fs.tx(|tx| file.fmap(flags, size, offset, tx))
+    }
+    fn munmap(&mut self, id: usize, size: usize, offset: u64) -> Result<usize> {
+        println!("Munmap {}, {} {}", id, size, offset);
+        let file = self.files.get_mut(&id).ok_or(Error::new(EINVAL))?;
+
+        self.fs.tx(|tx| file.funmap(offset, size, tx))
     }
 
-    fn funmap_old(&mut self, address: usize) -> Result<usize> {
-        if let Some(id) = self.fmap.remove(&address) {
-            if let Some(file) = self.files.get_mut(&id) {
-                self.fs.tx(|tx| file.funmap(address, tx))
-            } else {
-                Err(Error::new(EINVAL))
-            }
-        } else {
-            Err(Error::new(EINVAL))
-        }
-    }
-
+    /*
     //TODO: implement (length is ignored!)
     fn funmap(&mut self, address: usize, length: usize) -> Result<usize> {
         println!("redoxfs: funmap 0x{:X}, {}", address, length);
@@ -815,7 +806,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         } else {
             Err(Error::new(EINVAL))
         }
-    }
+    }*/
 
     fn close(&mut self, id: usize) -> Result<usize> {
         // println!("Close {}", id);

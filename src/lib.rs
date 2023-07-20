@@ -4,6 +4,8 @@
 // Used often in generating redox_syscall errors
 #![allow(clippy::or_fun_call)]
 
+#![feature(int_roundings)]
+
 extern crate alloc;
 
 use core::sync::atomic::AtomicUsize;
