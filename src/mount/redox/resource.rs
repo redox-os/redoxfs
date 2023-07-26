@@ -2,9 +2,10 @@ use std::cmp::{max, min};
 use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use alloc::collections::BTreeMap;
 use range_tree::RangeTree;
 
-use syscall::{MAP_PRIVATE, PAGE_SIZE};
+use syscall::{MAP_PRIVATE, PAGE_SIZE, EBADFD};
 use syscall::data::{Map, Stat, TimeSpec};
 use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, ENOMEM, EPERM};
 use syscall::flag::{
@@ -13,6 +14,8 @@ use syscall::flag::{
 };
 
 use crate::{Disk, Node, Transaction, TreePtr};
+
+pub type Fmaps = BTreeMap<u32, FileMmapInfo>;
 
 pub trait Resource<D: Disk> {
     fn parent_ptr_opt(&self) -> Option<TreePtr<Node>>;
@@ -31,9 +34,9 @@ pub trait Resource<D: Disk> {
 
     fn seek(&mut self, offset: isize, whence: usize, tx: &mut Transaction<D>) -> Result<isize>;
 
-    fn fmap(&mut self, flags: MapFlags, size: usize, offset: u64, tx: &mut Transaction<D>) -> Result<usize>;
+    fn fmap(&mut self, fmaps: &mut Fmaps, flags: MapFlags, size: usize, offset: u64, tx: &mut Transaction<D>) -> Result<usize>;
 
-    fn funmap(&mut self, offset: u64, size: usize, tx: &mut Transaction<D>) -> Result<usize>;
+    fn funmap(&mut self, fmaps: &mut Fmaps, offset: u64, size: usize, tx: &mut Transaction<D>) -> Result<usize>;
 
     fn fchmod(&mut self, mode: u16, tx: &mut Transaction<D>) -> Result<usize> {
         let mut node = tx.read_tree(self.node_ptr())?;
@@ -114,7 +117,7 @@ pub trait Resource<D: Disk> {
         Ok(0)
     }
 
-    fn sync(&mut self, tx: &mut Transaction<D>) -> Result<usize>;
+    fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<usize>;
 
     fn truncate(&mut self, len: usize, tx: &mut Transaction<D>) -> Result<usize>;
 
@@ -205,10 +208,10 @@ impl<D: Disk> Resource<D> for DirResource {
         Ok(self.seek)
     }
 
-    fn fmap(&mut self, _flags: MapFlags, _size: usize, _offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
+    fn fmap(&mut self, _fmaps: &mut Fmaps, _flags: MapFlags, _size: usize, _offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
-    fn funmap(&mut self, _offset: u64, _size: usize, _tx: &mut Transaction<D>) -> Result<usize> {
+    fn funmap(&mut self, _fmaps: &mut Fmaps, _offset: u64, _size: usize, _tx: &mut Transaction<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 
@@ -220,7 +223,7 @@ impl<D: Disk> Resource<D> for DirResource {
         &self.path
     }
 
-    fn sync(&mut self, _tx: &mut Transaction<D>) -> Result<usize> {
+    fn sync(&mut self, _fmaps: &mut Fmaps, _tx: &mut Transaction<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 
@@ -306,8 +309,20 @@ pub struct FileResource {
     flags: usize,
     seek: isize,
     uid: u32,
+}
+pub struct FileMmapInfo {
     base: *mut u8,
-    fmaps: RangeTree<Fmap>,
+    ranges: RangeTree<Fmap>,
+    pub open_fds: usize,
+}
+impl Default for FileMmapInfo {
+    fn default() -> Self {
+        Self {
+            base: core::ptr::null_mut(),
+            ranges: RangeTree::new(),
+            open_fds: 0,
+        }
+    }
 }
 
 impl FileResource {
@@ -324,9 +339,7 @@ impl FileResource {
             node_ptr,
             flags,
             seek: 0,
-            base: core::ptr::null_mut(),
             uid,
-            fmaps: RangeTree::new(),
         }
     }
 }
@@ -352,8 +365,6 @@ impl<D: Disk> Resource<D> for FileResource {
             flags: self.flags,
             seek: self.seek,
             uid: self.uid,
-            fmaps: RangeTree::new(),
-            base: core::ptr::null_mut(),
         }))
     }
 
@@ -412,7 +423,7 @@ impl<D: Disk> Resource<D> for FileResource {
         Ok(self.seek)
     }
 
-    fn fmap(&mut self, flags: MapFlags, unaligned_size: usize, offset: u64, tx: &mut Transaction<D>) -> Result<usize> {
+    fn fmap(&mut self, fmaps: &mut Fmaps, flags: MapFlags, unaligned_size: usize, offset: u64, tx: &mut Transaction<D>) -> Result<usize> {
         //dbg!(&self.fmaps);
         let accmode = self.flags & O_ACCMODE;
         if flags.contains(PROT_READ) && !(accmode == O_RDWR || accmode == O_RDONLY) {
@@ -428,10 +439,14 @@ impl<D: Disk> Resource<D> for FileResource {
         // program can always map anonymous RW-, read from a file, then remap as R-E. But it might
         // be usable as a hint, prohibiting direct executable mmaps at least.
 
-        let max_offset = self.fmaps.end();
+        // TODO: Pass entry directory to Resource trait functions, since the node_ptr can be
+        // obtained by the caller.
+        let fmap_info = fmaps.get_mut(&self.node_ptr.id()).ok_or(Error::new(EBADFD))?;
+
+        let max_offset = fmap_info.ranges.end();
         if offset + aligned_size as u64 > max_offset {
-            if self.base.is_null() {
-                self.base = unsafe {
+            if fmap_info.base.is_null() {
+                fmap_info.base = unsafe {
                     syscall::fmap(!0, &Map {
                         size: offset as usize + aligned_size,
                         // PRIVATE/SHARED doesn't matter once the pages are passed in the fmap
@@ -462,13 +477,13 @@ impl<D: Disk> Resource<D> for FileResource {
                     }
                 }
 
-                self.base = unsafe {
-                    syscall::syscall5(syscall::SYS_MREMAP, self.base as usize, common_size, 0, common_size, syscall::MremapFlags::empty().bits())? as *mut u8
+                fmap_info.base = unsafe {
+                    syscall::syscall5(syscall::SYS_MREMAP, fmap_info.base as usize, common_size, 0, common_size, syscall::MremapFlags::empty().bits())? as *mut u8
                 };
             }
         }
 
-        let affected_fmaps = self.fmaps.remove_and_unused(offset..offset + aligned_size as u64);
+        let affected_fmaps = fmap_info.ranges.remove_and_unused(offset..offset + aligned_size as u64);
 
         for (range, v_opt) in affected_fmaps {
             //dbg!(&range);
@@ -476,32 +491,34 @@ impl<D: Disk> Resource<D> for FileResource {
                 fmap.rc += 1;
                 fmap.flags |= flags;
 
-                self.fmaps.insert(range.start, range.end - range.start, fmap);
+                fmap_info.ranges.insert(range.start, range.end - range.start, fmap);
             } else {
-                let map = unsafe { Fmap::new(self.node_ptr, flags, unaligned_size, offset, self.base, tx)? };
-                self.fmaps.insert(offset, aligned_size as u64, map);
+                let map = unsafe { Fmap::new(self.node_ptr, flags, unaligned_size, offset, fmap_info.base, tx)? };
+                fmap_info.ranges.insert(offset, aligned_size as u64, map);
             }
         }
         //dbg!(&self.fmaps);
 
-        Ok(self.base as usize + offset as usize)
+        Ok(fmap_info.base as usize + offset as usize)
     }
 
-    fn funmap(&mut self, offset: u64, size: usize, tx: &mut Transaction<D>) -> Result<usize> {
+    fn funmap(&mut self, fmaps: &mut Fmaps, offset: u64, size: usize, tx: &mut Transaction<D>) -> Result<usize> {
+        let fmap_info = fmaps.get_mut(&self.node_ptr.id()).ok_or(Error::new(EBADFD))?;
+
         //dbg!(&self.fmaps);
         //dbg!(self.fmaps.conflicts(offset..offset + size as u64).collect::<Vec<_>>());
-        let mut affected_fmaps = self.fmaps.remove(offset..offset + size as u64);
+        let mut affected_fmaps = fmap_info.ranges.remove(offset..offset + size as u64);
 
         for (range, mut fmap) in affected_fmaps {
             fmap.rc = fmap.rc.checked_sub(1).unwrap();
 
             //log::info!("SYNCING {}..{}", range.start, range.end);
             unsafe {
-                fmap.sync(self.node_ptr, self.base, range.start, (range.end - range.start) as usize, tx)?;
+                fmap.sync(self.node_ptr, fmap_info.base, range.start, (range.end - range.start) as usize, tx)?;
             }
 
             if fmap.rc > 0 {
-                self.fmaps.insert(range.start, range.end - range.start, fmap);
+                fmap_info.ranges.insert(range.start, range.end - range.start, fmap);
             }
         }
         //dbg!(&self.fmaps);
@@ -524,10 +541,12 @@ impl<D: Disk> Resource<D> for FileResource {
         &self.path
     }
 
-    fn sync(&mut self, tx: &mut Transaction<D>) -> Result<usize> {
-        for (range, fmap) in self.fmaps.iter_mut() {
-            unsafe {
-                fmap.sync(self.node_ptr, self.base, range.start, (range.end - range.start) as usize, tx)?;
+    fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<usize> {
+        if let Some(fmap_info) = fmaps.get_mut(&self.node_ptr.id()) {
+            for (range, fmap) in fmap_info.ranges.iter_mut() {
+                unsafe {
+                    fmap.sync(self.node_ptr, fmap_info.base, range.start, (range.end - range.start) as usize, tx)?;
+                }
             }
         }
 
@@ -583,6 +602,7 @@ impl<D: Disk> Resource<D> for FileResource {
 
 impl Drop for FileResource {
     fn drop(&mut self) {
+        /*
         if !self.fmaps.is_empty() {
             eprintln!(
                 "redoxfs: file {} still has {} fmaps!",
@@ -590,6 +610,7 @@ impl Drop for FileResource {
                 self.fmaps.len()
             );
         }
+        */
     }
 }
 
