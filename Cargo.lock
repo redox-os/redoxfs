@@ -112,9 +112,12 @@ checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
 name = "cc"
-version = "1.0.79"
+version = "1.0.80"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50d30906286121d95be3d479533b458f87493b30a4b5f79a607db8f5d11aa91f"
+checksum = "51f1226cd9da55587234753d1245dd5b132343ea240f26b6a9003d68706141ba"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "cfg-if"
@@ -335,9 +338,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.31"
+version = "1.0.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fe8a65d69dd0808184ebb5f836ab526bb259db23c657efa38711b1072ee47f0"
+checksum = "50f3b39ccfb720540debaa0164757101c08ecb8d326b15358ce76a62c7e85965"
 dependencies = [
  "proc-macro2",
 ]
@@ -383,7 +386,7 @@ checksum = "9c33a3c44ca05fa6f1807d8e6743f3824e8509beca625669633be0acbdf509dc"
 [[package]]
 name = "range-tree"
 version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/redox-os/range-tree.git#9dd8927149a066ac958acee1369be4f465cb7851"
+source = "git+https://gitlab.redox-os.org/redox-os/range-tree.git#a1b3720c65cd3388def5f4c7fb32281380c78c0d"
 
 [[package]]
 name = "rdrand"
@@ -412,6 +415,7 @@ dependencies = [
 [[package]]
 name = "redox_syscall"
 version = "0.3.5"
+source = "git+https://gitlab.redox-os.org/redox-os/syscall.git#a525620c818a801bb7038e111b71033eff56a3ee"
 dependencies = [
  "bitflags",
 ]
@@ -461,9 +465,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39354c10dd07468c2e73926b23bb9c2caca74c5501e38a35da70406f1d923310"
+checksum = "b7b6d6190b7594385f61bd3911cd1be99dfddcfc365a4160cc2ab5bff4aed294"
 dependencies = [
  "aho-corasick",
  "memchr",
