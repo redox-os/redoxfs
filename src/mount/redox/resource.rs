@@ -256,7 +256,7 @@ impl Fmap {
         let aligned_size = unaligned_size.next_multiple_of(syscall::PAGE_SIZE);
 
         let address = base.add(offset as usize);
-        println!("ADDR {:p}", address);
+        //println!("ADDR {:p} {:p}", base, address);
 
         // Read buffer from disk
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
@@ -460,25 +460,9 @@ impl<D: Disk> Resource<D> for FileResource {
             } else {
                 let new_size = (offset as usize + aligned_size).next_multiple_of(PAGE_SIZE);
                 let old_size = max_offset as usize;
-                let common_size = std::cmp::min(new_size, old_size);
-
-                if new_size > old_size {
-                    unsafe {
-                        syscall::fmap(!0, &Map {
-                            size: new_size - old_size,
-                            flags: MapFlags::PROT_READ | MapFlags::PROT_WRITE | MapFlags::MAP_PRIVATE,
-                            offset: old_size,
-                            address: 0,
-                        })?;
-                    }
-                } else if old_size > new_size {
-                    unsafe {
-                        syscall::funmap(old_size, old_size - new_size)?;
-                    }
-                }
 
                 fmap_info.base = unsafe {
-                    syscall::syscall5(syscall::SYS_MREMAP, fmap_info.base as usize, common_size, 0, common_size, syscall::MremapFlags::empty().bits())? as *mut u8
+                    syscall::syscall5(syscall::SYS_MREMAP, fmap_info.base as usize, old_size, 0, new_size, syscall::MremapFlags::empty().bits() | (PROT_READ | PROT_WRITE).bits())? as *mut u8
                 };
             }
         }

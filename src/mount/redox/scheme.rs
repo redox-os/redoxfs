@@ -792,7 +792,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
     fn munmap(&mut self, id: usize, offset: u64, size: usize, flags: MunmapFlags) -> Result<usize> {
         println!("Munmap {}, {} {}", id, size, offset);
-        let file = self.files.get_mut(&id).ok_or(Error::new(EINVAL))?;
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
         let fmaps = &mut self.fmap;
 
         self.fs.tx(|tx| file.funmap(fmaps, offset, size, tx))
