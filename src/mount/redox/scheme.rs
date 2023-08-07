@@ -3,14 +3,15 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use syscall::{EBADFD, MunmapFlags};
 use syscall::data::{Map, Stat, StatVfs, TimeSpec};
 use syscall::error::{
     Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
     EPERM, EXDEV,
 };
 use syscall::flag::{
-    EventFlags, MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
-    O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
+    EventFlags, MapFlags, MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY,
+    O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::scheme::SchemeMut;
 
@@ -23,14 +24,14 @@ pub struct FileScheme<D: Disk> {
     fs: FileSystem<D>,
     next_id: AtomicUsize,
     files: BTreeMap<usize, Box<dyn Resource<D>>>,
-    fmap: BTreeMap<usize, usize>,
+    fmap: super::resource::Fmaps,
 }
 
 impl<D: Disk> FileScheme<D> {
     pub fn new(name: String, fs: FileSystem<D>) -> FileScheme<D> {
         FileScheme {
-            name: name,
-            fs: fs,
+            name,
+            fs,
             next_id: AtomicUsize::new(1),
             files: BTreeMap::new(),
             fmap: BTreeMap::new(),
@@ -400,6 +401,8 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                 }
             }
         };
+        self.fmap.entry(resource.node_ptr().id()).or_insert_with(Default::default).open_fds += 1;
+
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.files.insert(id, resource);
@@ -533,6 +536,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
             return Err(Error::new(EBADF));
         };
 
+        self.fmap.get_mut(&resource.node_ptr().id()).ok_or(Error::new(EBADFD))?.open_fds += 1;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.files.insert(id, resource);
 
@@ -755,11 +759,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
 
     fn fsync(&mut self, id: usize) -> Result<usize> {
         // println!("Fsync {}", id);
-        if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.sync(tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let fmaps = &mut self.fmap;
+
+        self.fs.tx(|tx| file.sync(fmaps, tx))
     }
 
     fn ftruncate(&mut self, id: usize, len: usize) -> Result<usize> {
@@ -780,49 +783,31 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
-    fn fmap(&mut self, id: usize, map: &Map) -> Result<usize> {
-        // println!("Fmap {}, {:?}", id, map);
-        if let Some(file) = self.files.get_mut(&id) {
-            let address = self.fs.tx(|tx| file.fmap(map, tx))?;
-            self.fmap.insert(address, id);
-            Ok(address)
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
+    fn mmap_prep(&mut self, id: usize, offset: u64, size: usize, flags: MapFlags) -> Result<usize> {
+        println!("Mmap {}, {:?} {} {}", id, flags, size, offset);
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let fmaps = &mut self.fmap;
 
-    fn funmap_old(&mut self, address: usize) -> Result<usize> {
-        if let Some(id) = self.fmap.remove(&address) {
-            if let Some(file) = self.files.get_mut(&id) {
-                self.fs.tx(|tx| file.funmap(address, tx))
-            } else {
-                Err(Error::new(EINVAL))
-            }
-        } else {
-            Err(Error::new(EINVAL))
-        }
+        self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
     }
+    fn munmap(&mut self, id: usize, offset: u64, size: usize, flags: MunmapFlags) -> Result<usize> {
+        println!("Munmap {}, {} {}", id, size, offset);
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let fmaps = &mut self.fmap;
 
-    //TODO: implement (length is ignored!)
-    fn funmap(&mut self, address: usize, length: usize) -> Result<usize> {
-        println!("redoxfs: funmap 0x{:X}, {}", address, length);
-        if let Some(id) = self.fmap.remove(&address) {
-            if let Some(file) = self.files.get_mut(&id) {
-                self.fs.tx(|tx| file.funmap(address, tx))
-            } else {
-                Err(Error::new(EINVAL))
-            }
-        } else {
-            Err(Error::new(EINVAL))
-        }
+        self.fs.tx(|tx| file.funmap(fmaps, offset, size, tx))
     }
 
     fn close(&mut self, id: usize) -> Result<usize> {
         // println!("Close {}", id);
-        if self.files.remove(&id).is_some() {
-            Ok(0)
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = self.files.remove(&id).ok_or(Error::new(EBADF))?;
+        let file_info = self.fmap.get_mut(&file.node_ptr().id()).ok_or(Error::new(EBADFD))?;
+
+        file_info.open_fds = file_info.open_fds.checked_sub(1).expect("open_fds not tracked correctly");
+
+        // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
+        // particular inode, remove that inode here.
+
+        Ok(0)
     }
 }

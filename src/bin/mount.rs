@@ -1,3 +1,5 @@
+#![feature(int_roundings)]
+
 extern crate libc;
 
 #[cfg(target_os = "redox")]
@@ -90,14 +92,16 @@ fn bootloader_password() -> Option<Vec<u8>> {
 
     let mut password = Vec::with_capacity(size);
     unsafe {
-        let password_map = syscall::physmap(addr, size, syscall::PhysmapFlags::empty())
+        let aligned_size = size.next_multiple_of(syscall::PAGE_SIZE);
+
+        let password_map = syscall::physmap(addr, aligned_size, syscall::PhysmapFlags::empty())
             .expect("failed to map REDOXFS_PASSWORD");
 
         for i in 0..size {
             password.push(*((password_map + i) as *const u8));
         }
 
-        let _ = syscall::physunmap(password_map);
+        let _ = syscall::funmap(password_map, aligned_size);
     }
     Some(password)
 }
