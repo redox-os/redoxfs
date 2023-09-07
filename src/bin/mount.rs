@@ -155,8 +155,7 @@ fn filesystem_by_path(
                     println!(
                         "redoxfs: opened filesystem on {} with uuid {}",
                         path,
-                        Uuid::from_bytes(&filesystem.header.uuid())
-                            .unwrap()
+                        Uuid::from_bytes(filesystem.header.uuid())
                             .hyphenated()
                     );
 

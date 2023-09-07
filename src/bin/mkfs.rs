@@ -101,7 +101,7 @@ fn main() {
         ctime.subsec_nanos(),
     ) {
         Ok(filesystem) => {
-            let uuid = Uuid::from_bytes(&filesystem.header.uuid()).unwrap();
+            let uuid = Uuid::from_bytes(filesystem.header.uuid());
             eprintln!(
                 "redoxfs-mkfs: created filesystem on {}, reserved {} blocks, size {} MB, uuid {}",
                 disk_path,

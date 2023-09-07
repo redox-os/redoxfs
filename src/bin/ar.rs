@@ -88,7 +88,7 @@ fn main() {
                 process::exit(1);
             }
 
-            let uuid = Uuid::from_bytes(&fs.header.uuid()).unwrap();
+            let uuid = Uuid::from_bytes(fs.header.uuid());
             println!(
                 "redoxfs-ar: created filesystem on {}, reserved {} blocks, size {} MB, uuid {}",
                 disk_path,
