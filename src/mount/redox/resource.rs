@@ -310,8 +310,10 @@ pub struct FileResource {
     seek: isize,
     uid: u32,
 }
+#[derive(Debug)]
 pub struct FileMmapInfo {
     base: *mut u8,
+    size: usize,
     ranges: RangeTree<Fmap>,
     pub open_fds: usize,
 }
@@ -319,6 +321,7 @@ impl Default for FileMmapInfo {
     fn default() -> Self {
         Self {
             base: core::ptr::null_mut(),
+            size: 0,
             ranges: RangeTree::new(),
             open_fds: 0,
         }
@@ -443,12 +446,12 @@ impl<D: Disk> Resource<D> for FileResource {
         // obtained by the caller.
         let fmap_info = fmaps.get_mut(&self.node_ptr.id()).ok_or(Error::new(EBADFD))?;
 
-        let max_offset = fmap_info.ranges.end();
-        if offset + aligned_size as u64 > max_offset {
-            if fmap_info.base.is_null() {
-                fmap_info.base = unsafe {
+        let new_size = (offset as usize + aligned_size).next_multiple_of(PAGE_SIZE);
+        if new_size > fmap_info.size {
+            fmap_info.base = if fmap_info.base.is_null() {
+                unsafe {
                     syscall::fmap(!0, &Map {
-                        size: offset as usize + aligned_size,
+                        size: new_size,
                         // PRIVATE/SHARED doesn't matter once the pages are passed in the fmap
                         // handler.
                         flags: MapFlags::PROT_READ | MapFlags::PROT_WRITE | MapFlags::MAP_PRIVATE,
@@ -456,15 +459,20 @@ impl<D: Disk> Resource<D> for FileResource {
                         offset: 0,
                         address: 0,
                     })? as *mut u8
-                };
+                }
             } else {
-                let new_size = (offset as usize + aligned_size).next_multiple_of(PAGE_SIZE);
-                let old_size = max_offset as usize;
-
-                fmap_info.base = unsafe {
-                    syscall::syscall5(syscall::SYS_MREMAP, fmap_info.base as usize, old_size, 0, new_size, syscall::MremapFlags::empty().bits() | (PROT_READ | PROT_WRITE).bits())? as *mut u8
-                };
-            }
+                unsafe {
+                    syscall::syscall5(
+                        syscall::SYS_MREMAP,
+                        fmap_info.base as usize,
+                        fmap_info.size,
+                        0,
+                        new_size,
+                        syscall::MremapFlags::empty().bits() | (PROT_READ | PROT_WRITE).bits()
+                    )? as *mut u8
+                }
+            };
+            fmap_info.size = new_size;
         }
 
         let affected_fmaps = fmap_info.ranges.remove_and_unused(offset..offset + aligned_size as u64);
