@@ -75,6 +75,8 @@ fn capability_mode() {
 
 #[cfg(target_os = "redox")]
 fn bootloader_password() -> Option<Vec<u8>> {
+    use syscall::MapFlags;
+
     let addr_env = env::var_os("REDOXFS_PASSWORD_ADDR")?;
     let size_env = env::var_os("REDOXFS_PASSWORD_SIZE")?;
 
@@ -94,8 +96,16 @@ fn bootloader_password() -> Option<Vec<u8>> {
     unsafe {
         let aligned_size = size.next_multiple_of(syscall::PAGE_SIZE);
 
-        let password_map = syscall::physmap(addr, aligned_size, syscall::PhysmapFlags::empty())
-            .expect("failed to map REDOXFS_PASSWORD");
+        let fd = syscall::open("memory:physical", syscall::O_CLOEXEC).expect("failed to open physical memory file");
+
+        let password_map = syscall::fmap(fd, &syscall::Map {
+            offset: addr,
+            size: aligned_size,
+            flags: MapFlags::PROT_READ | MapFlags::MAP_SHARED,
+            address: 0, // ignored
+        }).expect("failed to map REDOXFS_PASSWORD");
+
+        let _ = syscall::close(fd);
 
         for i in 0..size {
             password.push(*((password_map + i) as *const u8));
