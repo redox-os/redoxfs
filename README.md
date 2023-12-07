@@ -6,7 +6,7 @@ This is the default filesystem of Redox OS inspired by [ZFS](https://docs.freebs
 
 Current features:
 
-- Compatible with Redox and Linux
+- Compatible with Redox and Linux (FUSE)
 - Copy-on-write
 - Data/metadata checksums
 - Transparent encryption
@@ -16,7 +16,7 @@ Current features:
 - MIT licensed
 - Disk encryption fully supported by the Redox bootloader, letting it load the kernel off an encrypted partition.
 
-Being MIT licensed, RedoxFS can be added on GPL kernels (Linux, for example).
+Being MIT licensed, RedoxFS can be bundled on GPL-licensed operating systems (Linux, for example).
 
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![crates.io](http://meritbadge.herokuapp.com/redoxfs)](https://crates.io/crates/redoxfs)
