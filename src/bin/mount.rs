@@ -1,5 +1,3 @@
-#![feature(int_roundings)]
-
 extern crate libc;
 
 #[cfg(target_os = "redox")]
