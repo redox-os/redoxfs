@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use syscall::{Packet, SchemeMut};
 
-use crate::{Disk, FileSystem, IS_UMT};
+use crate::{Disk, FileSystem, Transaction, IS_UMT};
 
 use self::scheme::FileScheme;
 
@@ -25,31 +25,27 @@ where
     let res = callback(Path::new(&mounted_path));
 
     let mut scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem);
-    loop {
-        if IS_UMT.load(Ordering::SeqCst) > 0 {
-            break Ok(res);
-        }
-
+    while IS_UMT.load(Ordering::SeqCst) == 0 {
         let mut packet = Packet::default();
         match socket.read(&mut packet) {
-            Ok(0) => break Ok(res),
+            Ok(0) => break,
             Ok(_ok) => (),
             Err(err) => {
                 if err.kind() == io::ErrorKind::Interrupted {
                     continue;
                 } else {
-                    break Err(err);
+                    return Err(err);
                 }
             }
         }
 
         scheme.handle(&mut packet);
 
-        match socket.write(&packet) {
-            Ok(_ok) => (),
-            Err(err) => {
-                break Err(err);
-            }
-        }
+        socket.write(&packet)?;
     }
+
+    // Squash allocations and sync on unmount
+    let _ = Transaction::new(&mut scheme.fs).commit(true);
+
+    Ok(res)
 }

@@ -12,7 +12,7 @@ use self::fuser::TimeOrNow;
 use crate::mount::fuse::TimeOrNow::Now;
 use crate::mount::fuse::TimeOrNow::SpecificTime;
 
-use crate::{filesystem, Disk, Node, TreeData, TreePtr, BLOCK_SIZE};
+use crate::{filesystem, Disk, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
 use self::fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
@@ -25,7 +25,7 @@ const TTL: Duration = Duration::new(1, 0); // 1 second
 const NULL_TIME: Duration = Duration::new(0, 0);
 
 pub fn mount<D, P, T, F>(
-    filesystem: filesystem::FileSystem<D>,
+    mut filesystem: filesystem::FileSystem<D>,
     mountpoint: P,
     mut callback: F,
 ) -> io::Result<T>
@@ -42,25 +42,32 @@ where
     // be `root`, thus that we need to allow `root` to have access.
     let defer_permissions = [MountOption::CUSTOM("defer_permissions".to_owned())];
 
-    let mut session = Session::new(
-        Fuse { fs: filesystem },
-        mountpoint,
-        if cfg!(target_os = "macos") {
-            &defer_permissions
-        } else {
-            &[]
-        },
-    )?;
+    let res = {
+        let mut session = Session::new(
+            Fuse { fs: &mut filesystem },
+            mountpoint,
+            if cfg!(target_os = "macos") {
+                &defer_permissions
+            } else {
+                &[]
+            },
+        )?;
 
-    let res = callback(mountpoint);
+        let res = callback(mountpoint);
 
-    session.run()?;
+        session.run()?;
+
+        res
+    };
+
+    // Squash allocations and sync on unmount
+    let _ = Transaction::new(&mut filesystem).commit(true);
 
     Ok(res)
 }
 
-pub struct Fuse<D: Disk> {
-    pub fs: filesystem::FileSystem<D>,
+pub struct Fuse<'f, D: Disk> {
+    pub fs: &'f mut filesystem::FileSystem<D>,
 }
 
 fn node_attr(node: &TreeData<Node>) -> FileAttr {
@@ -90,7 +97,7 @@ fn node_attr(node: &TreeData<Node>) -> FileAttr {
     }
 }
 
-impl<D: Disk> Filesystem for Fuse<D> {
+impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
     fn lookup(&mut self, _req: &Request, parent_id: u64, name: &OsStr, reply: ReplyEntry) {
         let parent_ptr = TreePtr::new(parent_id as u32);
         match self

@@ -21,7 +21,7 @@ use super::resource::{DirResource, FileResource, Resource};
 
 pub struct FileScheme<D: Disk> {
     name: String,
-    fs: FileSystem<D>,
+    pub(crate) fs: FileSystem<D>,
     next_id: AtomicUsize,
     files: BTreeMap<usize, Box<dyn Resource<D>>>,
     fmap: super::resource::Fmaps,
