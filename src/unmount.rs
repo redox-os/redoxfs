@@ -1,5 +1,3 @@
-use failure::Error;
-
 use std::{
     fs,
     io::{self},
@@ -33,7 +31,7 @@ fn unmount_linux_path(mount_path: &str) -> io::Result<ExitStatus> {
     ))
 }
 
-pub fn unmount_path(mount_path: &str) -> Result<(), Error> {
+pub fn unmount_path(mount_path: &str) -> Result<(), io::Error> {
     if cfg!(target_os = "redox") {
         fs::remove_file(format!(":{}", mount_path))?
     } else {
@@ -45,7 +43,7 @@ pub fn unmount_path(mount_path: &str) -> Result<(), Error> {
 
         let status = status_res?;
         if !status.success() {
-            return Err(io::Error::new(io::ErrorKind::Other, "redoxfs umount failed").into());
+            return Err(io::Error::new(io::ErrorKind::Other, "redoxfs umount failed"));
         }
     }
 
