@@ -127,7 +127,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let mut alloc_ptr = self.header.alloc;
             while !alloc_ptr.is_null() {
                 let alloc = self.read_block(alloc_ptr)?;
-                self.deallocate_block(alloc_ptr);
+                self.deallocate.push(alloc.addr());
                 alloc_ptr = alloc.data().prev;
             }
         } else {
@@ -147,9 +147,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             }
 
             // Prepare to deallocate old alloc block
-            unsafe {
-                self.deallocate(alloc.addr());
-            }
+            self.deallocate.push(alloc.addr());
 
             // Link to previous alloc block
             prev_ptr = alloc.data().prev;
