@@ -2,7 +2,7 @@
 name = "redoxfs"
 description = "The Redox Filesystem"
 repository = "https://gitlab.redox-os.org/redox-os/redoxfs"
-version = "0.5.11"
+version = "0.5.12"
 license-file = "LICENSE"
 readme = "README.md"
 authors = ["Jeremy Soller <jackpot51@gmail.com>"]
@@ -40,7 +40,7 @@ getrandom = { version = "0.2.5", optional = true }
 libc = "0.2"
 log = { version = "0.4.14", default-features = false, optional = true}
 redox_syscall = "0.4"
-range-tree = "0.1"
+range-tree = { version = "0.1", optional = true }
 seahash = { version = "4.1.0", default-features = false }
 termion = { version = "1.5.6", optional = true }
 uuid = { version = "1.4", default-features = false }
@@ -64,6 +64,7 @@ std = [
     "fuser",
     "getrandom",
     "libc",
+    "range-tree",
     "termion",
     "time",
     "uuid/v4"
