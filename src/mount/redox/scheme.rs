@@ -3,8 +3,7 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use syscall::{EBADFD, MunmapFlags};
-use syscall::data::{Map, Stat, StatVfs, TimeSpec};
+use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::error::{
     Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
     EPERM, EXDEV,
@@ -14,6 +13,7 @@ use syscall::flag::{
     O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::scheme::SchemeMut;
+use syscall::{MunmapFlags, EBADFD};
 
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
@@ -46,12 +46,18 @@ impl<D: Disk> FileScheme<D> {
         url: &str,
         node: TreeData<Node>,
         nodes: &mut Vec<(TreeData<Node>, String)>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<String> {
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let scheme = format!("{}:", scheme_name);
 
+        // symbolic link is relative to this part of the url
+        let mut working_dir = dirname(url).unwrap_or(&scheme).to_string();
+        // node of the link
         let mut node = node;
+
         for _ in 0..32 {
             // XXX What should the limit be?
+            assert!(node.data().is_symlink());
             let mut buf = [0; 4096];
             let count = tx.read_node(
                 node.ptr(),
@@ -60,24 +66,25 @@ impl<D: Disk> FileScheme<D> {
                 atime.as_secs(),
                 atime.subsec_nanos(),
             )?;
-            let scheme = format!("{}:", scheme_name);
-            let canon = canonicalize(url.as_bytes(), &buf[0..count]);
-            let path = str::from_utf8(&canon[scheme.len()..])
-                .unwrap_or("")
-                .trim_matches('/');
+            let target = canonicalize(
+                &working_dir,
+                str::from_utf8(&buf[..count]).map_err(|_| Error::new(EINVAL))?,
+            )
+            .ok_or(Error::new(EINVAL))?;
+            if !target.starts_with(&scheme) {
+                return Err(Error::new(EXDEV));
+            }
+            let target_path = &target[scheme.len()..];
             nodes.clear();
             if let Some((next_node, next_node_name)) =
-                Self::path_nodes(scheme_name, tx, path, uid, gid, nodes)?
+                Self::path_nodes(scheme_name, tx, target_path, uid, gid, nodes)?
             {
                 if !next_node.data().is_symlink() {
-                    if canon.starts_with(scheme.as_bytes()) {
-                        nodes.push((next_node, next_node_name));
-                        return Ok(canon[scheme.len()..].to_vec());
-                    } else {
-                        return Err(Error::new(EXDEV));
-                    }
+                    nodes.push((next_node, next_node_name));
+                    return Ok(target_path.to_string());
                 }
                 node = next_node;
+                working_dir = dirname(&target).ok_or(Error::new(EINVAL))?.to_string();
             } else {
                 return Err(Error::new(ENOENT));
             }
@@ -141,42 +148,62 @@ impl<D: Disk> FileScheme<D> {
     }
 }
 
+/// given a path with a prefix, return the containing directory (or scheme)
+fn dirname(path: &str) -> Option<&str> {
+    if let Some(separator_index) = path.trim_end_matches('/').rfind('/') {
+        return Some(&path[..=separator_index]);
+    }
+    // there was no path separator, just use the scheme
+    if let Some(scheme) = scheme_with_separator(path) {
+        return Some(scheme);
+    }
+    None
+}
+
+/// given a path with a scheme prefix, return the prefix including the separator
+fn scheme_with_separator(path: &str) -> Option<&str> {
+    if let Some(sep_idx) = path.find(':') {
+        let scheme = &path[..=sep_idx];
+        if scheme.find('/').is_none() {
+            return Some(&scheme);
+        }
+    }
+    None
+}
+
 /// Make a relative path absolute
 /// Given a cwd of "scheme:/path"
 /// This function will turn "foo" into "scheme:/path/foo"
 /// "/foo" will turn into "scheme:/foo"
 /// "bar:/foo" will be used directly, as it is already absolute
-pub fn canonicalize(current: &[u8], path: &[u8]) -> Vec<u8> {
+pub fn canonicalize(current: &str, path: &str) -> Option<String> {
     // This function is modified from a version in the kernel
-    let mut canon = if path.iter().position(|&b| b == b':').is_none() {
-        let cwd = &current[0..current.iter().rposition(|x| *x == '/' as u8).unwrap_or(0)];
-
-        let mut canon = if !path.starts_with(b"/") {
-            let mut c = cwd.to_vec();
-            if !c.ends_with(b"/") {
-                c.push(b'/');
-            }
-            c
+    let mut canon = if scheme_with_separator(path).is_none() {
+        let mut canon = if !path.starts_with('/') {
+            let mut cwd = current.trim_end_matches('/').to_string();
+            cwd.push('/');
+            cwd
         } else {
-            cwd[..cwd.iter().position(|&b| b == b':').map_or(1, |i| i + 1)].to_vec()
+            scheme_with_separator(current)?.to_string()
         };
 
-        canon.extend_from_slice(&path);
+        canon.push_str(path);
         canon
     } else {
-        path.to_vec()
+        path.to_string()
     };
 
     // NOTE: assumes the scheme does not include anything like "../" or "./"
     let mut result = {
         let parts = canon
-            .split(|&c| c == b'/')
-            .filter(|&part| part != b".")
+            .split('/')
             .rev()
             .scan(0, |nskip, part| {
-                if part == b"." {
+                if part == "" {
                     Some(None)
-                } else if part == b".." {
+                } else if part == "." {
+                    Some(None)
+                } else if part == ".." {
                     *nskip += 1;
                     Some(None)
                 } else {
@@ -189,25 +216,22 @@ pub fn canonicalize(current: &[u8], path: &[u8]) -> Vec<u8> {
                 }
             })
             .filter_map(|x| x)
+            .filter(|x| !x.is_empty())
             .collect::<Vec<_>>();
-        parts.iter().rev().fold(Vec::new(), |mut vec, &part| {
-            vec.extend_from_slice(part);
-            vec.push(b'/');
-            vec
+        parts.iter().rev().fold(String::new(), |mut string, &part| {
+            string.push_str(part);
+            string.push('/');
+            string
         })
     };
     result.pop(); // remove extra '/'
 
     // replace with the root of the scheme if it's empty
     if result.len() == 0 {
-        let pos = canon
-            .iter()
-            .position(|&b| b == b':')
-            .map_or(canon.len(), |p| p + 1);
-        canon.truncate(pos);
-        canon
+        canon.truncate(scheme_with_separator(&canon)?.len());
+        Some(canon)
     } else {
-        result
+        Some(result)
     }
 }
 
@@ -283,9 +307,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                             &mut resolve_nodes,
                         )
                     })?;
-                    let resolved_utf8 =
-                        str::from_utf8(&resolved).map_err(|_| Error::new(EINVAL))?;
-                    return self.open(resolved_utf8, flags, uid, gid);
+                    return self.open(&resolved, flags, uid, gid);
                 } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));
                 } else {
@@ -401,8 +423,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                 }
             }
         };
-        self.fmap.entry(resource.node_ptr().id()).or_insert_with(Default::default).open_fds += 1;
-
+        self.fmap
+            .entry(resource.node_ptr().id())
+            .or_insert_with(Default::default)
+            .open_fds += 1;
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.files.insert(id, resource);
@@ -536,7 +560,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
             return Err(Error::new(EBADF));
         };
 
-        self.fmap.get_mut(&resource.node_ptr().id()).ok_or(Error::new(EBADFD))?.open_fds += 1;
+        self.fmap
+            .get_mut(&resource.node_ptr().id())
+            .ok_or(Error::new(EBADFD))?
+            .open_fds += 1;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         self.files.insert(id, resource);
 
@@ -790,6 +817,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
 
         self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
     }
+    #[allow(unused_variables)]
     fn munmap(&mut self, id: usize, offset: u64, size: usize, flags: MunmapFlags) -> Result<usize> {
         println!("Munmap {}, {} {}", id, size, offset);
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
@@ -801,9 +829,15 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     fn close(&mut self, id: usize) -> Result<usize> {
         // println!("Close {}", id);
         let file = self.files.remove(&id).ok_or(Error::new(EBADF))?;
-        let file_info = self.fmap.get_mut(&file.node_ptr().id()).ok_or(Error::new(EBADFD))?;
+        let file_info = self
+            .fmap
+            .get_mut(&file.node_ptr().id())
+            .ok_or(Error::new(EBADFD))?;
 
-        file_info.open_fds = file_info.open_fds.checked_sub(1).expect("open_fds not tracked correctly");
+        file_info.open_fds = file_info
+            .open_fds
+            .checked_sub(1)
+            .expect("open_fds not tracked correctly");
 
         // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
         // particular inode, remove that inode here.
