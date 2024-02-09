@@ -205,15 +205,17 @@ fn filesystem_by_uuid(
 ) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
     use std::fs;
 
-    match fs::read_dir(":") {
+    use redox_path::canonicalize_using_scheme;
+
+    match fs::read_dir("/scheme") {
         Ok(entries) => {
             for entry_res in entries {
                 if let Ok(entry) = entry_res {
-                    if let Ok(path) = entry.path().into_os_string().into_string() {
-                        let scheme = path.trim_start_matches(':').trim_matches('/');
+                    if let Ok(scheme) = entry.file_name().into_string() {
                         if scheme.starts_with("disk") {
                             println!("redoxfs: found scheme {}", scheme);
-                            match fs::read_dir(&format!("{}:", scheme)) {
+                            let scheme_path = canonicalize_using_scheme(&scheme, "")?;
+                            match fs::read_dir(scheme_path) {
                                 Ok(entries) => {
                                     for entry_res in entries {
                                         if let Ok(entry) = entry_res {
