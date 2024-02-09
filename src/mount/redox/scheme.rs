@@ -15,6 +15,8 @@ use syscall::flag::{
 use syscall::scheme::SchemeMut;
 use syscall::{MunmapFlags, EBADFD};
 
+use redox_path::{canonicalize_using_cwd, canonicalize_using_scheme, RedoxPath};
+
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
 use super::resource::{DirResource, FileResource, Resource};
@@ -43,15 +45,15 @@ impl<D: Disk> FileScheme<D> {
         tx: &mut Transaction<D>,
         uid: u32,
         gid: u32,
-        url: &str,
+        full_path: &str,
         node: TreeData<Node>,
         nodes: &mut Vec<(TreeData<Node>, String)>,
     ) -> Result<String> {
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let scheme = format!("{}:", scheme_name);
+        let scheme_path = canonicalize_using_scheme(scheme_name, "").ok_or(Error::new(EINVAL))?;
 
         // symbolic link is relative to this part of the url
-        let mut working_dir = dirname(url).unwrap_or(&scheme).to_string();
+        let mut working_dir = dirname(full_path).unwrap_or(scheme_path.to_string());
         // node of the link
         let mut node = node;
 
@@ -66,22 +68,49 @@ impl<D: Disk> FileScheme<D> {
                 atime.as_secs(),
                 atime.subsec_nanos(),
             )?;
-            let target = canonicalize(
-                &working_dir,
-                str::from_utf8(&buf[..count]).map_err(|_| Error::new(EINVAL))?,
+
+            let target = canonicalize_using_cwd(
+                Some(&working_dir),
+                str::from_utf8(&buf[..count]).or(Err(Error::new(EINVAL)))?,
             )
             .ok_or(Error::new(EINVAL))?;
-            if !target.starts_with(&scheme) {
-                return Err(Error::new(EXDEV));
-            }
-            let target_path = &target[scheme.len()..];
+            let target_as_path = RedoxPath::from_absolute(&target).ok_or(Error::new(EINVAL))?;
+
+            let target_reference = match target_as_path {
+                RedoxPath::Standard(_) => {
+                    let (scheme, reference) =
+                        target_as_path.as_parts().ok_or(Error::new(EINVAL))?;
+                    if scheme.as_ref() != scheme_name {
+                        return Err(Error::new(EXDEV));
+                    }
+                    reference.as_ref().to_string()
+                }
+                RedoxPath::Legacy(scheme, reference) => {
+                    // Legacy references are not canonicalized because they can contain coded information
+                    // We know this is a `file:` reference, so canonicalize into a Standard path
+                    if scheme.as_ref() != scheme_name {
+                        return Err(Error::new(EXDEV));
+                    }
+                    let target = canonicalize_using_scheme(scheme_name, reference.as_ref())
+                        .ok_or(Error::new(EINVAL))?;
+                    let target_as_path =
+                        RedoxPath::from_absolute(&target).ok_or(Error::new(EINVAL))?;
+                    let (scheme, reference) =
+                        target_as_path.as_parts().ok_or(Error::new(EINVAL))?;
+                    if scheme.as_ref() != scheme_name {
+                        return Err(Error::new(EXDEV));
+                    }
+                    reference.as_ref().to_string()
+                }
+            };
+
             nodes.clear();
             if let Some((next_node, next_node_name)) =
-                Self::path_nodes(scheme_name, tx, target_path, uid, gid, nodes)?
+                Self::path_nodes(scheme_name, tx, &target_reference, uid, gid, nodes)?
             {
                 if !next_node.data().is_symlink() {
                     nodes.push((next_node, next_node_name));
-                    return Ok(target_path.to_string());
+                    return Ok(target_reference.to_string());
                 }
                 node = next_node;
                 working_dir = dirname(&target).ok_or(Error::new(EINVAL))?.to_string();
@@ -148,91 +177,9 @@ impl<D: Disk> FileScheme<D> {
     }
 }
 
-/// given a path with a prefix, return the containing directory (or scheme)
-fn dirname(path: &str) -> Option<&str> {
-    if let Some(separator_index) = path.trim_end_matches('/').rfind('/') {
-        return Some(&path[..=separator_index]);
-    }
-    // there was no path separator, just use the scheme
-    if let Some(scheme) = scheme_with_separator(path) {
-        return Some(scheme);
-    }
-    None
-}
-
-/// given a path with a scheme prefix, return the prefix including the separator
-fn scheme_with_separator(path: &str) -> Option<&str> {
-    if let Some(sep_idx) = path.find(':') {
-        let scheme = &path[..=sep_idx];
-        if scheme.find('/').is_none() {
-            return Some(&scheme);
-        }
-    }
-    None
-}
-
-/// Make a relative path absolute
-/// Given a cwd of "scheme:/path"
-/// This function will turn "foo" into "scheme:/path/foo"
-/// "/foo" will turn into "scheme:/foo"
-/// "bar:/foo" will be used directly, as it is already absolute
-pub fn canonicalize(current: &str, path: &str) -> Option<String> {
-    // This function is modified from a version in the kernel
-    let mut canon = if scheme_with_separator(path).is_none() {
-        let mut canon = if !path.starts_with('/') {
-            let mut cwd = current.trim_end_matches('/').to_string();
-            cwd.push('/');
-            cwd
-        } else {
-            scheme_with_separator(current)?.to_string()
-        };
-
-        canon.push_str(path);
-        canon
-    } else {
-        path.to_string()
-    };
-
-    // NOTE: assumes the scheme does not include anything like "../" or "./"
-    let mut result = {
-        let parts = canon
-            .split('/')
-            .rev()
-            .scan(0, |nskip, part| {
-                if part == "" {
-                    Some(None)
-                } else if part == "." {
-                    Some(None)
-                } else if part == ".." {
-                    *nskip += 1;
-                    Some(None)
-                } else {
-                    if *nskip > 0 {
-                        *nskip -= 1;
-                        Some(None)
-                    } else {
-                        Some(Some(part))
-                    }
-                }
-            })
-            .filter_map(|x| x)
-            .filter(|x| !x.is_empty())
-            .collect::<Vec<_>>();
-        parts.iter().rev().fold(String::new(), |mut string, &part| {
-            string.push_str(part);
-            string.push('/');
-            string
-        })
-    };
-    result.pop(); // remove extra '/'
-
-    // replace with the root of the scheme if it's empty
-    if result.len() == 0 {
-        canon.truncate(scheme_with_separator(&canon)?.len());
-        Some(canon)
-    } else {
-        Some(result)
-    }
+/// given a path with a scheme, return the containing directory (or scheme)
+fn dirname(path: &str) -> Option<String> {
+    canonicalize_using_cwd(Some(path), "..")
 }
 
 impl<D: Disk> SchemeMut for FileScheme<D> {
@@ -296,13 +243,15 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                     && flags & O_SYMLINK != O_SYMLINK
                 {
                     let mut resolve_nodes = Vec::new();
+                    let full_path =
+                        canonicalize_using_scheme(scheme_name, url).ok_or(Error::new(EINVAL))?;
                     let resolved = self.fs.tx(|tx| {
                         Self::resolve_symlink(
                             scheme_name,
                             tx,
                             uid,
                             gid,
-                            &format!("{}:/{}", scheme_name, url),
+                            &full_path,
                             node,
                             &mut resolve_nodes,
                         )
