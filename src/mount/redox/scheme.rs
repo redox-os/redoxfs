@@ -811,7 +811,6 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
 
     fn mmap_prep(&mut self, id: usize, offset: u64, size: usize, flags: MapFlags) -> Result<usize> {
-        println!("Mmap {}, {:?} {} {}", id, flags, size, offset);
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
         let fmaps = &mut self.fmap;
 
@@ -819,7 +818,6 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
     #[allow(unused_variables)]
     fn munmap(&mut self, id: usize, offset: u64, size: usize, flags: MunmapFlags) -> Result<usize> {
-        println!("Munmap {}, {} {}", id, size, offset);
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
         let fmaps = &mut self.fmap;
 
