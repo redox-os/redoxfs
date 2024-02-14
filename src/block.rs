@@ -3,6 +3,8 @@ use simple_endian::*;
 
 use crate::BLOCK_SIZE;
 
+const BLOCK_LIST_ENTRIES: usize = BLOCK_SIZE as usize / mem::size_of::<BlockPtr<BlockRaw>>();
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BlockData<T> {
     addr: u64,
@@ -50,7 +52,7 @@ impl<T: ops::Deref<Target = [u8]>> BlockData<T> {
 
 #[repr(packed)]
 pub struct BlockList<T> {
-    pub ptrs: [BlockPtr<T>; 256],
+    pub ptrs: [BlockPtr<T>; BLOCK_LIST_ENTRIES],
 }
 
 impl<T> BlockList<T> {
@@ -67,7 +69,7 @@ impl<T> BlockList<T> {
 impl<T> Default for BlockList<T> {
     fn default() -> Self {
         Self {
-            ptrs: [BlockPtr::default(); 256],
+            ptrs: [BlockPtr::default(); BLOCK_LIST_ENTRIES],
         }
     }
 }

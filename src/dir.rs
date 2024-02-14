@@ -1,6 +1,8 @@
 use core::{mem, ops, slice, str};
 
-use crate::{Node, TreePtr};
+use crate::{Node, TreePtr, BLOCK_SIZE};
+
+const DIR_LIST_ENTRIES: usize = BLOCK_SIZE as usize / mem::size_of::<DirEntry>();
 
 #[repr(packed)]
 pub struct DirEntry {
@@ -63,7 +65,7 @@ impl Default for DirEntry {
 
 #[repr(packed)]
 pub struct DirList {
-    pub entries: [DirEntry; 16],
+    pub entries: [DirEntry; DIR_LIST_ENTRIES],
 }
 
 impl DirList {
@@ -80,7 +82,7 @@ impl DirList {
 impl Default for DirList {
     fn default() -> Self {
         Self {
-            entries: [DirEntry::default(); 16],
+            entries: [DirEntry::default(); DIR_LIST_ENTRIES],
         }
     }
 }

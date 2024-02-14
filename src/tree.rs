@@ -5,6 +5,7 @@ use crate::{BlockPtr, BlockRaw};
 
 // 1 << 8 = 256, this is the number of entries in a TreeList
 const TREE_LIST_SHIFT: u32 = 8;
+const TREE_LIST_ENTRIES: usize = 1 << TREE_LIST_SHIFT;
 
 // Tree with 4 levels
 pub type Tree = TreeList<TreeList<TreeList<TreeList<BlockRaw>>>>;
@@ -46,13 +47,13 @@ impl<T> TreeData<T> {
 
 #[repr(packed)]
 pub struct TreeList<T> {
-    pub ptrs: [BlockPtr<T>; 1 << TREE_LIST_SHIFT],
+    pub ptrs: [BlockPtr<T>; TREE_LIST_ENTRIES],
 }
 
 impl<T> Default for TreeList<T> {
     fn default() -> Self {
         Self {
-            ptrs: [BlockPtr::default(); 1 << TREE_LIST_SHIFT],
+            ptrs: [BlockPtr::default(); TREE_LIST_ENTRIES],
         }
     }
 }

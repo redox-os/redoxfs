@@ -43,7 +43,10 @@ pub fn unmount_path(mount_path: &str) -> Result<(), io::Error> {
 
         let status = status_res?;
         if !status.success() {
-            return Err(io::Error::new(io::ErrorKind::Other, "redoxfs umount failed"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "redoxfs umount failed",
+            ));
         }
     }
 

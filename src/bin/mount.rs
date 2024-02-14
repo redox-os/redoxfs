@@ -13,11 +13,7 @@ use std::os::unix::io::{FromRawFd, RawFd};
 use std::process;
 
 #[cfg(target_os = "redox")]
-use std::{
-    mem::MaybeUninit,
-    ptr::addr_of_mut,
-    sync::atomic::Ordering,
-};
+use std::{mem::MaybeUninit, ptr::addr_of_mut, sync::atomic::Ordering};
 
 use redoxfs::{mount, DiskCache, DiskFile, FileSystem};
 use termion::input::TermRead;
@@ -37,12 +33,17 @@ fn setsig() {
     unsafe {
         let mut action = MaybeUninit::<libc::sigaction>::uninit();
 
-        assert_eq!(libc::sigemptyset(addr_of_mut!((*action.as_mut_ptr()).sa_mask)), 0);
+        assert_eq!(
+            libc::sigemptyset(addr_of_mut!((*action.as_mut_ptr()).sa_mask)),
+            0
+        );
         addr_of_mut!((*action.as_mut_ptr()).sa_flags).write(0);
         addr_of_mut!((*action.as_mut_ptr()).sa_sigaction).write(unmount_handler as usize);
 
-
-        assert_eq!(libc::sigaction(libc::SIGTERM, action.as_ptr(), core::ptr::null_mut()), 0);
+        assert_eq!(
+            libc::sigaction(libc::SIGTERM, action.as_ptr(), core::ptr::null_mut()),
+            0
+        );
     }
 }
 
@@ -94,14 +95,19 @@ fn bootloader_password() -> Option<Vec<u8>> {
     unsafe {
         let aligned_size = size.next_multiple_of(syscall::PAGE_SIZE);
 
-        let fd = syscall::open("memory:physical", syscall::O_CLOEXEC).expect("failed to open physical memory file");
+        let fd = syscall::open("memory:physical", syscall::O_CLOEXEC)
+            .expect("failed to open physical memory file");
 
-        let password_map = syscall::fmap(fd, &syscall::Map {
-            offset: addr,
-            size: aligned_size,
-            flags: MapFlags::PROT_READ | MapFlags::MAP_SHARED,
-            address: 0, // ignored
-        }).expect("failed to map REDOXFS_PASSWORD");
+        let password_map = syscall::fmap(
+            fd,
+            &syscall::Map {
+                offset: addr,
+                size: aligned_size,
+                flags: MapFlags::PROT_READ | MapFlags::MAP_SHARED,
+                address: 0, // ignored
+            },
+        )
+        .expect("failed to map REDOXFS_PASSWORD");
 
         let _ = syscall::close(fd);
 
@@ -163,8 +169,7 @@ fn filesystem_by_path(
                     println!(
                         "redoxfs: opened filesystem on {} with uuid {}",
                         path,
-                        Uuid::from_bytes(filesystem.header.uuid())
-                            .hyphenated()
+                        Uuid::from_bytes(filesystem.header.uuid()).hyphenated()
                     );
 
                     return Some((path.to_string(), filesystem));

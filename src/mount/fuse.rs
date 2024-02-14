@@ -44,7 +44,9 @@ where
 
     let res = {
         let mut session = Session::new(
-            Fuse { fs: &mut filesystem },
+            Fuse {
+                fs: &mut filesystem,
+            },
             mountpoint,
             if cfg!(target_os = "macos") {
                 &defer_permissions

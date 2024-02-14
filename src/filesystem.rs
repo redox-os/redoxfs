@@ -1,7 +1,7 @@
 use aes::{Aes128, BlockDecrypt, BlockEncrypt};
 use alloc::{collections::VecDeque, vec::Vec};
 use core::mem;
-use syscall::error::{Error, Result, EKEYREJECTED, EIO, ENOENT, ENOKEY, ENOSPC};
+use syscall::error::{Error, Result, EIO, EKEYREJECTED, ENOENT, ENOKEY, ENOSPC};
 
 use crate::{
     AllocEntry, AllocList, Allocator, BlockData, Disk, Header, Key, KeySlot, Node, Salt,
@@ -159,9 +159,7 @@ impl<D: Disk> FileSystem<D> {
             };
 
             // Write header generation zero
-            let count = unsafe {
-                fs.disk.write_at(fs.block, &fs.header)?
-            };
+            let count = unsafe { fs.disk.write_at(fs.block, &fs.header)? };
             if count != mem::size_of_val(&fs.header) {
                 // Wrote wrong number of bytes
                 #[cfg(feature = "log")]

@@ -1,7 +1,7 @@
 use core::{fmt, mem, ops, slice};
 use simple_endian::*;
 
-use crate::{BlockList, BlockPtr, BlockRaw};
+use crate::{BlockList, BlockPtr, BlockRaw, BLOCK_SIZE};
 
 pub enum NodeLevel {
     L0(usize),
@@ -93,7 +93,7 @@ pub struct Node {
     pub mtime_nsec: u32le,
     pub atime: u64le,
     pub atime_nsec: u32le,
-    pub padding: [u8; 6],
+    pub padding: [u8; BLOCK_SIZE as usize - 4090],
     // 128 * BLOCK_SIZE (512 KiB, 4 KiB each)
     pub level0: [BlockPtr<BlockRaw>; 128],
     // 64 * 256 * BLOCK_SIZE (64 MiB, 1 MiB each)
@@ -120,7 +120,7 @@ impl Default for Node {
             mtime_nsec: 0.into(),
             atime: 0.into(),
             atime_nsec: 0.into(),
-            padding: [0; 6],
+            padding: [0; BLOCK_SIZE as usize - 4090],
             level0: [BlockPtr::default(); 128],
             level1: [BlockPtr::default(); 64],
             level2: [BlockPtr::default(); 32],

@@ -2,9 +2,10 @@ use alloc::vec::Vec;
 use core::{fmt, mem, ops, slice};
 use simple_endian::*;
 
-use crate::BlockPtr;
+use crate::{BlockPtr, BLOCK_SIZE};
 
-pub const ALLOC_LIST_ENTRIES: usize = 255;
+pub const ALLOC_LIST_ENTRIES: usize =
+    (BLOCK_SIZE as usize - mem::size_of::<BlockPtr<AllocList>>()) / mem::size_of::<AllocEntry>();
 
 #[derive(Clone, Default)]
 pub struct Allocator {
