@@ -31,7 +31,7 @@ pub struct Transaction<'a, D: Disk> {
 
 impl<'a, D: Disk> Transaction<'a, D> {
     pub(crate) fn new(fs: &'a mut FileSystem<D>) -> Self {
-        let header = fs.header.clone();
+        let header = fs.header;
         let allocator = fs.allocator.clone();
         Self {
             fs,
@@ -196,7 +196,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         for (addr, raw) in self.write_cache.iter_mut() {
             assert!(self.header_changed);
             self.fs.encrypt(raw);
-            let count = unsafe { self.fs.disk.write_at(self.fs.block + addr, &raw)? };
+            let count = unsafe { self.fs.disk.write_at(self.fs.block + addr, raw)? };
             if count != mem::size_of::<BlockRaw>() {
                 // Read wrong number of bytes
                 #[cfg(feature = "log")]
@@ -896,7 +896,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let node_size = node.data().size();
         let mut i = 0;
         while i < buf.len() && offset < node_size {
-            let block_ptr = self.node_block_ptr(&node, offset / BLOCK_SIZE)?;
+            let block_ptr = self.node_block_ptr(node, offset / BLOCK_SIZE)?;
             let block = self.read_block(block_ptr)?;
 
             let j = (offset % BLOCK_SIZE) as usize;
