@@ -236,14 +236,14 @@ fn alloc_node_size_test() {
 fn allocator_test() {
     let mut alloc = Allocator::default();
 
-    assert_eq!(alloc.allocate(), None);
+    assert_eq!(alloc.allocate(0), None);
 
-    alloc.deallocate(1);
-    assert_eq!(alloc.allocate(), Some(1));
-    assert_eq!(alloc.allocate(), None);
+    alloc.deallocate(1, 0);
+    assert_eq!(alloc.allocate(0), Some(1));
+    assert_eq!(alloc.allocate(0), None);
 
     for addr in 1023..2048 {
-        alloc.deallocate(addr);
+        alloc.deallocate(addr, 0);
     }
 
     assert_eq!(alloc.levels.len(), 11);
@@ -258,9 +258,9 @@ fn allocator_test() {
     }
 
     for addr in 1023..2048 {
-        assert_eq!(alloc.allocate(), Some(addr));
+        assert_eq!(alloc.allocate(0), Some(addr));
     }
-    assert_eq!(alloc.allocate(), None);
+    assert_eq!(alloc.allocate(0), None);
 
     assert_eq!(alloc.levels.len(), 11);
     for level in 0..alloc.levels.len() {
