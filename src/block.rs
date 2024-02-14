@@ -139,11 +139,7 @@ impl<T> BlockPtr<T> {
 
 impl<T> Clone for BlockPtr<T> {
     fn clone(&self) -> Self {
-        Self {
-            addr: self.addr,
-            hash: self.hash,
-            phantom: PhantomData,
-        }
+        *self
     }
 }
 

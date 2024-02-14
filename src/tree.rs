@@ -135,10 +135,7 @@ impl<T> TreePtr<T> {
 
 impl<T> Clone for TreePtr<T> {
     fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            phantom: PhantomData,
-        }
+        *self
     }
 }
 

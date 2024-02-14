@@ -147,10 +147,7 @@ impl AllocEntry {
 
 impl Clone for AllocEntry {
     fn clone(&self) -> Self {
-        Self {
-            addr: self.addr,
-            count: self.count,
-        }
+        *self
     }
 }
 

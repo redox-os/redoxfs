@@ -110,7 +110,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.entry(&TTL, &node_attr(&node), 0);
             }
             Err(err) => {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
             }
         }
     }
@@ -122,7 +122,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.attr(&TTL, &node_attr(&node));
             }
             Err(err) => {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
             }
         }
     }
@@ -150,7 +150,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
         let mut node = match self.fs.tx(|tx| tx.read_tree(node_ptr)) {
             Ok(ok) => ok,
             Err(err) => {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
                 return;
             }
         };
@@ -207,7 +207,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                     }
                 }
                 Err(err) => {
-                    reply.error(err.errno as i32);
+                    reply.error(err.errno);
                     return;
                 }
             }
@@ -217,7 +217,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
 
         if node_changed {
             if let Err(err) = self.fs.tx(|tx| tx.sync_tree(node)) {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
                 return;
             }
         }
@@ -253,7 +253,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.data(&data[..count]);
             }
             Err(err) => {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
             }
         }
     }
@@ -286,7 +286,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.written(count as u32);
             }
             Err(err) => {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
             }
         }
     }
@@ -337,7 +337,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                     let node = match self.fs.tx(|tx| tx.read_tree(child.node_ptr())) {
                         Ok(ok) => ok,
                         Err(err) => {
-                            reply.error(err.errno as i32);
+                            reply.error(err.errno);
                             return;
                         }
                     };
@@ -362,7 +362,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.ok();
             }
             Err(err) => {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
             }
         }
     }
@@ -393,7 +393,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.created(&TTL, &node_attr(&node), 0, 0, flags as u32);
             }
             Err(error) => {
-                reply.error(error.errno as i32);
+                reply.error(error.errno);
             }
         }
     }
@@ -423,7 +423,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.entry(&TTL, &node_attr(&node), 0);
             }
             Err(error) => {
-                reply.error(error.errno as i32);
+                reply.error(error.errno);
             }
         }
     }
@@ -438,7 +438,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.ok();
             }
             Err(err) => {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
             }
         }
     }
@@ -453,7 +453,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.ok();
             }
             Err(err) => {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
             }
         }
     }
@@ -499,7 +499,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.entry(&TTL, &node_attr(&node), 0);
             }
             Err(error) => {
-                reply.error(error.errno as i32);
+                reply.error(error.errno);
             }
         }
     }
@@ -521,7 +521,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
                 reply.data(&data[..count]);
             }
             Err(err) => {
-                reply.error(err.errno as i32);
+                reply.error(err.errno);
             }
         }
     }
@@ -547,7 +547,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
             .tx(|tx| tx.rename_node(orig_parent_ptr, orig_name, new_parent_ptr, new_name))
         {
             Ok(()) => reply.ok(),
-            Err(err) => reply.error(err.errno as i32),
+            Err(err) => reply.error(err.errno),
         }
     }
 }

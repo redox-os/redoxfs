@@ -142,7 +142,7 @@ fn filesystem_by_path(
             let password = io::stdin()
                 .read_passwd(&mut io::stderr())
                 .unwrap()
-                .unwrap_or(String::new());
+                .unwrap_or_default();
 
             eprintln!();
 
@@ -158,10 +158,10 @@ fn filesystem_by_path(
             bootloader_password()
         };
 
-        match DiskFile::open(&path).map(|image| DiskCache::new(image)) {
+        match DiskFile::open(path).map(DiskCache::new) {
             Ok(disk) => match redoxfs::FileSystem::open(
                 disk,
-                password_opt.as_ref().map(|x| x.as_slice()),
+                password_opt.as_deref(),
                 block_opt,
                 true,
             ) {
@@ -277,7 +277,7 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write:
     };
 
     if let Some((path, filesystem)) = filesystem_opt {
-        match mount(filesystem, &mountpoint, |mounted_path| {
+        match mount(filesystem, mountpoint, |mounted_path| {
             capability_mode();
 
             println!(

@@ -76,7 +76,7 @@ fn main() {
         let password = io::stdin()
             .read_passwd(&mut io::stderr())
             .unwrap()
-            .unwrap_or(String::new());
+            .unwrap_or_default();
 
         eprintln!();
 

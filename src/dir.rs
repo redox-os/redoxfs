@@ -45,10 +45,7 @@ impl DirEntry {
 
 impl Clone for DirEntry {
     fn clone(&self) -> Self {
-        Self {
-            node_ptr: self.node_ptr,
-            name: self.name,
-        }
+        *self
     }
 }
 
