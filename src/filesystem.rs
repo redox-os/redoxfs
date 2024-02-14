@@ -253,7 +253,7 @@ impl<D: Disk> FileSystem<D> {
                     }
                 } else {
                     for i in 0..count {
-                        self.allocator.deallocate(addr + i as u64);
+                        self.allocator.deallocate(addr + i as u64, 0);
                     }
                 }
             }

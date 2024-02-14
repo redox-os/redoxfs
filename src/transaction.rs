@@ -53,7 +53,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
     // Unsafe because order must be done carefully and changes must be flushed to disk
     unsafe fn allocate(&mut self) -> Result<u64> {
-        match self.allocator.allocate() {
+        match self.allocator.allocate(0) {
             Some(addr) => {
                 self.allocator_log.push_back(AllocEntry::new(addr, -1));
                 Ok(addr)
@@ -83,7 +83,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         if found {
             // Deallocate immediately since it is an allocation that was not needed
-            self.allocator.deallocate(addr);
+            self.allocator.deallocate(addr, 0);
         } else {
             // Deallocate later when syncing filesystem, to avoid re-use
             self.deallocate.push(addr);
@@ -164,7 +164,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         // De-allocate old blocks (after allocation to prevent re-use)
         //TODO: optimize allocator log in memory
         while let Some(addr) = self.deallocate.pop() {
-            self.allocator.deallocate(addr);
+            self.allocator.deallocate(addr, 0);
             self.allocator_log.push_back(AllocEntry::new(addr, 1));
         }
 

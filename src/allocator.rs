@@ -26,10 +26,10 @@ impl Allocator {
         free
     }
 
-    pub fn allocate(&mut self) -> Option<u64> {
+    pub fn allocate(&mut self, addr_level: usize) -> Option<u64> {
         // First, find the lowest level with a free block
         let mut addr_opt = None;
-        let mut level = 0;
+        let mut level = addr_level;
         while level < self.levels.len() {
             if !self.levels[level].is_empty() {
                 addr_opt = self.levels[level].pop();
@@ -38,9 +38,9 @@ impl Allocator {
             level += 1;
         }
 
-        // Next, if a free block was found, split it up until you have a usable level 0 block
+        // Next, if a free block was found, split it up until you have a usable block of the right level
         let addr = addr_opt?;
-        while level > 0 {
+        while level > addr_level {
             level -= 1;
             let level_size = 1 << level;
             self.levels[level].push(addr + level_size);
@@ -79,10 +79,10 @@ impl Allocator {
         addr_opt
     }
 
-    pub fn deallocate(&mut self, mut addr: u64) {
+    pub fn deallocate(&mut self, mut addr: u64, addr_level: usize) {
         // See if block matches with a sibling - if so, join them into a larger block, and populate
         // this all the way to the top level
-        let mut level = 0;
+        let mut level = addr_level;
         loop {
             while level >= self.levels.len() {
                 self.levels.push(Vec::new());
