@@ -159,33 +159,30 @@ fn filesystem_by_path(
         };
 
         match DiskFile::open(path).map(DiskCache::new) {
-            Ok(disk) => match redoxfs::FileSystem::open(
-                disk,
-                password_opt.as_deref(),
-                block_opt,
-                true,
-            ) {
-                Ok(filesystem) => {
-                    println!(
-                        "redoxfs: opened filesystem on {} with uuid {}",
-                        path,
-                        Uuid::from_bytes(filesystem.header.uuid()).hyphenated()
-                    );
+            Ok(disk) => {
+                match redoxfs::FileSystem::open(disk, password_opt.as_deref(), block_opt, true) {
+                    Ok(filesystem) => {
+                        println!(
+                            "redoxfs: opened filesystem on {} with uuid {}",
+                            path,
+                            Uuid::from_bytes(filesystem.header.uuid()).hyphenated()
+                        );
 
-                    return Some((path.to_string(), filesystem));
-                }
-                Err(err) => match err.errno {
-                    syscall::ENOKEY => {
-                        if password_opt.is_some() {
-                            println!("redoxfs: incorrect password ({}/{})", attempt, attempts);
+                        return Some((path.to_string(), filesystem));
+                    }
+                    Err(err) => match err.errno {
+                        syscall::ENOKEY => {
+                            if password_opt.is_some() {
+                                println!("redoxfs: incorrect password ({}/{})", attempt, attempts);
+                            }
                         }
-                    }
-                    _ => {
-                        println!("redoxfs: failed to open filesystem {}: {}", path, err);
-                        break;
-                    }
-                },
-            },
+                        _ => {
+                            println!("redoxfs: failed to open filesystem {}: {}", path, err);
+                            break;
+                        }
+                    },
+                }
+            }
             Err(err) => {
                 println!("redoxfs: failed to open image {}: {}", path, err);
                 break;

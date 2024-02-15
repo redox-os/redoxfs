@@ -1,7 +1,7 @@
 use core::{fmt, mem, ops, slice};
 use simple_endian::*;
 
-use crate::{BlockList, BlockPtr, BlockRaw, BLOCK_SIZE};
+use crate::{BlockLevel, BlockList, BlockPtr, BlockTrait, RecordRaw, BLOCK_SIZE, RECORD_LEVEL};
 
 pub enum NodeLevel {
     L0(usize),
@@ -12,61 +12,61 @@ pub enum NodeLevel {
 }
 
 impl NodeLevel {
-    // Warning: this uses constant block offsets, make sure to sync with Node
-    pub fn new(mut block_offset: u64) -> Option<Self> {
+    // Warning: this uses constant record offsets, make sure to sync with Node
+    pub fn new(mut record_offset: u64) -> Option<Self> {
         // 1 << 8 = 256, this is the number of entries in a BlockList
         const SHIFT: u64 = 8;
         const NUM: u64 = 1 << SHIFT;
         const MASK: u64 = NUM - 1;
 
         const L0: u64 = 128;
-        if block_offset < L0 {
-            return Some(Self::L0((block_offset & MASK) as usize));
+        if record_offset < L0 {
+            return Some(Self::L0((record_offset & MASK) as usize));
         } else {
-            block_offset -= L0;
+            record_offset -= L0;
         }
 
         const L1: u64 = 64 * NUM;
-        if block_offset < L1 {
+        if record_offset < L1 {
             return Some(Self::L1(
-                ((block_offset >> SHIFT) & MASK) as usize,
-                (block_offset & MASK) as usize,
+                ((record_offset >> SHIFT) & MASK) as usize,
+                (record_offset & MASK) as usize,
             ));
         } else {
-            block_offset -= L1;
+            record_offset -= L1;
         }
 
         const L2: u64 = 32 * NUM * NUM;
-        if block_offset < L2 {
+        if record_offset < L2 {
             return Some(Self::L2(
-                ((block_offset >> (2 * SHIFT)) & MASK) as usize,
-                ((block_offset >> SHIFT) & MASK) as usize,
-                (block_offset & MASK) as usize,
+                ((record_offset >> (2 * SHIFT)) & MASK) as usize,
+                ((record_offset >> SHIFT) & MASK) as usize,
+                (record_offset & MASK) as usize,
             ));
         } else {
-            block_offset -= L2;
+            record_offset -= L2;
         }
 
         const L3: u64 = 16 * NUM * NUM * NUM;
-        if block_offset < L3 {
+        if record_offset < L3 {
             return Some(Self::L3(
-                ((block_offset >> (3 * SHIFT)) & MASK) as usize,
-                ((block_offset >> (2 * SHIFT)) & MASK) as usize,
-                ((block_offset >> SHIFT) & MASK) as usize,
-                (block_offset & MASK) as usize,
+                ((record_offset >> (3 * SHIFT)) & MASK) as usize,
+                ((record_offset >> (2 * SHIFT)) & MASK) as usize,
+                ((record_offset >> SHIFT) & MASK) as usize,
+                (record_offset & MASK) as usize,
             ));
         } else {
-            block_offset -= L3;
+            record_offset -= L3;
         }
 
         const L4: u64 = 12 * NUM * NUM * NUM * NUM;
-        if block_offset < L4 {
+        if record_offset < L4 {
             Some(Self::L4(
-                ((block_offset >> (4 * SHIFT)) & MASK) as usize,
-                ((block_offset >> (3 * SHIFT)) & MASK) as usize,
-                ((block_offset >> (2 * SHIFT)) & MASK) as usize,
-                ((block_offset >> SHIFT) & MASK) as usize,
-                (block_offset & MASK) as usize,
+                ((record_offset >> (4 * SHIFT)) & MASK) as usize,
+                ((record_offset >> (3 * SHIFT)) & MASK) as usize,
+                ((record_offset >> (2 * SHIFT)) & MASK) as usize,
+                ((record_offset >> SHIFT) & MASK) as usize,
+                (record_offset & MASK) as usize,
             ))
         } else {
             None
@@ -74,7 +74,7 @@ impl NodeLevel {
     }
 }
 
-type BlockListL1 = BlockList<BlockRaw>;
+type BlockListL1 = BlockList<RecordRaw>;
 type BlockListL2 = BlockList<BlockListL1>;
 type BlockListL3 = BlockList<BlockListL2>;
 type BlockListL4 = BlockList<BlockListL3>;
@@ -93,17 +93,28 @@ pub struct Node {
     pub mtime_nsec: u32le,
     pub atime: u64le,
     pub atime_nsec: u32le,
-    pub padding: [u8; BLOCK_SIZE as usize - 4090],
-    // 128 * BLOCK_SIZE (512 KiB, 4 KiB each)
-    pub level0: [BlockPtr<BlockRaw>; 128],
-    // 64 * 256 * BLOCK_SIZE (64 MiB, 1 MiB each)
+    pub record_level: u32le,
+    pub padding: [u8; BLOCK_SIZE as usize - 4094],
+    // 128 * RECORD_SIZE (16 MiB, 128 KiB each)
+    pub level0: [BlockPtr<RecordRaw>; 128],
+    // 64 * 256 * RECORD_SIZE (2 GiB, 32 MiB each)
     pub level1: [BlockPtr<BlockListL1>; 64],
-    // 32 * 256 * 256 * BLOCK_SIZE (8 GiB, 256 MiB each)
+    // 32 * 256 * 256 * RECORD_SIZE (256 GiB, 8 GiB each)
     pub level2: [BlockPtr<BlockListL2>; 32],
-    // 16 * 256 * 256 * 256 * BLOCK_SIZE (1 TiB, 64 GiB each)
+    // 16 * 256 * 256 * 256 * RECORD_SIZE (32 TiB, 2 TiB each)
     pub level3: [BlockPtr<BlockListL3>; 16],
-    // 12 * 256 * 256 * 256 * 256 * BLOCK_SIZE (192 TiB, 16 TiB each)
+    // 12 * 256 * 256 * 256 * 256 * RECORD_SIZE (6 PiB, 512 TiB each)
     pub level4: [BlockPtr<BlockListL4>; 12],
+}
+
+unsafe impl BlockTrait for Node {
+    fn empty(level: BlockLevel) -> Option<Self> {
+        if level.0 == 0 {
+            Some(Self::default())
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for Node {
@@ -120,7 +131,8 @@ impl Default for Node {
             mtime_nsec: 0.into(),
             atime: 0.into(),
             atime_nsec: 0.into(),
-            padding: [0; BLOCK_SIZE as usize - 4090],
+            record_level: 0.into(),
+            padding: [0; BLOCK_SIZE as usize - 4094],
             level0: [BlockPtr::default(); 128],
             level1: [BlockPtr::default(); 64],
             level2: [BlockPtr::default(); 32],
@@ -153,6 +165,14 @@ impl Node {
             mtime_nsec: ctime_nsec.into(),
             atime: ctime.into(),
             atime_nsec: ctime_nsec.into(),
+            record_level: if mode & Self::MODE_TYPE == Self::MODE_FILE {
+                // Files take on record level
+                RECORD_LEVEL as u32
+            } else {
+                // Folders do not
+                0
+            }
+            .into(),
             ..Default::default()
         }
     }
@@ -187,6 +207,10 @@ impl Node {
 
     pub fn atime(&self) -> (u64, u32) {
         ({ self.atime }.to_native(), { self.atime_nsec }.to_native())
+    }
+
+    pub fn record_level(&self) -> BlockLevel {
+        BlockLevel({ self.record_level }.to_native() as usize)
     }
 
     pub fn set_mode(&mut self, mode: u16) {

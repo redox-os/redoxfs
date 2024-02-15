@@ -1,8 +1,7 @@
+use alloc::{boxed::Box, vec};
 use core::{mem, ops, slice, str};
 
-use crate::{Node, TreePtr, BLOCK_SIZE};
-
-const DIR_LIST_ENTRIES: usize = BLOCK_SIZE as usize / mem::size_of::<DirEntry>();
+use crate::{BlockLevel, BlockTrait, Node, TreePtr, RECORD_LEVEL};
 
 #[repr(packed)]
 pub struct DirEntry {
@@ -60,9 +59,22 @@ impl Default for DirEntry {
     }
 }
 
-#[repr(packed)]
+//TODO: this is a box to prevent stack overflows
 pub struct DirList {
-    pub entries: [DirEntry; DIR_LIST_ENTRIES],
+    pub entries: Box<[DirEntry]>,
+}
+
+unsafe impl BlockTrait for DirList {
+    fn empty(level: BlockLevel) -> Option<Self> {
+        if level.0 <= RECORD_LEVEL {
+            let entries = level.bytes() as usize / mem::size_of::<DirEntry>();
+            Some(Self {
+                entries: vec![DirEntry::default(); entries].into_boxed_slice(),
+            })
+        } else {
+            None
+        }
+    }
 }
 
 impl DirList {
@@ -76,21 +88,13 @@ impl DirList {
     }
 }
 
-impl Default for DirList {
-    fn default() -> Self {
-        Self {
-            entries: [DirEntry::default(); DIR_LIST_ENTRIES],
-        }
-    }
-}
-
 impl ops::Deref for DirList {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         unsafe {
             slice::from_raw_parts(
-                self as *const DirList as *const u8,
-                mem::size_of::<DirList>(),
+                self.entries.as_ptr() as *const u8,
+                self.entries.len() * mem::size_of::<DirEntry>(),
             ) as &[u8]
         }
     }
@@ -99,13 +103,22 @@ impl ops::Deref for DirList {
 impl ops::DerefMut for DirList {
     fn deref_mut(&mut self) -> &mut [u8] {
         unsafe {
-            slice::from_raw_parts_mut(self as *mut DirList as *mut u8, mem::size_of::<DirList>())
-                as &mut [u8]
+            slice::from_raw_parts_mut(
+                self.entries.as_mut_ptr() as *mut u8,
+                self.entries.len() * mem::size_of::<DirEntry>(),
+            ) as &mut [u8]
         }
     }
 }
 
 #[test]
 fn dir_list_size_test() {
-    assert_eq!(mem::size_of::<DirList>(), crate::BLOCK_SIZE as usize);
+    use core::ops::Deref;
+    for level_i in 0..RECORD_LEVEL {
+        let level = BlockLevel(level_i);
+        assert_eq!(
+            DirList::empty(level).unwrap().deref().len(),
+            level.bytes() as usize
+        );
+    }
 }

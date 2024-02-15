@@ -5,23 +5,91 @@ use crate::BLOCK_SIZE;
 
 const BLOCK_LIST_ENTRIES: usize = BLOCK_SIZE as usize / mem::size_of::<BlockPtr<BlockRaw>>();
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BlockAddr(u64);
+
+impl BlockAddr {
+    // Unsafe because this can create invalid blocks
+    pub(crate) unsafe fn new(index: u64, level: BlockLevel) -> Self {
+        // Level must only use the lowest four bits
+        if level.0 > 0xF {
+            panic!("block level used more than four bits");
+        }
+
+        // Index must not use the highest four bits
+        let inner = index
+            .checked_shl(4)
+            .expect("block index used highest four bits")
+            | (level.0 as u64);
+        Self(inner)
+    }
+
+    pub fn null(level: BlockLevel) -> Self {
+        unsafe { Self::new(0, level) }
+    }
+
+    pub fn index(&self) -> u64 {
+        // The first four bits store the level
+        self.0 >> 4
+    }
+
+    pub fn level(&self) -> BlockLevel {
+        // The first four bits store the level
+        BlockLevel((self.0 & 0xF) as usize)
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.index() == 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BlockLevel(pub(crate) usize);
+
+impl BlockLevel {
+    pub(crate) fn for_bytes(bytes: u64) -> Self {
+        //TODO: optimize
+        let mut level = BlockLevel(0);
+        while level.bytes() < bytes {
+            level.0 += 1;
+        }
+        level
+    }
+
+    pub fn blocks(self) -> i64 {
+        1 << self.0
+    }
+
+    pub fn bytes(self) -> u64 {
+        BLOCK_SIZE << self.0
+    }
+}
+
+pub unsafe trait BlockTrait {
+    fn empty(level: BlockLevel) -> Option<Self>
+    where
+        Self: Sized;
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BlockData<T> {
-    addr: u64,
+    addr: BlockAddr,
     data: T,
 }
 
 impl<T> BlockData<T> {
-    pub fn new(addr: u64, data: T) -> Self {
+    pub fn new(addr: BlockAddr, data: T) -> Self {
         Self { addr, data }
     }
 
-    pub fn addr(&self) -> u64 {
+    pub fn addr(&self) -> BlockAddr {
         self.addr
     }
 
     #[must_use = "don't forget to de-allocate old block address"]
-    pub fn swap_addr(&mut self, addr: u64) -> u64 {
+    pub fn swap_addr(&mut self, addr: BlockAddr) -> BlockAddr {
+        // Address levels must match
+        assert_eq!(self.addr.level(), addr.level());
         let old = self.addr;
         self.addr = addr;
         old
@@ -35,15 +103,22 @@ impl<T> BlockData<T> {
         &mut self.data
     }
 
-    pub fn into_data(self) -> T {
-        self.data
+    pub(crate) unsafe fn into_parts(self) -> (BlockAddr, T) {
+        (self.addr, self.data)
+    }
+}
+
+impl<T: BlockTrait> BlockData<T> {
+    pub fn empty(addr: BlockAddr) -> Option<Self> {
+        let empty = T::empty(addr.level())?;
+        Some(Self::new(addr, empty))
     }
 }
 
 impl<T: ops::Deref<Target = [u8]>> BlockData<T> {
     pub fn create_ptr(&self) -> BlockPtr<T> {
         BlockPtr {
-            addr: self.addr.into(),
+            addr: self.addr.0.into(),
             hash: seahash::hash(self.data.deref()).into(),
             phantom: PhantomData,
         }
@@ -55,6 +130,18 @@ pub struct BlockList<T> {
     pub ptrs: [BlockPtr<T>; BLOCK_LIST_ENTRIES],
 }
 
+unsafe impl<T> BlockTrait for BlockList<T> {
+    fn empty(level: BlockLevel) -> Option<Self> {
+        if level.0 == 0 {
+            Some(Self {
+                ptrs: [BlockPtr::default(); BLOCK_LIST_ENTRIES],
+            })
+        } else {
+            None
+        }
+    }
+}
+
 impl<T> BlockList<T> {
     pub fn is_empty(&self) -> bool {
         for ptr in self.ptrs.iter() {
@@ -63,14 +150,6 @@ impl<T> BlockList<T> {
             }
         }
         true
-    }
-}
-
-impl<T> Default for BlockList<T> {
-    fn default() -> Self {
-        Self {
-            ptrs: [BlockPtr::default(); BLOCK_LIST_ENTRIES],
-        }
     }
 }
 
@@ -105,8 +184,16 @@ pub struct BlockPtr<T> {
 }
 
 impl<T> BlockPtr<T> {
-    pub fn addr(&self) -> u64 {
-        { self.addr }.to_native()
+    pub fn null(level: BlockLevel) -> Self {
+        Self {
+            addr: BlockAddr::null(level).0.into(),
+            hash: 0.into(),
+            phantom: PhantomData,
+        }
+    }
+
+    pub fn addr(&self) -> BlockAddr {
+        BlockAddr({ self.addr }.to_native())
     }
 
     pub fn hash(&self) -> u64 {
@@ -114,7 +201,7 @@ impl<T> BlockPtr<T> {
     }
 
     pub fn is_null(&self) -> bool {
-        self.addr() == 0
+        self.addr().is_null()
     }
 
     /// Cast BlockPtr to another type
@@ -169,15 +256,19 @@ impl<T> fmt::Debug for BlockPtr<T> {
 #[repr(packed)]
 pub struct BlockRaw([u8; BLOCK_SIZE as usize]);
 
-impl Clone for BlockRaw {
-    fn clone(&self) -> Self {
-        Self(self.0)
+unsafe impl BlockTrait for BlockRaw {
+    fn empty(level: BlockLevel) -> Option<Self> {
+        if level.0 == 0 {
+            Some(Self([0; BLOCK_SIZE as usize]))
+        } else {
+            None
+        }
     }
 }
 
-impl Default for BlockRaw {
-    fn default() -> Self {
-        Self([0; BLOCK_SIZE as usize])
+impl Clone for BlockRaw {
+    fn clone(&self) -> Self {
+        Self(self.0)
     }
 }
 

@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::{fmt, mem, ops, slice};
 use simple_endian::*;
 
-use crate::{BlockPtr, BLOCK_SIZE};
+use crate::{BlockAddr, BlockLevel, BlockPtr, BlockTrait, BLOCK_SIZE};
 
 pub const ALLOC_LIST_ENTRIES: usize =
     (BLOCK_SIZE as usize - mem::size_of::<BlockPtr<AllocList>>()) / mem::size_of::<AllocEntry>();
@@ -26,63 +26,68 @@ impl Allocator {
         free
     }
 
-    pub fn allocate(&mut self, addr_level: usize) -> Option<u64> {
+    pub fn allocate(&mut self, block_level: BlockLevel) -> Option<BlockAddr> {
         // First, find the lowest level with a free block
-        let mut addr_opt = None;
-        let mut level = addr_level;
+        let mut index_opt = None;
+        let mut level = block_level.0;
         while level < self.levels.len() {
             if !self.levels[level].is_empty() {
-                addr_opt = self.levels[level].pop();
+                index_opt = self.levels[level].pop();
                 break;
             }
             level += 1;
         }
 
         // Next, if a free block was found, split it up until you have a usable block of the right level
-        let addr = addr_opt?;
-        while level > addr_level {
+        let index = index_opt?;
+        while level > block_level.0 {
             level -= 1;
             let level_size = 1 << level;
-            self.levels[level].push(addr + level_size);
+            self.levels[level].push(index + level_size);
         }
 
-        Some(addr)
+        Some(unsafe { BlockAddr::new(index, block_level) })
     }
 
-    pub fn allocate_exact(&mut self, exact_addr: u64) -> Option<u64> {
-        let mut addr_opt = None;
+    pub fn allocate_exact(&mut self, exact_addr: BlockAddr) -> Option<BlockAddr> {
+        // This function only supports level 0 right now
+        assert_eq!(exact_addr.level().0, 0);
+        let exact_index = exact_addr.index();
+
+        let mut index_opt = None;
 
         // Go from the highest to the lowest level
         for level in (0..self.levels.len()).rev() {
             let level_size = 1 << level;
 
             // Split higher block if found
-            if let Some(addr) = addr_opt.take() {
-                self.levels[level].push(addr);
-                self.levels[level].push(addr + level_size);
+            if let Some(index) = index_opt.take() {
+                self.levels[level].push(index);
+                self.levels[level].push(index + level_size);
             }
 
             // Look for matching block and remove it
             for i in 0..self.levels[level].len() {
                 let start = self.levels[level][i];
-                if start <= exact_addr {
+                if start <= exact_index {
                     let end = start + level_size;
-                    if end > exact_addr {
+                    if end > exact_index {
                         self.levels[level].remove(i);
-                        addr_opt = Some(start);
+                        index_opt = Some(start);
                         break;
                     }
                 }
             }
         }
 
-        addr_opt
+        Some(unsafe { BlockAddr::new(index_opt?, exact_addr.level()) })
     }
 
-    pub fn deallocate(&mut self, mut addr: u64, addr_level: usize) {
+    pub fn deallocate(&mut self, addr: BlockAddr) {
         // See if block matches with a sibling - if so, join them into a larger block, and populate
         // this all the way to the top level
-        let mut level = addr_level;
+        let mut index = addr.index();
+        let mut level = addr.level().0;
         loop {
             while level >= self.levels.len() {
                 self.levels.push(Vec::new());
@@ -94,14 +99,14 @@ impl Allocator {
             let mut found = false;
             let mut i = 0;
             while i < self.levels[level].len() {
-                let level_addr = self.levels[level][i];
-                if addr % next_size == 0 && addr + level_size == level_addr {
+                let level_index = self.levels[level][i];
+                if index % next_size == 0 && index + level_size == level_index {
                     self.levels[level].remove(i);
                     found = true;
                     break;
-                } else if level_addr % next_size == 0 && level_addr + level_size == addr {
+                } else if level_index % next_size == 0 && level_index + level_size == index {
                     self.levels[level].remove(i);
-                    addr = level_addr;
+                    index = level_index;
                     found = true;
                     break;
                 }
@@ -109,7 +114,7 @@ impl Allocator {
             }
 
             if !found {
-                self.levels[level].push(addr);
+                self.levels[level].push(index);
                 return;
             }
 
@@ -120,20 +125,28 @@ impl Allocator {
 
 #[repr(packed)]
 pub struct AllocEntry {
-    addr: u64le,
+    index: u64le,
     count: i64le,
 }
 
 impl AllocEntry {
-    pub fn new(addr: u64, count: i64) -> Self {
+    pub fn new(index: u64, count: i64) -> Self {
         Self {
-            addr: addr.into(),
+            index: index.into(),
             count: count.into(),
         }
     }
 
-    pub fn addr(&self) -> u64 {
-        { self.addr }.to_native()
+    pub fn allocate(addr: BlockAddr) -> Self {
+        Self::new(addr.index(), -addr.level().blocks())
+    }
+
+    pub fn deallocate(addr: BlockAddr) -> Self {
+        Self::new(addr.index(), addr.level().blocks())
+    }
+
+    pub fn index(&self) -> u64 {
+        { self.index }.to_native()
     }
 
     pub fn count(&self) -> i64 {
@@ -156,7 +169,7 @@ impl Copy for AllocEntry {}
 impl Default for AllocEntry {
     fn default() -> Self {
         Self {
-            addr: 0.into(),
+            index: 0.into(),
             count: 0.into(),
         }
     }
@@ -164,10 +177,10 @@ impl Default for AllocEntry {
 
 impl fmt::Debug for AllocEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let addr = self.addr();
+        let index = self.index();
         let count = self.count();
         f.debug_struct("AllocEntry")
-            .field("addr", &addr)
+            .field("index", &index)
             .field("count", &count)
             .finish()
     }
@@ -180,11 +193,15 @@ pub struct AllocList {
     pub entries: [AllocEntry; ALLOC_LIST_ENTRIES],
 }
 
-impl Default for AllocList {
-    fn default() -> Self {
-        Self {
-            prev: BlockPtr::default(),
-            entries: [AllocEntry::default(); ALLOC_LIST_ENTRIES],
+unsafe impl BlockTrait for AllocList {
+    fn empty(level: BlockLevel) -> Option<Self> {
+        if level.0 == 0 {
+            Some(Self {
+                prev: BlockPtr::default(),
+                entries: [AllocEntry::default(); ALLOC_LIST_ENTRIES],
+            })
+        } else {
+            None
         }
     }
 }
@@ -236,14 +253,17 @@ fn alloc_node_size_test() {
 fn allocator_test() {
     let mut alloc = Allocator::default();
 
-    assert_eq!(alloc.allocate(0), None);
+    assert_eq!(alloc.allocate(BlockLevel::default()), None);
 
-    alloc.deallocate(1, 0);
-    assert_eq!(alloc.allocate(0), Some(1));
-    assert_eq!(alloc.allocate(0), None);
+    alloc.deallocate(unsafe { BlockAddr::new(1, BlockLevel::default()) });
+    assert_eq!(
+        alloc.allocate(BlockLevel::default()),
+        Some(unsafe { BlockAddr::new(1, BlockLevel::default()) })
+    );
+    assert_eq!(alloc.allocate(BlockLevel::default()), None);
 
     for addr in 1023..2048 {
-        alloc.deallocate(addr, 0);
+        alloc.deallocate(unsafe { BlockAddr::new(addr, BlockLevel::default()) });
     }
 
     assert_eq!(alloc.levels.len(), 11);
@@ -258,9 +278,12 @@ fn allocator_test() {
     }
 
     for addr in 1023..2048 {
-        assert_eq!(alloc.allocate(0), Some(addr));
+        assert_eq!(
+            alloc.allocate(BlockLevel::default()),
+            Some(unsafe { BlockAddr::new(addr, BlockLevel::default()) })
+        );
     }
-    assert_eq!(alloc.allocate(0), None);
+    assert_eq!(alloc.allocate(BlockLevel::default()), None);
 
     assert_eq!(alloc.levels.len(), 11);
     for level in 0..alloc.levels.len() {

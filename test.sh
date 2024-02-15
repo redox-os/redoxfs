@@ -34,15 +34,22 @@ ls -lah image
 
 mkdir image/test
 time cp -r src image/test/src
+
 dd if=/dev/urandom of=image/test/random bs=1M count=256
 dd if=image/test/random of=/dev/null bs=1M count=256
+
+time truncate --size=256M image/test/sparse
+dd if=image/test/sparse of=/dev/null bs=1M count=256
+
 dd if=/dev/zero of=image/test/zero bs=1M count=256
 dd if=image/test/zero of=/dev/null bs=1M count=256
+
 ls -lah image/test
 
 df -h image
 
 rm image/test/random
+rm image/test/sparse
 rm image/test/zero
 rm -rf image/test/src
 rmdir image/test

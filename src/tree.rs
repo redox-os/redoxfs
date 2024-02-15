@@ -1,7 +1,7 @@
 use core::{marker::PhantomData, mem, ops, slice};
 use simple_endian::*;
 
-use crate::{BlockPtr, BlockRaw};
+use crate::{BlockLevel, BlockPtr, BlockRaw, BlockTrait};
 
 // 1 << 8 = 256, this is the number of entries in a TreeList
 const TREE_LIST_SHIFT: u32 = 8;
@@ -50,10 +50,14 @@ pub struct TreeList<T> {
     pub ptrs: [BlockPtr<T>; TREE_LIST_ENTRIES],
 }
 
-impl<T> Default for TreeList<T> {
-    fn default() -> Self {
-        Self {
-            ptrs: [BlockPtr::default(); TREE_LIST_ENTRIES],
+unsafe impl<T> BlockTrait for TreeList<T> {
+    fn empty(level: BlockLevel) -> Option<Self> {
+        if level.0 == 0 {
+            Some(Self {
+                ptrs: [BlockPtr::default(); TREE_LIST_ENTRIES],
+            })
+        } else {
+            None
         }
     }
 }
