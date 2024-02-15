@@ -4,8 +4,8 @@ use core::mem;
 use syscall::error::{Error, Result, EIO, EKEYREJECTED, ENOENT, ENOKEY, ENOSPC};
 
 use crate::{
-    AllocEntry, AllocList, Allocator, BlockData, Disk, Header, Key, KeySlot, Node, Salt,
-    Transaction, TreeList, BLOCK_SIZE, HEADER_RING,
+    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockTrait, Disk, Header,
+    Key, KeySlot, Node, Salt, Transaction, TreeList, BLOCK_SIZE, HEADER_RING,
 };
 
 /// A file system
@@ -169,9 +169,15 @@ impl<D: Disk> FileSystem<D> {
 
             // Set tree and alloc pointers and write header generation one
             fs.tx(|tx| unsafe {
-                let tree = BlockData::new(HEADER_RING + 1, TreeList::default());
+                let tree = BlockData::new(
+                    BlockAddr::new(HEADER_RING + 1, BlockLevel::default()),
+                    TreeList::empty(BlockLevel::default()).unwrap(),
+                );
 
-                let mut alloc = BlockData::new(HEADER_RING + 2, AllocList::default());
+                let mut alloc = BlockData::new(
+                    BlockAddr::new(HEADER_RING + 2, BlockLevel::default()),
+                    AllocList::empty(BlockLevel::default()).unwrap(),
+                );
                 let alloc_free = size / BLOCK_SIZE - (block_offset + HEADER_RING + 4);
                 alloc.data_mut().entries[0] = AllocEntry::new(HEADER_RING + 4, alloc_free as i64);
 
@@ -188,7 +194,7 @@ impl<D: Disk> FileSystem<D> {
 
             fs.tx(|tx| unsafe {
                 let mut root = BlockData::new(
-                    HEADER_RING + 3,
+                    BlockAddr::new(HEADER_RING + 3, BlockLevel::default()),
                     Node::new(Node::MODE_DIR | 0o755, 0, 0, ctime, ctime_nsec),
                 );
                 root.data_mut().set_links(1);
@@ -206,7 +212,7 @@ impl<D: Disk> FileSystem<D> {
         }
     }
 
-    /// Start a filesystem transaction, required for making any changes
+    /// start a filesystem transaction, required for making any changes
     pub fn tx<F: FnOnce(&mut Transaction<D>) -> Result<T>, T>(&mut self, f: F) -> Result<T> {
         let mut tx = Transaction::new(self);
         let t = f(&mut tx)?;
@@ -241,19 +247,18 @@ impl<D: Disk> FileSystem<D> {
 
         for alloc in allocs {
             for entry in alloc.data().entries.iter() {
-                let addr = entry.addr();
+                let index = entry.index();
                 let count = entry.count();
                 if count < 0 {
                     for i in 0..-count {
                         //TODO: replace assert with error?
-                        assert_eq!(
-                            self.allocator.allocate_exact(addr + i as u64),
-                            Some(addr + i as u64)
-                        );
+                        let addr = BlockAddr::new(index + i as u64, BlockLevel::default());
+                        assert_eq!(self.allocator.allocate_exact(addr), Some(addr));
                     }
                 } else {
                     for i in 0..count {
-                        self.allocator.deallocate(addr + i as u64, 0);
+                        let addr = BlockAddr::new(index + i as u64, BlockLevel::default());
+                        self.allocator.deallocate(addr);
                     }
                 }
             }

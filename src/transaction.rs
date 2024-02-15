@@ -1,4 +1,5 @@
 use alloc::{
+    boxed::Box,
     collections::{BTreeMap, VecDeque},
     vec::Vec,
 };
@@ -12,9 +13,9 @@ use syscall::error::{
 };
 
 use crate::{
-    AllocEntry, AllocList, Allocator, BlockData, BlockPtr, BlockRaw, DirEntry, DirList, Disk,
-    FileSystem, Header, Node, NodeLevel, TreeData, TreePtr, ALLOC_LIST_ENTRIES, BLOCK_SIZE,
-    HEADER_RING,
+    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait,
+    DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr,
+    ALLOC_LIST_ENTRIES, HEADER_RING,
 };
 
 pub struct Transaction<'a, D: Disk> {
@@ -25,8 +26,8 @@ pub struct Transaction<'a, D: Disk> {
     pub header_changed: bool,
     allocator: Allocator,
     allocator_log: VecDeque<AllocEntry>,
-    deallocate: Vec<u64>,
-    write_cache: BTreeMap<u64, BlockRaw>,
+    deallocate: Vec<BlockAddr>,
+    write_cache: BTreeMap<BlockAddr, Box<[u8]>>,
 }
 
 impl<'a, D: Disk> Transaction<'a, D> {
@@ -52,10 +53,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
     }
 
     // Unsafe because order must be done carefully and changes must be flushed to disk
-    unsafe fn allocate(&mut self) -> Result<u64> {
-        match self.allocator.allocate(0) {
+    unsafe fn allocate(&mut self, level: BlockLevel) -> Result<BlockAddr> {
+        match self.allocator.allocate(level) {
             Some(addr) => {
-                self.allocator_log.push_back(AllocEntry::new(addr, -1));
+                self.allocator_log.push_back(AllocEntry::allocate(addr));
                 Ok(addr)
             }
             None => Err(Error::new(ENOSPC)),
@@ -63,18 +64,19 @@ impl<'a, D: Disk> Transaction<'a, D> {
     }
 
     // Unsafe because order must be done carefully and changes must be flushed to disk
-    unsafe fn deallocate(&mut self, addr: u64) {
+    unsafe fn deallocate(&mut self, addr: BlockAddr) {
         //TODO: should we use some sort of not-null abstraction?
-        assert!(addr != 0);
+        assert!(!addr.is_null());
 
         // Remove from write_cache if it is there, since it no longer needs to be written
+        //TODO: for larger blocks do we need to check for sub-blocks in here?
         self.write_cache.remove(&addr);
 
         // Search and remove the last matching entry in allocator_log
         let mut found = false;
         for i in (0..self.allocator_log.len()).rev() {
             let entry = self.allocator_log[i];
-            if entry.addr() == addr && entry.count() == -1 {
+            if entry.index() == addr.index() && entry.count() == -addr.level().blocks() {
                 found = true;
                 self.allocator_log.remove(i);
                 break;
@@ -83,14 +85,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         if found {
             // Deallocate immediately since it is an allocation that was not needed
-            self.allocator.deallocate(addr, 0);
+            self.allocator.deallocate(addr);
         } else {
             // Deallocate later when syncing filesystem, to avoid re-use
             self.deallocate.push(addr);
         }
     }
 
-    fn deallocate_block<T>(&mut self, ptr: BlockPtr<T>) {
+    fn deallocate_block<T: BlockTrait>(&mut self, ptr: BlockPtr<T>) {
         if !ptr.is_null() {
             unsafe {
                 self.deallocate(ptr.addr());
@@ -106,20 +108,20 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let levels = self.allocator.levels();
             for level in (0..levels.len()).rev() {
                 let count = (1 << level) as i64;
-                'addrs: for &addr in levels[level].iter() {
+                'indexs: for &index in levels[level].iter() {
                     for entry in self.allocator_log.iter_mut() {
-                        if addr + count as u64 == entry.addr() {
+                        if index + count as u64 == entry.index() {
                             // New entry is at start of existing entry
-                            *entry = AllocEntry::new(addr, count + entry.count());
-                            continue 'addrs;
-                        } else if entry.addr() + entry.count() as u64 == addr {
+                            *entry = AllocEntry::new(index, count + entry.count());
+                            continue 'indexs;
+                        } else if entry.index() + entry.count() as u64 == index {
                             // New entry is at end of existing entry
-                            *entry = AllocEntry::new(entry.addr(), entry.count() + count);
-                            continue 'addrs;
+                            *entry = AllocEntry::new(entry.index(), entry.count() + count);
+                            continue 'indexs;
                         }
                     }
 
-                    self.allocator_log.push_back(AllocEntry::new(addr, count));
+                    self.allocator_log.push_back(AllocEntry::new(index, count));
                 }
             }
 
@@ -158,18 +160,18 @@ impl<'a, D: Disk> Transaction<'a, D> {
         while new_blocks.len() * ALLOC_LIST_ENTRIES
             <= self.allocator_log.len() + self.deallocate.len()
         {
-            new_blocks.push(unsafe { self.allocate()? });
+            new_blocks.push(unsafe { self.allocate(BlockLevel::default())? });
         }
 
         // De-allocate old blocks (after allocation to prevent re-use)
         //TODO: optimize allocator log in memory
         while let Some(addr) = self.deallocate.pop() {
-            self.allocator.deallocate(addr, 0);
-            self.allocator_log.push_back(AllocEntry::new(addr, 1));
+            self.allocator.deallocate(addr);
+            self.allocator_log.push_back(AllocEntry::deallocate(addr));
         }
 
         for new_block in new_blocks {
-            let mut alloc = BlockData::new(new_block, AllocList::default());
+            let mut alloc = BlockData::<AllocList>::empty(new_block).unwrap();
             alloc.data_mut().prev = prev_ptr;
             for entry in alloc.data_mut().entries.iter_mut() {
                 if let Some(log_entry) = self.allocator_log.pop_front() {
@@ -196,8 +198,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         for (addr, raw) in self.write_cache.iter_mut() {
             assert!(self.header_changed);
             self.fs.encrypt(raw);
-            let count = unsafe { self.fs.disk.write_at(self.fs.block + addr, raw)? };
-            if count != mem::size_of::<BlockRaw>() {
+            let count = unsafe { self.fs.disk.write_at(self.fs.block + addr.index(), raw)? };
+            if count != raw.len() {
                 // Read wrong number of bytes
                 #[cfg(feature = "log")]
                 log::error!("SYNC WRITE_CACHE: WRONG NUMBER OF BYTES");
@@ -231,7 +233,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(true)
     }
 
-    pub fn read_block<T: Default + DerefMut<Target = [u8]>>(
+    pub fn read_block<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: BlockPtr<T>,
     ) -> Result<BlockData<T>> {
@@ -242,16 +244,23 @@ impl<'a, D: Disk> Transaction<'a, D> {
             return Err(Error::new(ENOENT));
         }
 
-        let mut data = T::default();
+        let mut data = match T::empty(ptr.addr().level()) {
+            Some(some) => some,
+            None => {
+                #[cfg(feature = "log")]
+                log::error!("READ_BLOCK: INVALID BLOCK LEVEL FOR TYPE");
+                return Err(Error::new(ENOENT));
+            }
+        };
         if let Some(raw) = self.write_cache.get(&ptr.addr()) {
             data.copy_from_slice(raw);
         } else {
             let count = unsafe {
                 self.fs
                     .disk
-                    .read_at(self.fs.block + ptr.addr(), &mut data)?
+                    .read_at(self.fs.block + ptr.addr().index(), &mut data)?
             };
-            if count != mem::size_of::<T>() {
+            if count != data.len() {
                 // Read wrong number of bytes
                 #[cfg(feature = "log")]
                 log::error!("READ_BLOCK: WRONG NUMBER OF BYTES");
@@ -266,10 +275,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
             // Incorrect hash
             #[cfg(feature = "log")]
             log::error!(
-                "READ_BLOCK: INCORRECT HASH {} != {} for block {}",
+                "READ_BLOCK: INCORRECT HASH 0x{:X} != 0x{:X} for block 0x{:X}",
                 block_ptr.hash(),
                 ptr.hash(),
-                ptr.addr()
+                ptr.addr().index()
             );
             return Err(Error::new(EIO));
         }
@@ -280,27 +289,65 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ///
     /// # Safety
     /// Unsafe because it creates strange BlockData types that must be swapped before use
-    unsafe fn read_block_or_default<T: Default + DerefMut<Target = [u8]>>(
+    unsafe fn read_block_or_empty<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: BlockPtr<T>,
     ) -> Result<BlockData<T>> {
         if ptr.is_null() {
-            Ok(BlockData::new(0, T::default()))
+            match T::empty(ptr.addr().level()) {
+                Some(empty) => Ok(BlockData::new(BlockAddr::default(), empty)),
+                None => {
+                    #[cfg(feature = "log")]
+                    log::error!("READ_BLOCK_OR_EMPTY: INVALID BLOCK LEVEL FOR TYPE");
+                    Err(Error::new(ENOENT))
+                }
+            }
         } else {
             self.read_block(ptr)
         }
     }
 
+    unsafe fn read_record<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: BlockPtr<T>,
+        level: BlockLevel,
+    ) -> Result<BlockData<T>> {
+        let record = unsafe { self.read_block_or_empty(ptr)? };
+        if record.addr().level() == level {
+            return Ok(record);
+        }
+
+        // Resize record if needed
+        let (old_addr, old_raw) = unsafe { record.into_parts() };
+        if !old_addr.is_null() {
+            unsafe {
+                self.deallocate(old_addr);
+            }
+        }
+        let mut raw = match T::empty(level) {
+            Some(empty) => empty,
+            None => {
+                #[cfg(feature = "log")]
+                log::error!("READ_RECORD: INVALID BLOCK LEVEL FOR TYPE");
+                return Err(Error::new(ENOENT));
+            }
+        };
+        let len = min(raw.len(), old_raw.len());
+        raw[..len].copy_from_slice(&old_raw[..len]);
+        Ok(BlockData::new(BlockAddr::null(level), raw))
+    }
+
     /// Write block data to a new address, returning new address
-    pub fn sync_block<T: Deref<Target = [u8]>>(
+    pub fn sync_block<T: BlockTrait + Deref<Target = [u8]>>(
         &mut self,
         mut block: BlockData<T>,
     ) -> Result<BlockPtr<T>> {
         // Swap block to new address
-        let old_addr = block.swap_addr(unsafe { self.allocate()? });
+        let level = block.addr().level();
+        let old_addr = block.swap_addr(unsafe { self.allocate(level)? });
         // Deallocate old address (will only take effect after sync_allocator, which helps to
         // prevent re-use before a new header is written
-        if old_addr != 0 {
+        if !old_addr.is_null() {
             unsafe {
                 self.deallocate(old_addr);
             }
@@ -313,26 +360,27 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ///
     /// # Safety
     /// Unsafe to encourage CoW semantics
-    pub(crate) unsafe fn write_block<T: Deref<Target = [u8]>>(
+    pub(crate) unsafe fn write_block<T: BlockTrait + Deref<Target = [u8]>>(
         &mut self,
         block: BlockData<T>,
     ) -> Result<BlockPtr<T>> {
-        if block.addr() == 0 {
+        if block.addr().is_null() {
             // Pointer is invalid
             #[cfg(feature = "log")]
             log::error!("WRITE_BLOCK: POINTER IS NULL");
             return Err(Error::new(ENOENT));
         }
 
-        //TODO: transmute?
-        let mut raw = BlockRaw::default();
-        raw.copy_from_slice(block.data());
-        self.write_cache.insert(block.addr(), raw);
+        //TODO: do not convert to boxed slice if it already is one
+        self.write_cache.insert(
+            block.addr(),
+            block.data().deref().to_vec().into_boxed_slice(),
+        );
 
         Ok(block.create_ptr())
     }
 
-    pub fn read_tree<T: Default + DerefMut<Target = [u8]>>(
+    pub fn read_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: TreePtr<T>,
     ) -> Result<TreeData<T>> {
@@ -351,7 +399,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let raw = self.read_block(l0.data().ptrs[i0])?;
 
         //TODO: transmute instead of copy?
-        let mut data = T::default();
+        let mut data = match T::empty(BlockLevel::default()) {
+            Some(some) => some,
+            None => {
+                #[cfg(feature = "log")]
+                log::error!("READ_TREE: INVALID BLOCK LEVEL FOR TYPE");
+                return Err(Error::new(ENOENT));
+            }
+        };
         data.copy_from_slice(raw.data());
 
         Ok(TreeData::new(ptr.id(), data))
@@ -368,11 +423,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
         unsafe {
             let mut l3 = self.read_block(self.header.tree)?;
             for i3 in 0..l3.data().ptrs.len() {
-                let mut l2 = self.read_block_or_default(l3.data().ptrs[i3])?;
+                let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
                 for i2 in 0..l2.data().ptrs.len() {
-                    let mut l1 = self.read_block_or_default(l2.data().ptrs[i2])?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     for i1 in 0..l1.data().ptrs.len() {
-                        let mut l0 = self.read_block_or_default(l1.data().ptrs[i1])?;
+                        let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
                         for i0 in 0..l0.data().ptrs.len() {
                             let pn = l0.data().ptrs[i0];
 
@@ -456,11 +511,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
         children: &mut Vec<DirEntry>,
     ) -> Result<()> {
         let parent = self.read_tree(parent_ptr)?;
-        for block_offset in 0..(parent.data().size() / BLOCK_SIZE) {
-            let block_ptr = self.node_block_ptr(&parent, block_offset)?;
+        let record_level = parent.data().record_level();
+        for record_offset in 0..(parent.data().size() / record_level.bytes()) {
+            let block_ptr = self.node_record_ptr(&parent, record_offset)?;
             let dir_ptr: BlockPtr<DirList> = unsafe { block_ptr.cast() };
             let dir = self.read_block(dir_ptr)?;
-            for entry in dir.data().entries {
+            for entry in dir.data().entries.iter() {
                 let node_ptr = entry.node_ptr();
 
                 // Skip empty entries
@@ -468,7 +524,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     continue;
                 }
 
-                children.push(entry);
+                children.push(*entry);
             }
         }
 
@@ -478,11 +534,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
     //TODO: improve performance (h-tree?)
     pub fn find_node(&mut self, parent_ptr: TreePtr<Node>, name: &str) -> Result<TreeData<Node>> {
         let parent = self.read_tree(parent_ptr)?;
-        for block_offset in 0..(parent.data().size() / BLOCK_SIZE) {
-            let block_ptr = self.node_block_ptr(&parent, block_offset)?;
+        let record_level = parent.data().record_level();
+        for block_offset in 0..(parent.data().size() / record_level.bytes()) {
+            let block_ptr = self.node_record_ptr(&parent, block_offset)?;
             let dir_ptr: BlockPtr<DirList> = unsafe { block_ptr.cast() };
             let dir = self.read_block(dir_ptr)?;
-            for entry in dir.data().entries {
+            for entry in dir.data().entries.iter() {
                 let node_ptr = entry.node_ptr();
 
                 // Skip empty entries
@@ -523,7 +580,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         unsafe {
             let parent = self.read_tree(parent_ptr)?;
             let node_block_data = BlockData::new(
-                self.allocate()?,
+                self.allocate(BlockLevel::default())?,
                 Node::new(
                     mode,
                     parent.data().uid(),
@@ -564,10 +621,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         let entry = DirEntry::new(node_ptr, name).ok_or(Error::new(EINVAL))?;
 
-        let block_end = parent.data().size() / BLOCK_SIZE;
-        for block_offset in 0..block_end {
-            let mut dir_block_ptr = self.node_block_ptr(&parent, block_offset)?;
-            let mut dir_ptr: BlockPtr<DirList> = unsafe { dir_block_ptr.cast() };
+        let record_level = parent.data().record_level();
+        let record_end = parent.data().size() / record_level.bytes();
+        for record_offset in 0..record_end {
+            let mut dir_record_ptr = self.node_record_ptr(&parent, record_offset)?;
+            let mut dir_ptr: BlockPtr<DirList> = unsafe { dir_record_ptr.cast() };
             let mut dir = self.read_block(dir_ptr)?;
             let mut dir_changed = false;
             for old_entry in dir.data_mut().entries.iter_mut() {
@@ -582,9 +640,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
             }
             if dir_changed {
                 dir_ptr = self.sync_block(dir)?;
-                dir_block_ptr = unsafe { dir_ptr.cast() };
+                dir_record_ptr = unsafe { dir_ptr.cast() };
 
-                self.sync_node_block_ptr(&mut parent, block_offset, dir_block_ptr)?;
+                self.sync_node_record_ptr(&mut parent, record_offset, dir_record_ptr)?;
                 self.sync_trees(&[parent, node])?;
 
                 return Ok(());
@@ -592,13 +650,16 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         // Append a new dirlist, with first entry set to new entry
-        let mut dir = BlockData::new(unsafe { self.allocate()? }, DirList::default());
+        let mut dir =
+            BlockData::<DirList>::empty(unsafe { self.allocate(BlockLevel::default())? }).unwrap();
         dir.data_mut().entries[0] = entry;
         let dir_ptr = unsafe { self.write_block(dir)? };
-        let dir_block_ptr: BlockPtr<BlockRaw> = unsafe { dir_ptr.cast() };
+        let dir_record_ptr = unsafe { dir_ptr.cast() };
 
-        self.sync_node_block_ptr(&mut parent, block_end, dir_block_ptr)?;
-        parent.data_mut().set_size((block_end + 1) * BLOCK_SIZE);
+        self.sync_node_record_ptr(&mut parent, record_end, dir_record_ptr)?;
+        parent
+            .data_mut()
+            .set_size((record_end + 1) * record_level.bytes());
         self.sync_trees(&[parent, node])?;
 
         Ok(())
@@ -606,10 +667,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
     pub fn remove_node(&mut self, parent_ptr: TreePtr<Node>, name: &str, mode: u16) -> Result<()> {
         let mut parent = self.read_tree(parent_ptr)?;
-        let blocks = parent.data().size() / BLOCK_SIZE;
-        for block_offset in 0..blocks {
-            let mut dir_block_ptr = self.node_block_ptr(&parent, block_offset)?;
-            let mut dir_ptr: BlockPtr<DirList> = unsafe { dir_block_ptr.cast() };
+        let record_level = parent.data().record_level();
+        let records = parent.data().size() / record_level.bytes();
+        for record_offset in 0..records {
+            let mut dir_record_ptr = self.node_record_ptr(&parent, record_offset)?;
+            let mut dir_ptr: BlockPtr<DirList> = unsafe { dir_record_ptr.cast() };
             let mut dir = self.read_block(dir_ptr)?;
             let mut node_opt = None;
             for entry in dir.data_mut().entries.iter_mut() {
@@ -658,15 +720,32 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     self.truncate_node_inner(&mut node, 0)?;
                 }
 
-                if block_offset == blocks - 1 && dir.data().is_empty() {
-                    // Remove empty parent block, if it is at the end
-                    self.remove_node_block_ptr(&mut parent, block_offset)?;
-                    parent.data_mut().set_size(block_offset * BLOCK_SIZE);
+                if record_offset == records - 1 && dir.data().is_empty() {
+                    let mut remove_record = record_offset;
+                    loop {
+                        // Remove empty parent record, if it is at the end
+                        self.remove_node_record_ptr(&mut parent, remove_record)?;
+                        parent
+                            .data_mut()
+                            .set_size(remove_record * record_level.bytes());
+
+                        // Keep going for any other empty records
+                        if remove_record > 0 {
+                            remove_record -= 1;
+                            dir_record_ptr = self.node_record_ptr(&parent, remove_record)?;
+                            dir_ptr = unsafe { dir_record_ptr.cast() };
+                            dir = self.read_block(dir_ptr)?;
+                            if dir.data().is_empty() {
+                                continue;
+                            }
+                        }
+                        break;
+                    }
                 } else {
-                    // Save new parent block
+                    // Save new parent record
                     dir_ptr = self.sync_block(dir)?;
-                    dir_block_ptr = unsafe { dir_ptr.cast() };
-                    self.sync_node_block_ptr(&mut parent, block_offset, dir_block_ptr)?;
+                    dir_record_ptr = unsafe { dir_ptr.cast() };
+                    self.sync_node_record_ptr(&mut parent, record_offset, dir_record_ptr)?;
                 }
 
                 // Sync both parent and node at the same time
@@ -716,153 +795,157 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    fn node_block_ptr(
+    fn node_record_ptr(
         &mut self,
         node: &TreeData<Node>,
-        block_offset: u64,
-    ) -> Result<BlockPtr<BlockRaw>> {
-        match NodeLevel::new(block_offset).ok_or(Error::new(ERANGE))? {
-            NodeLevel::L0(i0) => Ok(node.data().level0[i0]),
-            NodeLevel::L1(i1, i0) => {
-                let l0 = self.read_block(node.data().level1[i1])?;
-                Ok(l0.data().ptrs[i0])
-            }
-            NodeLevel::L2(i2, i1, i0) => {
-                let l1 = self.read_block(node.data().level2[i2])?;
-                let l0 = self.read_block(l1.data().ptrs[i1])?;
-                Ok(l0.data().ptrs[i0])
-            }
-            NodeLevel::L3(i3, i2, i1, i0) => {
-                let l2 = self.read_block(node.data().level3[i3])?;
-                let l1 = self.read_block(l2.data().ptrs[i2])?;
-                let l0 = self.read_block(l1.data().ptrs[i1])?;
-                Ok(l0.data().ptrs[i0])
-            }
-            NodeLevel::L4(i4, i3, i2, i1, i0) => {
-                let l3 = self.read_block(node.data().level4[i4])?;
-                let l2 = self.read_block(l3.data().ptrs[i3])?;
-                let l1 = self.read_block(l2.data().ptrs[i2])?;
-                let l0 = self.read_block(l1.data().ptrs[i1])?;
-                Ok(l0.data().ptrs[i0])
+        record_offset: u64,
+    ) -> Result<BlockPtr<RecordRaw>> {
+        unsafe {
+            match NodeLevel::new(record_offset).ok_or(Error::new(ERANGE))? {
+                NodeLevel::L0(i0) => Ok(node.data().level0[i0]),
+                NodeLevel::L1(i1, i0) => {
+                    let l0 = self.read_block_or_empty(node.data().level1[i1])?;
+                    Ok(l0.data().ptrs[i0])
+                }
+                NodeLevel::L2(i2, i1, i0) => {
+                    let l1 = self.read_block_or_empty(node.data().level2[i2])?;
+                    let l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    Ok(l0.data().ptrs[i0])
+                }
+                NodeLevel::L3(i3, i2, i1, i0) => {
+                    let l2 = self.read_block_or_empty(node.data().level3[i3])?;
+                    let l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
+                    let l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    Ok(l0.data().ptrs[i0])
+                }
+                NodeLevel::L4(i4, i3, i2, i1, i0) => {
+                    let l3 = self.read_block_or_empty(node.data().level4[i4])?;
+                    let l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
+                    let l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
+                    let l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    Ok(l0.data().ptrs[i0])
+                }
             }
         }
     }
 
-    fn remove_node_block_ptr(
+    fn remove_node_record_ptr(
         &mut self,
         node: &mut TreeData<Node>,
-        block_offset: u64,
-    ) -> Result<()> {
-        match NodeLevel::new(block_offset).ok_or(Error::new(ERANGE))? {
-            NodeLevel::L0(i0) => {
-                self.deallocate_block(node.data_mut().level0[i0].clear());
-            }
-            NodeLevel::L1(i1, i0) => {
-                let mut l0 = self.read_block(node.data().level1[i1])?;
-                self.deallocate_block(l0.data_mut().ptrs[i0].clear());
-                if l0.data().is_empty() {
-                    self.deallocate_block(node.data_mut().level1[i1].clear());
-                } else {
-                    node.data_mut().level1[i1] = self.sync_block(l0)?;
-                }
-            }
-            NodeLevel::L2(i2, i1, i0) => {
-                let mut l1 = self.read_block(node.data().level2[i2])?;
-                let mut l0 = self.read_block(l1.data().ptrs[i1])?;
-                self.deallocate_block(l0.data_mut().ptrs[i0].clear());
-                if l0.data().is_empty() {
-                    self.deallocate_block(l1.data_mut().ptrs[i1].clear());
-                } else {
-                    l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
-                }
-                if l1.data().is_empty() {
-                    self.deallocate_block(node.data_mut().level2[i2].clear());
-                } else {
-                    node.data_mut().level2[i2] = self.sync_block(l1)?;
-                }
-            }
-            NodeLevel::L3(i3, i2, i1, i0) => {
-                let mut l2 = self.read_block(node.data().level3[i3])?;
-                let mut l1 = self.read_block(l2.data().ptrs[i2])?;
-                let mut l0 = self.read_block(l1.data().ptrs[i1])?;
-                self.deallocate_block(l0.data_mut().ptrs[i0].clear());
-                if l0.data().is_empty() {
-                    self.deallocate_block(l1.data_mut().ptrs[i1].clear());
-                } else {
-                    l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
-                }
-                if l1.data().is_empty() {
-                    self.deallocate_block(l2.data_mut().ptrs[i2].clear());
-                } else {
-                    l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
-                }
-                if l2.data().is_empty() {
-                    self.deallocate_block(node.data_mut().level3[i3].clear());
-                } else {
-                    node.data_mut().level3[i3] = self.sync_block(l2)?;
-                }
-            }
-            NodeLevel::L4(i4, i3, i2, i1, i0) => {
-                let mut l3 = self.read_block(node.data().level4[i4])?;
-                let mut l2 = self.read_block(l3.data().ptrs[i3])?;
-                let mut l1 = self.read_block(l2.data().ptrs[i2])?;
-                let mut l0 = self.read_block(l1.data().ptrs[i1])?;
-                self.deallocate_block(l0.data_mut().ptrs[i0].clear());
-                if l0.data().is_empty() {
-                    self.deallocate_block(l1.data_mut().ptrs[i1].clear());
-                } else {
-                    l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
-                }
-                if l1.data().is_empty() {
-                    self.deallocate_block(l2.data_mut().ptrs[i2].clear());
-                } else {
-                    l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
-                }
-                if l2.data().is_empty() {
-                    self.deallocate_block(l3.data_mut().ptrs[i3].clear());
-                } else {
-                    l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
-                }
-                if l3.data().is_empty() {
-                    self.deallocate_block(node.data_mut().level4[i4].clear());
-                } else {
-                    node.data_mut().level4[i4] = self.sync_block(l3)?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn sync_node_block_ptr(
-        &mut self,
-        node: &mut TreeData<Node>,
-        block_offset: u64,
-        ptr: BlockPtr<BlockRaw>,
+        record_offset: u64,
     ) -> Result<()> {
         unsafe {
-            match NodeLevel::new(block_offset).ok_or(Error::new(ERANGE))? {
+            match NodeLevel::new(record_offset).ok_or(Error::new(ERANGE))? {
+                NodeLevel::L0(i0) => {
+                    self.deallocate_block(node.data_mut().level0[i0].clear());
+                }
+                NodeLevel::L1(i1, i0) => {
+                    let mut l0 = self.read_block_or_empty(node.data().level1[i1])?;
+                    self.deallocate_block(l0.data_mut().ptrs[i0].clear());
+                    if l0.data().is_empty() {
+                        self.deallocate_block(node.data_mut().level1[i1].clear());
+                    } else {
+                        node.data_mut().level1[i1] = self.sync_block(l0)?;
+                    }
+                }
+                NodeLevel::L2(i2, i1, i0) => {
+                    let mut l1 = self.read_block_or_empty(node.data().level2[i2])?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    self.deallocate_block(l0.data_mut().ptrs[i0].clear());
+                    if l0.data().is_empty() {
+                        self.deallocate_block(l1.data_mut().ptrs[i1].clear());
+                    } else {
+                        l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
+                    }
+                    if l1.data().is_empty() {
+                        self.deallocate_block(node.data_mut().level2[i2].clear());
+                    } else {
+                        node.data_mut().level2[i2] = self.sync_block(l1)?;
+                    }
+                }
+                NodeLevel::L3(i3, i2, i1, i0) => {
+                    let mut l2 = self.read_block_or_empty(node.data().level3[i3])?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    self.deallocate_block(l0.data_mut().ptrs[i0].clear());
+                    if l0.data().is_empty() {
+                        self.deallocate_block(l1.data_mut().ptrs[i1].clear());
+                    } else {
+                        l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
+                    }
+                    if l1.data().is_empty() {
+                        self.deallocate_block(l2.data_mut().ptrs[i2].clear());
+                    } else {
+                        l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
+                    }
+                    if l2.data().is_empty() {
+                        self.deallocate_block(node.data_mut().level3[i3].clear());
+                    } else {
+                        node.data_mut().level3[i3] = self.sync_block(l2)?;
+                    }
+                }
+                NodeLevel::L4(i4, i3, i2, i1, i0) => {
+                    let mut l3 = self.read_block_or_empty(node.data().level4[i4])?;
+                    let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    self.deallocate_block(l0.data_mut().ptrs[i0].clear());
+                    if l0.data().is_empty() {
+                        self.deallocate_block(l1.data_mut().ptrs[i1].clear());
+                    } else {
+                        l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
+                    }
+                    if l1.data().is_empty() {
+                        self.deallocate_block(l2.data_mut().ptrs[i2].clear());
+                    } else {
+                        l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
+                    }
+                    if l2.data().is_empty() {
+                        self.deallocate_block(l3.data_mut().ptrs[i3].clear());
+                    } else {
+                        l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
+                    }
+                    if l3.data().is_empty() {
+                        self.deallocate_block(node.data_mut().level4[i4].clear());
+                    } else {
+                        node.data_mut().level4[i4] = self.sync_block(l3)?;
+                    }
+                }
+            }
+
+            Ok(())
+        }
+    }
+
+    fn sync_node_record_ptr(
+        &mut self,
+        node: &mut TreeData<Node>,
+        record_offset: u64,
+        ptr: BlockPtr<RecordRaw>,
+    ) -> Result<()> {
+        unsafe {
+            match NodeLevel::new(record_offset).ok_or(Error::new(ERANGE))? {
                 NodeLevel::L0(i0) => {
                     node.data_mut().level0[i0] = ptr;
                 }
                 NodeLevel::L1(i1, i0) => {
-                    let mut l0 = self.read_block_or_default(node.data().level1[i1])?;
+                    let mut l0 = self.read_block_or_empty(node.data().level1[i1])?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     node.data_mut().level1[i1] = self.sync_block(l0)?;
                 }
                 NodeLevel::L2(i2, i1, i0) => {
-                    let mut l1 = self.read_block_or_default(node.data().level2[i2])?;
-                    let mut l0 = self.read_block_or_default(l1.data().ptrs[i1])?;
+                    let mut l1 = self.read_block_or_empty(node.data().level2[i2])?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
                     node.data_mut().level2[i2] = self.sync_block(l1)?;
                 }
                 NodeLevel::L3(i3, i2, i1, i0) => {
-                    let mut l2 = self.read_block_or_default(node.data().level3[i3])?;
-                    let mut l1 = self.read_block_or_default(l2.data().ptrs[i2])?;
-                    let mut l0 = self.read_block_or_default(l1.data().ptrs[i1])?;
+                    let mut l2 = self.read_block_or_empty(node.data().level3[i3])?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
@@ -870,10 +953,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     node.data_mut().level3[i3] = self.sync_block(l2)?;
                 }
                 NodeLevel::L4(i4, i3, i2, i1, i0) => {
-                    let mut l3 = self.read_block_or_default(node.data().level4[i4])?;
-                    let mut l2 = self.read_block_or_default(l3.data().ptrs[i3])?;
-                    let mut l1 = self.read_block_or_default(l2.data().ptrs[i2])?;
-                    let mut l0 = self.read_block_or_default(l1.data().ptrs[i1])?;
+                    let mut l3 = self.read_block_or_empty(node.data().level4[i4])?;
+                    let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
@@ -894,17 +977,20 @@ impl<'a, D: Disk> Transaction<'a, D> {
         buf: &mut [u8],
     ) -> Result<usize> {
         let node_size = node.data().size();
+        let record_level = node.data().record_level();
         let mut i = 0;
         while i < buf.len() && offset < node_size {
-            let block_ptr = self.node_block_ptr(node, offset / BLOCK_SIZE)?;
-            let block = self.read_block(block_ptr)?;
-
-            let j = (offset % BLOCK_SIZE) as usize;
+            let j = (offset % record_level.bytes()) as usize;
             let len = min(
                 buf.len() - i,
-                min(BLOCK_SIZE - j as u64, node_size - offset) as usize,
+                min(record_level.bytes() - j as u64, node_size - offset) as usize,
             );
-            buf[i..i + len].copy_from_slice(&block.data()[j..j + len]);
+            let level = BlockLevel::for_bytes((j + len) as u64);
+
+            let record_ptr = self.node_record_ptr(node, offset / record_level.bytes())?;
+            let record = unsafe { self.read_record(record_ptr, level)? };
+
+            buf[i..i + len].copy_from_slice(&record.data()[j..j + len]);
 
             i += len;
             offset += len as u64;
@@ -944,6 +1030,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
     pub fn truncate_node_inner(&mut self, node: &mut TreeData<Node>, size: u64) -> Result<bool> {
         let old_size = node.data().size();
+        let record_level = node.data().record_level();
 
         // Size already matches, return
         if old_size == size {
@@ -952,23 +1039,32 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         if old_size < size {
             // If size is smaller, write zeroes until the size matches
-            let zeroes = [0; BLOCK_SIZE as usize];
+            let zeroes = RecordRaw::empty(record_level).unwrap();
 
             let mut offset = old_size;
             while offset < size {
-                let start = offset % BLOCK_SIZE;
-                let end = if offset / BLOCK_SIZE == size / BLOCK_SIZE {
-                    size % BLOCK_SIZE
+                let start = offset % record_level.bytes();
+                if start == 0 {
+                    // We don't have to write completely zero records as read will interpret
+                    // null record pointers as zero records
+                    offset = size;
+                    break;
+                }
+                let end = if offset / record_level.bytes() == size / record_level.bytes() {
+                    size % record_level.bytes()
                 } else {
-                    BLOCK_SIZE
+                    record_level.bytes()
                 };
                 self.write_node_inner(node, &mut offset, &zeroes[start as usize..end as usize])?;
             }
             assert_eq!(offset, size);
         } else {
-            // Deallocate blocks
-            for block in ((size + BLOCK_SIZE - 1) / BLOCK_SIZE..old_size / BLOCK_SIZE).rev() {
-                self.remove_node_block_ptr(node, block)?;
+            // Deallocate records
+            for record in ((size + record_level.bytes() - 1) / record_level.bytes()
+                ..old_size / record_level.bytes())
+                .rev()
+            {
+                self.remove_node_record_ptr(node, record)?;
             }
         }
 
@@ -1006,32 +1102,35 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ) -> Result<bool> {
         let mut node_changed = false;
 
-        let node_blocks = (node.data().size() + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let record_level = node.data().record_level();
+        let node_records = (node.data().size() + record_level.bytes() - 1) / record_level.bytes();
 
         let mut i = 0;
         while i < buf.len() {
-            let mut block_ptr = if node_blocks > (*offset / BLOCK_SIZE) {
-                self.node_block_ptr(node, *offset / BLOCK_SIZE)?
+            let j = (*offset % record_level.bytes()) as usize;
+            let len = min(buf.len() - i, record_level.bytes() as usize - j);
+            let level = BlockLevel::for_bytes((j + len) as u64);
+
+            let mut record_ptr = if node_records > (*offset / record_level.bytes()) {
+                self.node_record_ptr(node, *offset / record_level.bytes())?
             } else {
-                BlockPtr::default()
+                BlockPtr::null(level)
             };
-            let mut block = unsafe { self.read_block_or_default(block_ptr)? };
+            let mut record = unsafe { self.read_record(record_ptr, level)? };
 
-            let j = (*offset % BLOCK_SIZE) as usize;
-            let len = min(buf.len() - i, BLOCK_SIZE as usize - j);
-            if block_ptr.is_null() || buf[i..i + len] != block.data()[j..j + len] {
+            if buf[i..i + len] != record.data()[j..j + len] {
                 unsafe {
-                    let old_addr = block.swap_addr(self.allocate()?);
+                    let old_addr = record.swap_addr(self.allocate(level)?);
 
-                    block.data_mut()[j..j + len].copy_from_slice(&buf[i..i + len]);
-                    block_ptr = self.write_block(block)?;
+                    record.data_mut()[j..j + len].copy_from_slice(&buf[i..i + len]);
+                    record_ptr = self.write_block(record)?;
 
-                    if old_addr != 0 {
+                    if !old_addr.is_null() {
                         self.deallocate(old_addr);
                     }
                 }
 
-                self.sync_node_block_ptr(node, *offset / BLOCK_SIZE, block_ptr)?;
+                self.sync_node_record_ptr(node, *offset / record_level.bytes(), record_ptr)?;
                 node_changed = true;
             }
 
