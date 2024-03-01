@@ -262,9 +262,9 @@ checksum = "384c2842d4e069d5ccacf5fe1dca4ef8d07a5444329715f0fc3c61813502d4d1"
 
 [[package]]
 name = "redox-path"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64072665120942deff5fd5425d6c1811b854f4939e7f1c01ce755f64432bbea7"
+checksum = "d515f4eec916ba5ea351bd7ad7b25232af420282e88c932b29b2a4e807538e19"
 
 [[package]]
 name = "redox_simple_endian"

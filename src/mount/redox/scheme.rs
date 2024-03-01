@@ -15,7 +15,7 @@ use syscall::flag::{
 use syscall::scheme::SchemeMut;
 use syscall::{MunmapFlags, EBADFD};
 
-use redox_path::{canonicalize_using_cwd, canonicalize_using_scheme, RedoxPath};
+use redox_path::{canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path, RedoxPath};
 
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
@@ -50,10 +50,10 @@ impl<D: Disk> FileScheme<D> {
         nodes: &mut Vec<(TreeData<Node>, String)>,
     ) -> Result<String> {
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let scheme_path = canonicalize_using_scheme(scheme_name, "").ok_or(Error::new(EINVAL))?;
 
         // symbolic link is relative to this part of the url
-        let mut working_dir = dirname(full_path).unwrap_or(scheme_path.to_string());
+        let mut working_dir =
+            dirname(full_path).unwrap_or(scheme_path(scheme_name).ok_or(Error::new(EINVAL))?);
         // node of the link
         let mut node = node;
 
@@ -69,40 +69,18 @@ impl<D: Disk> FileScheme<D> {
                 atime.subsec_nanos(),
             )?;
 
-            let target = canonicalize_using_cwd(
+            let target = canonicalize_to_standard(
                 Some(&working_dir),
                 str::from_utf8(&buf[..count]).or(Err(Error::new(EINVAL)))?,
             )
             .ok_or(Error::new(EINVAL))?;
             let target_as_path = RedoxPath::from_absolute(&target).ok_or(Error::new(EINVAL))?;
 
-            let target_reference = match target_as_path {
-                RedoxPath::Standard(_) => {
-                    let (scheme, reference) =
-                        target_as_path.as_parts().ok_or(Error::new(EINVAL))?;
-                    if scheme.as_ref() != scheme_name {
-                        return Err(Error::new(EXDEV));
-                    }
-                    reference.as_ref().to_string()
-                }
-                RedoxPath::Legacy(scheme, reference) => {
-                    // Legacy references are not canonicalized because they can contain coded information
-                    // We know this is a `file:` reference, so canonicalize into a Standard path
-                    if scheme.as_ref() != scheme_name {
-                        return Err(Error::new(EXDEV));
-                    }
-                    let target = canonicalize_using_scheme(scheme_name, reference.as_ref())
-                        .ok_or(Error::new(EINVAL))?;
-                    let target_as_path =
-                        RedoxPath::from_absolute(&target).ok_or(Error::new(EINVAL))?;
-                    let (scheme, reference) =
-                        target_as_path.as_parts().ok_or(Error::new(EINVAL))?;
-                    if scheme.as_ref() != scheme_name {
-                        return Err(Error::new(EXDEV));
-                    }
-                    reference.as_ref().to_string()
-                }
-            };
+            let (scheme, reference) = target_as_path.as_parts().ok_or(Error::new(EINVAL))?;
+            if scheme.as_ref() != scheme_name {
+                return Err(Error::new(EXDEV));
+            }
+            let target_reference = reference.to_string();
 
             nodes.clear();
             if let Some((next_node, next_node_name)) =
@@ -110,7 +88,7 @@ impl<D: Disk> FileScheme<D> {
             {
                 if !next_node.data().is_symlink() {
                     nodes.push((next_node, next_node_name));
-                    return Ok(target_reference.to_string());
+                    return Ok(target_reference);
                 }
                 node = next_node;
                 working_dir = dirname(&target).ok_or(Error::new(EINVAL))?.to_string();
