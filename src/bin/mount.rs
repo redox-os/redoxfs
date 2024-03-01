@@ -207,17 +207,19 @@ fn filesystem_by_uuid(
 ) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
     use std::fs;
 
-    use redox_path::canonicalize_using_scheme;
+    use redox_path::RedoxPath;
 
     match fs::read_dir("/scheme") {
         Ok(entries) => {
             for entry_res in entries {
                 if let Ok(entry) = entry_res {
-                    if let Ok(scheme) = entry.file_name().into_string() {
-                        if scheme.starts_with("disk") {
-                            println!("redoxfs: found scheme {}", scheme);
-                            let scheme_path = canonicalize_using_scheme(&scheme, "")?;
-                            match fs::read_dir(scheme_path) {
+                    if let Some(disk) = entry.path().to_str() {
+                        if RedoxPath::from_absolute(disk)
+                            .unwrap_or(RedoxPath::from_absolute("/")?)
+                            .is_scheme_category("disk")
+                        {
+                            println!("redoxfs: found scheme {}", disk);
+                            match fs::read_dir(disk) {
                                 Ok(entries) => {
                                     for entry_res in entries {
                                         if let Ok(entry) = entry_res {
@@ -249,7 +251,7 @@ fn filesystem_by_uuid(
                                     }
                                 }
                                 Err(err) => {
-                                    println!("redoxfs: failed to list '{}': {}", scheme, err);
+                                    println!("redoxfs: failed to list '{}': {}", disk, err);
                                 }
                             }
                         }
