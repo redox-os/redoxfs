@@ -12,11 +12,7 @@ use syscall::error::{
     Error, Result, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, ERANGE,
 };
 
-use crate::{
-    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait,
-    DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr,
-    ALLOC_LIST_ENTRIES, HEADER_RING,
-};
+use crate::{AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr, ALLOC_LIST_ENTRIES, HEADER_RING, DIR_ENTRY_MAX_LENGTH};
 
 pub struct Transaction<'a, D: Disk> {
     fs: &'a mut FileSystem<D>,
@@ -569,12 +565,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         ctime: u64,
         ctime_nsec: u32,
     ) -> Result<TreeData<Node>> {
-        if name.contains(':') {
-            return Err(Error::new(EINVAL));
-        }
-
-        if self.find_node(parent_ptr, name).is_ok() {
-            return Err(Error::new(EEXIST));
+        if let Err(err)  = self.check_name(&parent_ptr, &name){
+            return Err(err);
         }
 
         unsafe {
@@ -605,21 +597,17 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         node_ptr: TreePtr<Node>,
     ) -> Result<()> {
-        if name.contains(':') {
-            return Err(Error::new(EINVAL));
-        }
+       if let Err(err)  = self.check_name(&parent_ptr, &name){
+           return Err(err);
+       }
 
-        if self.find_node(parent_ptr, name).is_ok() {
-            return Err(Error::new(EEXIST));
-        }
+        let entry = DirEntry::new(node_ptr, name);
 
         let mut parent = self.read_tree(parent_ptr)?;
 
         let mut node = self.read_tree(node_ptr)?;
         let links = node.data().links();
         node.data_mut().set_links(links + 1);
-
-        let entry = DirEntry::new(node_ptr, name).ok_or(Error::new(EINVAL))?;
 
         let record_level = parent.data().record_level();
         let record_end = parent.data().size() / record_level.bytes();
@@ -791,6 +779,24 @@ impl<'a, D: Disk> Transaction<'a, D> {
             orig_name,
             orig.data().mode() & Node::MODE_TYPE,
         )?;
+
+        Ok(())
+    }
+
+    fn check_name(&mut self,
+                  parent_ptr: &TreePtr<Node>,
+                  name: &str) -> Result<()> {
+        if name.contains(':') {
+            return Err(Error::new(EINVAL));
+        }
+
+        if name.len() > DIR_ENTRY_MAX_LENGTH {
+            return Err(Error::new(EINVAL));
+        }
+
+        if self.find_node(parent_ptr.clone(), name).is_ok() {
+            return Err(Error::new(EEXIST));
+        }
 
         Ok(())
     }
