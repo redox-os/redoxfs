@@ -14,8 +14,8 @@ else
 endif
 
 image.bin:
-	dd if=/dev/zero of=image.bin bs=1048576 count=1024
 	cargo build --release --bin redoxfs-mkfs
+	dd if=/dev/zero of=image.bin bs=1048576 count=1024
 	target/release/redoxfs-mkfs image.bin
 
 mount: image.bin FORCE

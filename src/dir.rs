@@ -1,28 +1,24 @@
 use alloc::{boxed::Box, vec};
 use core::{mem, ops, slice, str};
 
-use crate::{BlockLevel, BlockTrait, Node, TreePtr, RECORD_LEVEL};
+use crate::{BlockLevel, BlockTrait, Node, TreePtr, RECORD_LEVEL, DIR_ENTRY_MAX_LENGTH};
 
 #[repr(packed)]
 pub struct DirEntry {
     node_ptr: TreePtr<Node>,
-    name: [u8; 252],
+    name: [u8; DIR_ENTRY_MAX_LENGTH],
 }
 
 impl DirEntry {
-    pub fn new(node_ptr: TreePtr<Node>, name: &str) -> Option<DirEntry> {
+    pub fn new(node_ptr: TreePtr<Node>, name: &str) -> DirEntry {
         let mut entry = DirEntry {
             node_ptr,
             ..Default::default()
         };
 
-        if name.len() > entry.name.len() {
-            return None;
-        }
-
         entry.name[..name.len()].copy_from_slice(name.as_bytes());
 
-        Some(entry)
+        entry
     }
 
     pub fn node_ptr(&self) -> TreePtr<Node> {
@@ -54,7 +50,7 @@ impl Default for DirEntry {
     fn default() -> Self {
         Self {
             node_ptr: TreePtr::default(),
-            name: [0; 252],
+            name: [0; DIR_ENTRY_MAX_LENGTH],
         }
     }
 }
