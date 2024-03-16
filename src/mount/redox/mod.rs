@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use syscall::{Packet, SchemeMut};
+use syscall::{Packet, SchemeMut, KSMSG_CANCEL};
 
 use crate::{Disk, FileSystem, Transaction, IS_UMT};
 
@@ -37,6 +37,12 @@ where
                     return Err(err);
                 }
             }
+        }
+
+        // TODO: Redoxfs does not yet support asynchronous file IO. It might still make sense to
+        // implement cancellation for huge buffers, e.g. dd bs=1G
+        if packet.a == KSMSG_CANCEL {
+            continue;
         }
 
         scheme.handle(&mut packet);
