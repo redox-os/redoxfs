@@ -69,11 +69,12 @@ fn bootloader_password() -> Option<Vec<u8>> {
 
 #[cfg(target_os = "redox")]
 fn capability_mode() {
-    syscall::setrens(0, 0).expect("redoxfs: failed to enter null namespace");
+    libredox::call::setrens(0, 0).expect("redoxfs: failed to enter null namespace");
 }
 
 #[cfg(target_os = "redox")]
 fn bootloader_password() -> Option<Vec<u8>> {
+    use libredox::call::MmapArgs;
     use syscall::MapFlags;
 
     let addr_env = env::var_os("REDOXFS_PASSWORD_ADDR")?;
@@ -95,27 +96,23 @@ fn bootloader_password() -> Option<Vec<u8>> {
     unsafe {
         let aligned_size = size.next_multiple_of(syscall::PAGE_SIZE);
 
-        let fd = syscall::open("memory:physical", syscall::O_CLOEXEC)
+        let fd = libredox::Fd::open("memory:physical", libredox::flag::O_CLOEXEC, 0)
             .expect("failed to open physical memory file");
 
-        let password_map = syscall::fmap(
-            fd,
-            &syscall::Map {
-                offset: addr,
-                size: aligned_size,
-                flags: MapFlags::PROT_READ | MapFlags::MAP_SHARED,
-                address: 0, // ignored
-            },
-        )
-        .expect("failed to map REDOXFS_PASSWORD");
-
-        let _ = syscall::close(fd);
+        let password_map = libredox::call::mmap(MmapArgs {
+            addr: core::ptr::null_mut(),
+            length: aligned_size,
+            prot: libredox::flag::PROT_READ,
+            flags:  libredox::flag::MAP_SHARED,
+            fd: fd.raw(),
+            offset: addr as u64,
+        }).expect("failed to map REDOXFS_PASSWORD").cast::<u8>();
 
         for i in 0..size {
-            password.push(*((password_map + i) as *const u8));
+            password.push(password_map.add(i).read());
         }
 
-        let _ = syscall::funmap(password_map, aligned_size);
+        let _ = libredox::call::munmap(password_map.cast(), aligned_size);
     }
     Some(password)
 }

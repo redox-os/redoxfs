@@ -3,6 +3,7 @@ use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloc::collections::BTreeMap;
+use libredox::call::MmapArgs;
 use range_tree::RangeTree;
 
 use syscall::data::{Map, Stat, TimeSpec};
@@ -293,7 +294,7 @@ impl Fmap {
         {
             Ok(ok) => ok,
             Err(err) => {
-                let _ = syscall::funmap(address as usize, aligned_size);
+                let _ = libredox::call::munmap(address.cast(), aligned_size);
                 return Err(err);
             }
         };
@@ -487,19 +488,18 @@ impl<D: Disk> Resource<D> for FileResource {
         if new_size > fmap_info.size {
             fmap_info.base = if fmap_info.base.is_null() {
                 unsafe {
-                    syscall::fmap(
-                        !0,
-                        &Map {
-                            size: new_size,
-                            // PRIVATE/SHARED doesn't matter once the pages are passed in the fmap
-                            // handler.
-                            flags: MapFlags::PROT_READ
-                                | MapFlags::PROT_WRITE
-                                | MapFlags::MAP_PRIVATE,
+                    libredox::call::mmap(MmapArgs {
+                        length: new_size,
+                        // PRIVATE/SHARED doesn't matter once the pages are passed in the fmap
+                        // handler.
+                        prot: libredox::flag::PROT_READ
+                            | libredox::flag::PROT_WRITE,
+                        flags: libredox::flag::MAP_PRIVATE,
 
-                            offset: 0,
-                            address: 0,
-                        },
+                        offset: 0,
+                        fd: !0,
+                        addr: core::ptr::null_mut(),
+                    }
                     )? as *mut u8
                 }
             } else {
