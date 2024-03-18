@@ -84,30 +84,30 @@ fn mmap() {
         let path = dbg!(path.join("test"));
 
         let mmap_inner = |write: bool| {
-            let fd = dbg!(syscall::open(
+            let fd = dbg!(libredox::call::open(
                 path.to_str().unwrap(),
-                syscall::O_CREAT | syscall::O_RDWR | syscall::O_CLOEXEC
+                libredox::flag::O_CREAT | libredox::flag::O_RDWR | libredox::flag::O_CLOEXEC,
+                0,
             ))
             .unwrap();
 
             let map = unsafe {
                 slice::from_raw_parts_mut(
-                    dbg!(syscall::fmap(
+                    dbg!(libredox::call::mmap(libredox::call::MmapArgs {
                         fd,
-                        &syscall::Map {
-                            offset: 0,
-                            size: 128,
-                            flags: syscall::PROT_READ | syscall::PROT_WRITE,
-                            address: 0,
-                        }
-                    ))
+                        offset: 0,
+                        length: 128,
+                        prot: libredox::flag::PROT_READ | libredox::flag::PROT_WRITE,
+                        flags: libredox::flag::MAP_SHARED,
+                        addr: core::ptr::null_mut(),
+                    }))
                     .unwrap() as *mut u8,
                     128,
                 )
             };
 
             // Maps should be available after closing
-            assert_eq!(dbg!(syscall::close(fd)), Ok(0));
+            assert_eq!(dbg!(libredox::call::close(fd)), Ok(()));
 
             for i in 0..128 {
                 if write {
@@ -119,8 +119,8 @@ fn mmap() {
             //TODO: add msync
             unsafe {
                 assert_eq!(
-                    dbg!(syscall::funmap(map.as_mut_ptr() as usize, map.len())),
-                    Ok(0)
+                    dbg!(libredox::call::munmap(map.as_mut_ptr().cast(), map.len())),
+                    Ok(())
                 );
             }
         };
