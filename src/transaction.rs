@@ -314,12 +314,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         // Resize record if needed
-        let (old_addr, old_raw) = unsafe { record.into_parts() };
-        if !old_addr.is_null() {
-            unsafe {
-                self.deallocate(old_addr);
-            }
-        }
+        let (_old_addr, old_raw) = unsafe { record.into_parts() };
         let mut raw = match T::empty(level) {
             Some(empty) => empty,
             None => {
@@ -1126,7 +1121,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
             if buf[i..i + len] != record.data()[j..j + len] {
                 unsafe {
-                    let old_addr = record.swap_addr(self.allocate(level)?);
+                    let mut old_addr = record.swap_addr(self.allocate(level)?);
+
+                    // If the record was resized we need to dealloc the original ptr
+                    if old_addr.is_null() {
+                        old_addr = record_ptr.addr();
+                    }
 
                     record.data_mut()[j..j + len].copy_from_slice(&buf[i..i + len]);
                     record_ptr = self.write_block(record)?;
