@@ -309,11 +309,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
         level: BlockLevel,
     ) -> Result<BlockData<T>> {
         let record = unsafe { self.read_block_or_empty(ptr)? };
-        if record.addr().level() == level {
+        if record.addr().level() >= level {
+            // Return record if it is larger than or equal to requested level
             return Ok(record);
         }
 
-        // Resize record if needed
+        // Expand record if larger level requested
         let (_old_addr, old_raw) = unsafe { record.into_parts() };
         let mut raw = match T::empty(level) {
             Some(empty) => empty,
@@ -1121,7 +1122,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
             if buf[i..i + len] != record.data()[j..j + len] {
                 unsafe {
-                    let mut old_addr = record.swap_addr(self.allocate(level)?);
+                    // CoW record using its current level
+                    let mut old_addr = record.swap_addr(self.allocate(record.addr().level())?);
 
                     // If the record was resized we need to dealloc the original ptr
                     if old_addr.is_null() {
