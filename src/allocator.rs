@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::{fmt, mem, ops, slice};
-use simple_endian::*;
+use endian_num::Le;
 
 use crate::{BlockAddr, BlockLevel, BlockPtr, BlockTrait, BLOCK_SIZE};
 
@@ -125,8 +125,8 @@ impl Allocator {
 
 #[repr(packed)]
 pub struct AllocEntry {
-    index: u64le,
-    count: i64le,
+    index: Le<u64>,
+    count: Le<i64>,
 }
 
 impl AllocEntry {
@@ -146,11 +146,11 @@ impl AllocEntry {
     }
 
     pub fn index(&self) -> u64 {
-        { self.index }.to_native()
+        self.index.to_ne()
     }
 
     pub fn count(&self) -> i64 {
-        { self.count }.to_native()
+        self.count.to_ne()
     }
 
     pub fn is_null(&self) -> bool {

@@ -1,5 +1,5 @@
 use core::{marker::PhantomData, mem, ops, slice};
-use simple_endian::*;
+use endian_num::Le;
 
 use crate::{BlockLevel, BlockPtr, BlockRaw, BlockTrait};
 
@@ -87,7 +87,7 @@ impl<T> ops::DerefMut for TreeList<T> {
 
 #[repr(packed)]
 pub struct TreePtr<T> {
-    id: u32le,
+    id: Le<u32>,
     phantom: PhantomData<T>,
 }
 
@@ -116,7 +116,7 @@ impl<T> TreePtr<T> {
     }
 
     pub fn id(&self) -> u32 {
-        { self.id }.to_native()
+        self.id.to_ne()
     }
 
     pub fn is_null(&self) -> bool {

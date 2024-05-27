@@ -1,5 +1,5 @@
 use core::{fmt, mem, ops, slice};
-use simple_endian::*;
+use endian_num::Le;
 
 use crate::{BlockLevel, BlockList, BlockPtr, BlockTrait, RecordRaw, BLOCK_SIZE, RECORD_LEVEL};
 
@@ -82,18 +82,18 @@ type BlockListL4 = BlockList<BlockListL3>;
 /// A file/folder node
 #[repr(packed)]
 pub struct Node {
-    pub mode: u16le,
-    pub uid: u32le,
-    pub gid: u32le,
-    pub links: u32le,
-    pub size: u64le,
-    pub ctime: u64le,
-    pub ctime_nsec: u32le,
-    pub mtime: u64le,
-    pub mtime_nsec: u32le,
-    pub atime: u64le,
-    pub atime_nsec: u32le,
-    pub record_level: u32le,
+    pub mode: Le<u16>,
+    pub uid: Le<u32>,
+    pub gid: Le<u32>,
+    pub links: Le<u32>,
+    pub size: Le<u64>,
+    pub ctime: Le<u64>,
+    pub ctime_nsec: Le<u32>,
+    pub mtime: Le<u64>,
+    pub mtime_nsec: Le<u32>,
+    pub atime: Le<u64>,
+    pub atime_nsec: Le<u32>,
+    pub record_level: Le<u32>,
     pub padding: [u8; BLOCK_SIZE as usize - 4094],
     // 128 * RECORD_SIZE (16 MiB, 128 KiB each)
     pub level0: [BlockPtr<RecordRaw>; 128],
@@ -178,39 +178,39 @@ impl Node {
     }
 
     pub fn mode(&self) -> u16 {
-        { self.mode }.to_native()
+        self.mode.to_ne()
     }
 
     pub fn uid(&self) -> u32 {
-        { self.uid }.to_native()
+        self.uid.to_ne()
     }
 
     pub fn gid(&self) -> u32 {
-        { self.gid }.to_native()
+        self.gid.to_ne()
     }
 
     pub fn links(&self) -> u32 {
-        { self.links }.to_native()
+        self.links.to_ne()
     }
 
     pub fn size(&self) -> u64 {
-        { self.size }.to_native()
+        self.size.to_ne()
     }
 
     pub fn ctime(&self) -> (u64, u32) {
-        ({ self.ctime }.to_native(), { self.ctime_nsec }.to_native())
+        (self.ctime.to_ne(), self.ctime_nsec.to_ne())
     }
 
     pub fn mtime(&self) -> (u64, u32) {
-        ({ self.mtime }.to_native(), { self.mtime_nsec }.to_native())
+        (self.mtime.to_ne(), self.mtime_nsec.to_ne())
     }
 
     pub fn atime(&self) -> (u64, u32) {
-        ({ self.atime }.to_native(), { self.atime_nsec }.to_native())
+        (self.atime.to_ne(), self.atime_nsec.to_ne())
     }
 
     pub fn record_level(&self) -> BlockLevel {
-        BlockLevel({ self.record_level }.to_native() as usize)
+        BlockLevel(self.record_level.to_ne() as usize)
     }
 
     pub fn set_mode(&mut self, mode: u16) {

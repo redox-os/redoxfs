@@ -35,6 +35,7 @@ aes = { version = "=0.7.5", default-features = false }
 argon2 = { version = "0.3.4", default-features = false, features = ["alloc"] }
 base64ct = { version = "1", default-features = false }
 env_logger = { version = "0.9", optional = true }
+endian-num = "0.1"
 getrandom = { version = "0.2.5", optional = true }
 libc = "0.2"
 log = { version = "0.4.14", default-features = false, optional = true}
@@ -45,15 +46,6 @@ termion = { version = "2", optional = true }
 uuid = { version = "1.4", default-features = false }
 redox-path = "0.3.0"
 libredox = { version = "0.1.3", optional = true }
-
-# https://github.com/rexlunae/simple-endian-rs/pull/5
-[dependencies.redox_simple_endian]
-version = "0.3.0"
-default-features = false
-features = [
-    "bitwise", "comparisons", "format", "math_ops", "neg_ops", "shift_ops",
-    "both_endian", "float_impls", "integer_impls", "byte_impls"
-]
 
 [features]
 default = ["std", "log"]

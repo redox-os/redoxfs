@@ -1,6 +1,6 @@
 use core::ops::{Deref, DerefMut};
 use core::{fmt, mem, slice};
-use simple_endian::*;
+use endian_num::Le;
 
 use aes::{Aes128, BlockDecrypt, BlockEncrypt};
 use uuid::Uuid;
@@ -16,13 +16,13 @@ pub struct Header {
     /// Signature, should be SIGNATURE
     pub signature: [u8; 8],
     /// Version, should be VERSION
-    pub version: u64le,
+    pub version: Le<u64>,
     /// Disk ID, a 128-bit unique identifier
     pub uuid: [u8; 16],
     /// Disk size, in number of BLOCK_SIZE sectors
-    pub size: u64le,
+    pub size: Le<u64>,
     /// Generation of header
-    pub generation: u64le,
+    pub generation: Le<u64>,
     /// Block of first tree node
     pub tree: BlockPtr<Tree>,
     /// Block of last alloc node
@@ -34,7 +34,7 @@ pub struct Header {
     /// encrypted hash of header data without hash, set to hash and padded if disk is not encrypted
     pub encrypted_hash: [u8; 16],
     /// hash of header data without hash
-    pub hash: u64le,
+    pub hash: Le<u64>,
 }
 
 impl Header {
@@ -58,12 +58,12 @@ impl Header {
             return false;
         }
 
-        if { self.version }.to_native() != VERSION {
+        if self.version.to_ne() != VERSION {
             // Version does not match
             return false;
         }
 
-        if { self.hash }.to_native() != self.create_hash() {
+        if self.hash.to_ne() != self.create_hash() {
             // Hash does not match
             return false;
         }
@@ -77,11 +77,11 @@ impl Header {
     }
 
     pub fn size(&self) -> u64 {
-        { self.size }.to_native()
+        self.size.to_ne()
     }
 
     pub fn generation(&self) -> u64 {
-        { self.generation }.to_native()
+        self.generation.to_ne()
     }
 
     fn create_hash(&self) -> u64 {
@@ -94,7 +94,7 @@ impl Header {
 
     fn create_encrypted_hash(&self, aes_opt: Option<&Aes128>) -> [u8; 16] {
         let mut encrypted_hash = [0; 16];
-        for (i, b) in { self.hash }.to_native().to_le_bytes().iter().enumerate() {
+        for (i, b) in self.hash.to_le_bytes().iter().enumerate() {
             encrypted_hash[i] = *b;
         }
         if let Some(aes) = aes_opt {
@@ -212,7 +212,7 @@ fn header_hash_test() {
     let mut header = Header::default();
     assert_eq!(header.create_hash(), 0xe81ffcb86026ff96);
     header.update_hash(None);
-    assert_eq!({ header.hash }.to_native(), 0xe81ffcb86026ff96);
+    assert_eq!(header.hash.to_ne(), 0xe81ffcb86026ff96);
     assert_eq!(
         header.encrypted_hash,
         [0x96, 0xff, 0x26, 0x60, 0xb8, 0xfc, 0x1f, 0xe8, 0, 0, 0, 0, 0, 0, 0, 0]
