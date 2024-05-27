@@ -1,5 +1,5 @@
 use core::{fmt, marker::PhantomData, mem, ops, slice};
-use simple_endian::*;
+use endian_num::Le;
 
 use crate::BLOCK_SIZE;
 
@@ -178,8 +178,8 @@ impl<T> ops::DerefMut for BlockList<T> {
 
 #[repr(packed)]
 pub struct BlockPtr<T> {
-    addr: u64le,
-    hash: u64le,
+    addr: Le<u64>,
+    hash: Le<u64>,
     phantom: PhantomData<T>,
 }
 
@@ -193,11 +193,11 @@ impl<T> BlockPtr<T> {
     }
 
     pub fn addr(&self) -> BlockAddr {
-        BlockAddr({ self.addr }.to_native())
+        BlockAddr(self.addr.to_ne())
     }
 
     pub fn hash(&self) -> u64 {
-        { self.hash }.to_native()
+        self.hash.to_ne()
     }
 
     pub fn is_null(&self) -> bool {

@@ -132,6 +132,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "endian-num"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad847bb2094f110bbdd6fa564894ca4556fd978958e93985420d680d3cb6d14"
+
+[[package]]
 name = "env_logger"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -295,12 +301,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "436d45c2b6a5b159d43da708e62b25be3a4a3d5550d654b72216ade4c4bfd717"
 
 [[package]]
-name = "redox_simple_endian"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "175b27da3d5db1502bd20ae0917ba132d256a2b169f1686681304ebb86504eab"
-
-[[package]]
 name = "redox_syscall"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -331,6 +331,7 @@ dependencies = [
  "aes",
  "argon2",
  "base64ct",
+ "endian-num",
  "env_logger",
  "fuser",
  "getrandom",
@@ -339,7 +340,6 @@ dependencies = [
  "log",
  "range-tree",
  "redox-path",
- "redox_simple_endian",
  "redox_syscall 0.5.1",
  "seahash",
  "termion",
