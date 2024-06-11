@@ -12,8 +12,8 @@ use syscall::flag::{
     EventFlags, MapFlags, MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY,
     O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
-use syscall::scheme::SchemeMut;
 use syscall::{MunmapFlags, EBADFD};
+use redox_scheme::SchemeMut;
 
 use redox_path::{canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path, RedoxPath};
 

@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use syscall::{Packet, SchemeMut, KSMSG_CANCEL};
+use redox_scheme::{RequestKind, SignalBehavior, Socket, V2};
 
 use crate::{Disk, FileSystem, Transaction, IS_UMT};
 
@@ -19,35 +19,28 @@ where
 {
     let mountpoint = mountpoint.as_ref();
     let socket_path = format!(":{}", mountpoint.display());
-    let mut socket = File::create(&socket_path)?;
+    let socket = Socket::<V2>::create(&format!("{}", mountpoint.display()))?;
 
     let mounted_path = format!("{}:", mountpoint.display());
     let res = callback(Path::new(&mounted_path));
 
     let mut scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem);
     while IS_UMT.load(Ordering::SeqCst) == 0 {
-        let mut packet = Packet::default();
-        match socket.read(&mut packet) {
-            Ok(0) => break,
-            Ok(_ok) => (),
-            Err(err) => {
-                if err.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                } else {
-                    return Err(err);
-                }
+        let req = match socket.next_request(SignalBehavior::Restart)? {
+            None => break,
+            Some(req) => if let RequestKind::Call(r) = req.kind() {
+                r
+            } else {
+                // TODO: Redoxfs does not yet support asynchronous file IO. It might still make
+                // sense to implement cancellation for huge buffers, e.g. dd bs=1G
+                continue;
             }
+        };
+        let response = req.handle_scheme_mut(&mut scheme);
+
+        if !socket.write_response(response, SignalBehavior::Restart)? {
+            break;
         }
-
-        // TODO: Redoxfs does not yet support asynchronous file IO. It might still make sense to
-        // implement cancellation for huge buffers, e.g. dd bs=1G
-        if packet.a == KSMSG_CANCEL {
-            continue;
-        }
-
-        scheme.handle(&mut packet);
-
-        socket.write(&packet)?;
     }
 
     // Squash allocations and sync on unmount

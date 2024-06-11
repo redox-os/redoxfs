@@ -3,6 +3,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 // Used often in generating redox_syscall errors
 #![allow(clippy::or_fun_call)]
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 
