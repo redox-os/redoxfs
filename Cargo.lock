@@ -303,7 +303,7 @@ checksum = "436d45c2b6a5b159d43da708e62b25be3a4a3d5550d654b72216ade4c4bfd717"
 [[package]]
 name = "redox-scheme"
 version = "0.2.0"
-source = "git+https://gitlab.redox-os.org/4lDO2/redox-scheme.git?branch=schemev2#40c29c6f08e095e7b3739feae47a3c24f469c4d3"
+source = "git+https://gitlab.redox-os.org/4lDO2/redox-scheme.git?branch=schemev2plus#ca239589c873374a17715b637be1f9385345721c"
 dependencies = [
  "libredox 0.1.3",
  "redox_syscall 0.5.1",
@@ -321,7 +321,7 @@ dependencies = [
 [[package]]
 name = "redox_syscall"
 version = "0.5.1"
-source = "git+https://gitlab.redox-os.org/4lDO2/syscall.git?branch=schemev2#495a0adbd8333fd21fae2d97129b094607878ba7"
+source = "git+https://gitlab.redox-os.org/4lDO2/syscall.git?branch=schemev2plus#b4f9a8952cec870ed7f457e3c15652d09aa0c9c7"
 dependencies = [
  "bitflags 2.5.0",
 ]

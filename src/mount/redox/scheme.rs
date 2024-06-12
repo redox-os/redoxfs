@@ -12,8 +12,9 @@ use syscall::flag::{
     EventFlags, MapFlags, MODE_PERM, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY,
     O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
+use syscall::schemev2::NewFdFlags;
 use syscall::{MunmapFlags, EBADFD};
-use redox_scheme::SchemeMut;
+use redox_scheme::{CallerCtx, OpenResult, SchemeMut};
 
 use redox_path::{canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path, RedoxPath};
 
@@ -161,7 +162,9 @@ fn dirname(path: &str) -> Option<String> {
 }
 
 impl<D: Disk> SchemeMut for FileScheme<D> {
-    fn open(&mut self, url: &str, flags: usize, uid: u32, gid: u32) -> Result<usize> {
+    fn xopen(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
+        let CallerCtx { uid, gid, .. } = *ctx;
+
         let path = url.trim_matches('/');
 
         // println!("Open '{}' {:X}", path, flags);
@@ -234,7 +237,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                             &mut resolve_nodes,
                         )
                     })?;
-                    return self.open(&resolved, flags, uid, gid);
+                    return self.xopen(&resolved, flags, ctx);
                 } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));
                 } else {
@@ -355,39 +358,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
             .or_insert_with(Default::default)
             .open_fds += 1;
 
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.files.insert(id, resource);
 
-        Ok(id)
-    }
-
-    fn chmod(&mut self, url: &str, mode: u16, uid: u32, gid: u32) -> Result<usize> {
-        let path = url.trim_matches('/');
-
-        // println!("Chmod '{}'", path);
-
-        let scheme_name = &self.name;
-        self.fs.tx(|tx| {
-            let mut nodes = Vec::new();
-            if let Some((mut node, _node_name)) =
-                Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes)?
-            {
-                if node.data().uid() == uid || uid == 0 {
-                    let old_mode = node.data().mode();
-                    let new_mode = (old_mode & !MODE_PERM) | (mode & MODE_PERM);
-                    if old_mode != new_mode {
-                        node.data_mut().set_mode(new_mode);
-                        tx.sync_tree(node)?;
-                    }
-
-                    Ok(0)
-                } else {
-                    Err(Error::new(EPERM))
-                }
-            } else {
-                Err(Error::new(ENOENT))
-            }
-        })
+        Ok(OpenResult::ThisScheme { number: id, flags: NewFdFlags::POSITIONED })
     }
 
     fn rmdir(&mut self, url: &str, uid: u32, gid: u32) -> Result<usize> {
@@ -497,32 +471,22 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         Ok(id)
     }
 
-    #[allow(unused_variables)]
-    fn read(&mut self, id: usize, buf: &mut [u8]) -> Result<usize> {
+    fn read(&mut self, id: usize, buf: &mut [u8], offset: u64, _fcntl_flags: u32) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.read(buf, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        self.fs.tx(|tx| file.read(buf, offset, tx))
     }
 
-    fn write(&mut self, id: usize, buf: &[u8]) -> Result<usize> {
+    fn write(&mut self, id: usize, buf: &[u8], offset: u64, _fcntl_flags: u32) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.write(buf, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        self.fs.tx(|tx| file.write(buf, offset, tx))
     }
 
-    fn seek(&mut self, id: usize, pos: isize, whence: usize) -> Result<isize> {
+    fn fsize(&mut self, id: usize) -> Result<u64> {
         // println!("Seek {}, {} {}", id, pos, whence);
-        if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.seek(pos, whence, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        self.fs.tx(|tx| file.fsize(tx))
     }
 
     fn fchmod(&mut self, id: usize, mode: u16) -> Result<usize> {
