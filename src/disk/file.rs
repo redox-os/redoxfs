@@ -1,10 +1,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
 use std::path::Path;
-use syscall::error::{Result, Error, EIO};
 
-#[cfg(target_os = "redox")]
-use std::os::fd::AsRawFd;
+use syscall::error::{Result, Error, EIO};
 
 use crate::disk::Disk;
 use crate::BLOCK_SIZE;
@@ -62,29 +61,11 @@ impl DiskFile {
 
 impl Disk for DiskFile {
     unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
-        #[cfg(target_os = "redox")]
-        unsafe {
-            syscall::syscall5(syscall::SYS_READ2, self.file.as_raw_fd() as usize, buffer.as_mut_ptr() as usize, buffer.len(), (block * BLOCK_SIZE) as usize, 0)
-                .or_eio()
-        }
-        #[cfg(not(target_os = "redox"))]
-        {
-            self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)).or_eio()?;
-            self.file.read(buffer).or_eio()
-        }
+        self.file.read_at(buffer, block * BLOCK_SIZE).or_eio()
     }
 
     unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
-        #[cfg(target_os = "redox")]
-        unsafe {
-            syscall::syscall5(syscall::SYS_WRITE2, self.file.as_raw_fd() as usize, buffer.as_ptr() as usize, buffer.len(), (block * BLOCK_SIZE) as usize, 0)
-                .or_eio()
-        }
-        #[cfg(not(target_os = "redox"))]
-        {
-            self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)).or_eio()?;
-            self.file.write(buffer).or_eio()
-        }
+        self.file.write_at(buffer, block * BLOCK_SIZE).or_eio()
     }
 
     fn size(&mut self) -> Result<u64> {
