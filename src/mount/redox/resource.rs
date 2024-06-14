@@ -29,11 +29,11 @@ pub trait Resource<D: Disk> {
 
     fn set_path(&mut self, path: &str);
 
-    fn read(&mut self, buf: &mut [u8], tx: &mut Transaction<D>) -> Result<usize>;
+    fn read(&mut self, buf: &mut [u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize>;
 
-    fn write(&mut self, buf: &[u8], tx: &mut Transaction<D>) -> Result<usize>;
+    fn write(&mut self, buf: &[u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize>;
 
-    fn seek(&mut self, offset: isize, whence: usize, tx: &mut Transaction<D>) -> Result<isize>;
+    fn fsize(&mut self, tx: &mut Transaction<D>) -> Result<u64>;
 
     fn fmap(
         &mut self,
@@ -143,7 +143,6 @@ pub struct DirResource {
     parent_ptr_opt: Option<TreePtr<Node>>,
     node_ptr: TreePtr<Node>,
     data: Option<Vec<u8>>,
-    seek: isize,
     uid: u32,
 }
 
@@ -160,7 +159,6 @@ impl DirResource {
             parent_ptr_opt,
             node_ptr,
             data,
-            seek: 0,
             uid,
         }
     }
@@ -185,7 +183,6 @@ impl<D: Disk> Resource<D> for DirResource {
             parent_ptr_opt: self.parent_ptr_opt,
             node_ptr: self.node_ptr,
             data: self.data.clone(),
-            seek: self.seek,
             uid: self.uid,
         }))
     }
@@ -194,32 +191,21 @@ impl<D: Disk> Resource<D> for DirResource {
         self.path = path.to_string();
     }
 
-    fn read(&mut self, buf: &mut [u8], _tx: &mut Transaction<D>) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u8], offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
         let data = self.data.as_ref().ok_or(Error::new(EISDIR))?;
-        let size = data.len() as isize;
-        let mut i = 0;
-        while i < buf.len() && self.seek < size {
-            buf[i] = data[self.seek as usize];
-            i += 1;
-            self.seek += 1;
-        }
-        Ok(i)
+        let src = usize::try_from(offset).ok().and_then(|o| data.get(o..)).unwrap_or(&[]);
+
+        let byte_count = core::cmp::min(src.len(), buf.len());
+        buf[..byte_count].copy_from_slice(&src[..byte_count]);
+        Ok(byte_count)
     }
 
-    fn write(&mut self, _buf: &[u8], _tx: &mut Transaction<D>) -> Result<usize> {
+    fn write(&mut self, _buf: &[u8], _offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 
-    fn seek(&mut self, offset: isize, whence: usize, _tx: &mut Transaction<D>) -> Result<isize> {
-        let data = self.data.as_ref().ok_or(Error::new(EBADF))?;
-        let size = data.len() as isize;
-        self.seek = match whence {
-            SEEK_SET => max(0, min(size, offset)),
-            SEEK_CUR => max(0, min(size, self.seek + offset)),
-            SEEK_END => max(0, min(size, size + offset)),
-            _ => return Err(Error::new(EINVAL)),
-        };
-        Ok(self.seek)
+    fn fsize(&mut self, _tx: &mut Transaction<D>) -> Result<u64> {
+        Ok(self.data.as_ref().ok_or(Error::new(EBADF))?.len() as u64)
     }
 
     fn fmap(
@@ -336,7 +322,6 @@ pub struct FileResource {
     parent_ptr_opt: Option<TreePtr<Node>>,
     node_ptr: TreePtr<Node>,
     flags: usize,
-    seek: isize,
     uid: u32,
 }
 #[derive(Debug)]
@@ -370,7 +355,6 @@ impl FileResource {
             parent_ptr_opt,
             node_ptr,
             flags,
-            seek: 0,
             uid,
         }
     }
@@ -395,7 +379,6 @@ impl<D: Disk> Resource<D> for FileResource {
             parent_ptr_opt: self.parent_ptr_opt,
             node_ptr: self.node_ptr,
             flags: self.flags,
-            seek: self.seek,
             uid: self.uid,
         }))
     }
@@ -404,55 +387,43 @@ impl<D: Disk> Resource<D> for FileResource {
         self.path = path.to_string();
     }
 
-    fn read(&mut self, buf: &mut [u8], tx: &mut Transaction<D>) -> Result<usize> {
-        if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_RDONLY {
-            let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            let count = tx.read_node(
-                self.node_ptr,
-                self.seek as u64,
-                buf,
-                atime.as_secs(),
-                atime.subsec_nanos(),
-            )?;
-            self.seek += count as isize;
-            Ok(count)
-        } else {
-            Err(Error::new(EBADF))
+    fn read(&mut self, buf: &mut [u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize> {
+        if self.flags & O_ACCMODE != O_RDWR && self.flags & O_ACCMODE != O_RDONLY {
+            return Err(Error::new(EBADF));
         }
+        let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        tx.read_node(
+            self.node_ptr,
+            offset,
+            buf,
+            atime.as_secs(),
+            atime.subsec_nanos(),
+        )
     }
 
-    fn write(&mut self, buf: &[u8], tx: &mut Transaction<D>) -> Result<usize> {
-        if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
-            if self.flags & O_APPEND == O_APPEND {
-                let node = tx.read_tree(self.node_ptr)?;
-                self.seek = node.data().size() as isize;
-            }
-            let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            let count = tx.write_node(
-                self.node_ptr,
-                self.seek as u64,
-                buf,
-                mtime.as_secs(),
-                mtime.subsec_nanos(),
-            )?;
-            self.seek += count as isize;
-            Ok(count)
-        } else {
-            Err(Error::new(EBADF))
+    fn write(&mut self, buf: &[u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize> {
+        if self.flags & O_ACCMODE != O_RDWR && self.flags & O_ACCMODE != O_WRONLY {
+            return Err(Error::new(EBADF));
         }
-    }
-
-    fn seek(&mut self, offset: isize, whence: usize, tx: &mut Transaction<D>) -> Result<isize> {
-        self.seek = match whence {
-            SEEK_SET => max(0, offset),
-            SEEK_CUR => max(0, self.seek + offset),
-            SEEK_END => {
-                let node = tx.read_tree(self.node_ptr)?;
-                max(0, node.data().size() as isize + offset)
-            }
-            _ => return Err(Error::new(EINVAL)),
+        let effective_offset = if self.flags & O_APPEND == O_APPEND {
+            let node = tx.read_tree(self.node_ptr)?;
+            node.data().size()
+        } else {
+            offset
         };
-        Ok(self.seek)
+        let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        tx.write_node(
+            self.node_ptr,
+            effective_offset,
+            buf,
+            mtime.as_secs(),
+            mtime.subsec_nanos(),
+        )
+    }
+
+    fn fsize(&mut self, tx: &mut Transaction<D>) -> Result<u64> {
+        let node = tx.read_tree(self.node_ptr)?;
+        Ok(node.data().size())
     }
 
     fn fmap(

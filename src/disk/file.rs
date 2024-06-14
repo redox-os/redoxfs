@@ -1,59 +1,74 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
 use std::path::Path;
-use syscall::error::{Error, Result, EIO};
+
+use syscall::error::{Result, Error, EIO};
 
 use crate::disk::Disk;
 use crate::BLOCK_SIZE;
-
-macro_rules! try_disk {
-    ($expr:expr) => {
-        match $expr {
-            Ok(val) => val,
-            Err(err) => {
-                eprintln!("Disk I/O Error: {}", err);
-                return Err(Error::new(EIO));
-            }
-        }
-    };
-}
 
 pub struct DiskFile {
     pub file: File,
 }
 
+trait ResultExt {
+    type T;
+    fn or_eio(self) -> Result<Self::T>;
+}
+impl<T> ResultExt for Result<T> {
+    type T = T;
+    fn or_eio(self) -> Result<Self::T> {
+        match self {
+            Ok(t) => Ok(t),
+            Err(err) => {
+                eprintln!("RedoxFS: IO ERROR: {err}");
+                Err(Error::new(EIO))
+            }
+        }
+    }
+}
+impl<T> ResultExt for std::io::Result<T> {
+    type T = T;
+    fn or_eio(self) -> Result<Self::T> {
+        match self {
+            Ok(t) => Ok(t),
+            Err(err) => {
+                eprintln!("RedoxFS: IO ERROR: {err}");
+                Err(Error::new(EIO))
+            }
+        }
+    }
+}
+
 impl DiskFile {
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<DiskFile> {
-        let file = try_disk!(OpenOptions::new().read(true).write(true).open(path));
+    pub fn open(path: impl AsRef<Path>) -> Result<DiskFile> {
+        let file = OpenOptions::new().read(true).write(true).open(path).or_eio()?;
         Ok(DiskFile { file })
     }
 
-    pub fn create<P: AsRef<Path>>(path: P, size: u64) -> Result<DiskFile> {
-        let file = try_disk!(OpenOptions::new()
+    pub fn create(path: impl AsRef<Path>, size: u64) -> Result<DiskFile> {
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(path));
-        try_disk!(file.set_len(size));
+            .open(path)
+            .or_eio()?;
+        file.set_len(size).or_eio()?;
         Ok(DiskFile { file })
     }
 }
 
 impl Disk for DiskFile {
     unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
-        try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
-        let count = try_disk!(self.file.read(buffer));
-        Ok(count)
+        self.file.read_at(buffer, block * BLOCK_SIZE).or_eio()
     }
 
     unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
-        try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
-        let count = try_disk!(self.file.write(buffer));
-        Ok(count)
+        self.file.write_at(buffer, block * BLOCK_SIZE).or_eio()
     }
 
     fn size(&mut self) -> Result<u64> {
-        let size = try_disk!(self.file.seek(SeekFrom::End(0)));
-        Ok(size)
+        self.file.seek(SeekFrom::End(0)).or_eio()
     }
 }
