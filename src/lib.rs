@@ -48,8 +48,10 @@ mod disk;
 mod filesystem;
 mod header;
 mod key;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(fuzzing)))]
 mod mount;
+#[cfg(all(feature = "std", fuzzing))]
+pub mod mount;
 mod node;
 mod record;
 mod transaction;
