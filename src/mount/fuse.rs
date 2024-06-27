@@ -27,12 +27,12 @@ const NULL_TIME: Duration = Duration::new(0, 0);
 pub fn mount<D, P, T, F>(
     mut filesystem: filesystem::FileSystem<D>,
     mountpoint: P,
-    mut callback: F,
+    callback: F,
 ) -> io::Result<T>
 where
     D: Disk,
     P: AsRef<Path>,
-    F: FnMut(&Path) -> T,
+    F: FnOnce(&Path) -> T,
 {
     let mountpoint = mountpoint.as_ref();
 

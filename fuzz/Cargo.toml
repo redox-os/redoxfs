@@ -1,0 +1,30 @@
+[package]
+name = "redoxfs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[features]
+default = []
+log = []
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+anyhow = "1.0.86"
+arbitrary = { version = "1.3.2", features = ["derive"] }
+fuser = { version = "0.12.0" }
+libfuzzer-sys = "0.4"
+nix = { version = "0.29.0", features = ["fs"] }
+tempfile = "3.10.1"
+
+[dependencies.redoxfs]
+path = ".."
+
+[[bin]]
+name = "fuse_fuzz_target"
+path = "fuzz_targets/fuse_fuzz_target.rs"
+test = false
+doc = false
+bench = false
