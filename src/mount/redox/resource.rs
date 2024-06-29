@@ -1,4 +1,3 @@
-use std::cmp::{max, min};
 use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -6,11 +5,11 @@ use alloc::collections::BTreeMap;
 use libredox::call::MmapArgs;
 use range_tree::RangeTree;
 
-use syscall::data::{Map, Stat, TimeSpec};
+use syscall::data::{Stat, TimeSpec};
 use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, EPERM};
 use syscall::flag::{
     MapFlags, F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY,
-    PROT_READ, PROT_WRITE, SEEK_CUR, SEEK_END, SEEK_SET,
+    PROT_READ, PROT_WRITE
 };
 use syscall::{EBADFD, PAGE_SIZE};
 

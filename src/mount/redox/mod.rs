@@ -1,5 +1,4 @@
-use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use redox_scheme::{RequestKind, SignalBehavior, Socket, V2};
@@ -18,7 +17,6 @@ where
     F: FnMut(&Path) -> T,
 {
     let mountpoint = mountpoint.as_ref();
-    let socket_path = format!(":{}", mountpoint.display());
     let socket = Socket::<V2>::create(&format!("{}", mountpoint.display()))?;
 
     let mounted_path = format!("{}:", mountpoint.display());

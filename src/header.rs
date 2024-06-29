@@ -3,7 +3,6 @@ use core::{fmt, mem, slice};
 use endian_num::Le;
 
 use aes::{Aes128, BlockDecrypt, BlockEncrypt};
-use uuid::Uuid;
 
 use crate::{AllocList, BlockPtr, KeySlot, Tree, BLOCK_SIZE, SIGNATURE, VERSION};
 
@@ -40,7 +39,7 @@ pub struct Header {
 impl Header {
     #[cfg(feature = "std")]
     pub fn new(size: u64) -> Header {
-        let uuid = Uuid::new_v4();
+        let uuid = uuid::Uuid::new_v4();
         let mut header = Header {
             signature: *SIGNATURE,
             version: VERSION.into(),
