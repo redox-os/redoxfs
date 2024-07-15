@@ -561,9 +561,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         ctime: u64,
         ctime_nsec: u32,
     ) -> Result<TreeData<Node>> {
-        if let Err(err)  = self.check_name(&parent_ptr, &name){
-            return Err(err);
-        }
+        self.check_name(&parent_ptr, name)?;
 
         unsafe {
             let parent = self.read_tree(parent_ptr)?;
@@ -593,9 +591,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         node_ptr: TreePtr<Node>,
     ) -> Result<()> {
-       if let Err(err)  = self.check_name(&parent_ptr, &name){
-           return Err(err);
-       }
+       self.check_name(&parent_ptr, name)?;
 
         let entry = DirEntry::new(node_ptr, name);
 

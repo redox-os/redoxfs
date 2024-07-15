@@ -1,12 +1,11 @@
 use aes::{Aes128, BlockDecrypt, BlockEncrypt};
 use alloc::{collections::VecDeque, vec::Vec};
-use core::mem;
-use syscall::error::{Error, Result, EIO, EKEYREJECTED, ENOENT, ENOKEY, ENOSPC};
+use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 
-use crate::{
-    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockTrait, Disk, Header,
-    Key, KeySlot, Node, Salt, Transaction, TreeList, BLOCK_SIZE, HEADER_RING,
-};
+use crate::{Allocator, BlockAddr, BlockLevel, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING};
+#[cfg(feature = "std")]
+use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt,  TreeList};
+
 
 /// A file system
 pub struct FileSystem<D: Disk> {
@@ -160,11 +159,11 @@ impl<D: Disk> FileSystem<D> {
 
             // Write header generation zero
             let count = unsafe { fs.disk.write_at(fs.block, &fs.header)? };
-            if count != mem::size_of_val(&fs.header) {
+            if count != core::mem::size_of_val(&fs.header) {
                 // Wrote wrong number of bytes
                 #[cfg(feature = "log")]
                 log::error!("CREATE: WRONG NUMBER OF BYTES");
-                return Err(Error::new(EIO));
+                return Err(Error::new(syscall::error::EIO));
             }
 
             // Set tree and alloc pointers and write header generation one
@@ -208,7 +207,7 @@ impl<D: Disk> FileSystem<D> {
 
             Ok(fs)
         } else {
-            Err(Error::new(ENOSPC))
+            Err(Error::new(syscall::error::ENOSPC))
         }
     }
 

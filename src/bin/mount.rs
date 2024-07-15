@@ -75,7 +75,6 @@ fn capability_mode() {
 #[cfg(target_os = "redox")]
 fn bootloader_password() -> Option<Vec<u8>> {
     use libredox::call::MmapArgs;
-    use syscall::MapFlags;
 
     let addr_env = env::var_os("REDOXFS_PASSWORD_ADDR")?;
     let size_env = env::var_os("REDOXFS_PASSWORD_SIZE")?;
