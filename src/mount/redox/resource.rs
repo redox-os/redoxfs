@@ -1,19 +1,12 @@
 use core::hash::Hash;
-use core::num::NonZeroUsize;
 use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use alloc::collections::BTreeMap;
-use libredox::call::MmapArgs;
 use range_tree::RangeTree;
 
-use syscall::data::{Stat, TimeSpec};
-use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, EPERM};
-use syscall::flag::{
-    MapFlags, F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY,
-    PROT_READ, PROT_WRITE
-};
-use syscall::{EBADFD, PAGE_SIZE};
+use syscall::error::Result;
+use syscall::flag::{MapFlags, PROT_WRITE};
+use syscall::PAGE_SIZE;
 
 use crate::{Disk, Node, Transaction, TreePtr};
 
@@ -72,6 +65,18 @@ pub struct InodeInfo {
     // be deallocated when closed. Inodes are kept alive if `mmaps` is nonempty, however.
     pub(crate) open_handles: usize,
 }
+
+impl InodeInfo {
+    pub fn has_refs(&self) -> bool {
+        self.open_handles > 0
+            || if let InodeKind::File { ref mmaps } = self.kind {
+                !mmaps.ranges.is_empty()
+            } else {
+                false
+            }
+    }
+}
+
 pub struct InodeKey(pub TreePtr<Node>);
 
 impl PartialEq for InodeKey {
@@ -88,9 +93,7 @@ impl Hash for InodeKey {
 
 pub enum InodeKind {
     Dir,
-    File {
-        mmaps: FileMmapInfo,
-    },
+    File { mmaps: FileMmapInfo },
 }
 
 #[derive(Debug)]
@@ -100,7 +103,13 @@ pub struct FileMmapInfo {
     pub(crate) ranges: RangeTree<Fmap>,
 }
 impl FileMmapInfo {
-    unsafe fn sync_single<D: Disk>(base: *mut u8, inode: TreePtr<Node>, offset: u64, size: usize, tx: &mut Transaction<D>) -> Result<()> {
+    unsafe fn sync_single<D: Disk>(
+        base: *mut u8,
+        inode: TreePtr<Node>,
+        offset: u64,
+        size: usize,
+        tx: &mut Transaction<D>,
+    ) -> Result<()> {
         let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         tx.write_node(
             inode,
@@ -112,15 +121,33 @@ impl FileMmapInfo {
         Ok(())
     }
     // TODO: Pass a range to intersect with, when the msync syscall is actually implemented
-    pub unsafe fn msync<D: Disk>(&mut self, inode: TreePtr<Node>, tx: &mut Transaction<D>) -> Result<()> {
-        for (range, mmap_info) in self.ranges.iter().filter(|(_, mm)| mm.flags.contains(PROT_WRITE)) {
-            Self::sync_single(self.base, inode, range.start, usize::try_from(range.end - range.start).unwrap(), tx)?;
+    pub unsafe fn msync<D: Disk>(
+        &mut self,
+        inode: TreePtr<Node>,
+        tx: &mut Transaction<D>,
+    ) -> Result<()> {
+        for (range, _mmap_info) in self
+            .ranges
+            .iter()
+            .filter(|(_, mm)| mm.flags.contains(PROT_WRITE))
+        {
+            Self::sync_single(
+                self.base,
+                inode,
+                range.start,
+                usize::try_from(range.end - range.start).unwrap(),
+                tx,
+            )?;
         }
         Ok(())
     }
-    pub unsafe fn munmap<D: Disk>(&mut self, inode: TreePtr<Node>, offset: u64, size: usize, tx: &mut Transaction<D>) -> Result<()> {
-        let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-
+    pub unsafe fn munmap<D: Disk>(
+        &mut self,
+        inode: TreePtr<Node>,
+        offset: u64,
+        size: usize,
+        tx: &mut Transaction<D>,
+    ) -> Result<()> {
         #[allow(unused_mut)]
         let mut affected_fmaps = self.ranges.remove(offset..offset + size as u64);
 
@@ -129,7 +156,13 @@ impl FileMmapInfo {
 
             //log::info!("SYNCING {}..{}", range.start, range.end);
             unsafe {
-                Self::sync_single(self.base, inode, range.start, usize::try_from(range.end - range.start).unwrap(), tx)?;
+                Self::sync_single(
+                    self.base,
+                    inode,
+                    range.start,
+                    usize::try_from(range.end - range.start).unwrap(),
+                    tx,
+                )?;
             }
 
             if fmap.rc > 0 {
