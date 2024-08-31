@@ -1,3 +1,5 @@
+use core::hash::Hash;
+use core::num::NonZeroUsize;
 use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,6 +19,7 @@ use crate::{Disk, Node, Transaction, TreePtr};
 
 pub type Fmaps = BTreeMap<u32, FileMmapInfo>;
 
+/*
 pub trait Resource<D: Disk> {
     fn parent_ptr_opt(&self) -> Option<TreePtr<Node>>;
 
@@ -136,42 +139,9 @@ pub trait Resource<D: Disk> {
 
     fn utimens(&mut self, times: &[TimeSpec], tx: &mut Transaction<D>) -> Result<usize>;
 }
+*/
 
-pub struct DirResource {
-    path: String,
-    parent_ptr_opt: Option<TreePtr<Node>>,
-    node_ptr: TreePtr<Node>,
-    data: Option<Vec<u8>>,
-    uid: u32,
-}
-
-impl DirResource {
-    pub fn new(
-        path: String,
-        parent_ptr_opt: Option<TreePtr<Node>>,
-        node_ptr: TreePtr<Node>,
-        data: Option<Vec<u8>>,
-        uid: u32,
-    ) -> DirResource {
-        DirResource {
-            path,
-            parent_ptr_opt,
-            node_ptr,
-            data,
-            uid,
-        }
-    }
-}
-
-impl<D: Disk> Resource<D> for DirResource {
-    fn parent_ptr_opt(&self) -> Option<TreePtr<Node>> {
-        self.parent_ptr_opt
-    }
-
-    fn node_ptr(&self) -> TreePtr<Node> {
-        self.node_ptr
-    }
-
+/*impl<D: Disk> Resource<D> for DirResource {
     fn uid(&self) -> u32 {
         self.uid
     }
@@ -246,7 +216,7 @@ impl<D: Disk> Resource<D> for DirResource {
     fn utimens(&mut self, _times: &[TimeSpec], _tx: &mut Transaction<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
-}
+}*/
 
 #[derive(Debug)]
 pub struct Fmap {
@@ -316,19 +286,41 @@ impl Fmap {
     }
 }
 
-pub struct FileResource {
-    path: String,
-    parent_ptr_opt: Option<TreePtr<Node>>,
-    node_ptr: TreePtr<Node>,
-    flags: usize,
-    uid: u32,
+pub struct Inode {
+    pub(crate) path: String,
+    pub(crate) parent_ptr_opt: Option<TreePtr<Node>>,
+    pub(crate) node_ptr: TreePtr<Node>,
+    pub(crate) kind: InodeKind,
+
+    // Counts references to this inode. If both this and nlink approach zero, the inode will (TODO)
+    // be deallocated when closed.
+    pub(crate) open_handles: NonZeroUsize,
 }
+
+impl PartialEq for Inode {
+    fn eq(&self, other: &Self) -> bool {
+        self.node_ptr == other.node_ptr
+    }
+}
+impl Eq for Inode {}
+impl Hash for Inode {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        state.write_u32(self.node_ptr.id())
+    }
+}
+
+pub enum InodeKind {
+    Dir,
+    File {
+        mmaps: FileMmapInfo,
+    },
+}
+
 #[derive(Debug)]
 pub struct FileMmapInfo {
     base: *mut u8,
     size: usize,
     ranges: RangeTree<Fmap>,
-    pub open_fds: usize,
 }
 impl Default for FileMmapInfo {
     fn default() -> Self {
@@ -336,30 +328,11 @@ impl Default for FileMmapInfo {
             base: core::ptr::null_mut(),
             size: 0,
             ranges: RangeTree::new(),
-            open_fds: 0,
         }
     }
 }
 
-impl FileResource {
-    pub fn new(
-        path: String,
-        parent_ptr_opt: Option<TreePtr<Node>>,
-        node_ptr: TreePtr<Node>,
-        flags: usize,
-        uid: u32,
-    ) -> FileResource {
-        FileResource {
-            path,
-            parent_ptr_opt,
-            node_ptr,
-            flags,
-            uid,
-        }
-    }
-}
-
-impl<D: Disk> Resource<D> for FileResource {
+/*impl<D: Disk> Resource<D> for FileResource {
     fn parent_ptr_opt(&self) -> Option<TreePtr<Node>> {
         self.parent_ptr_opt
     }
@@ -638,7 +611,7 @@ impl<D: Disk> Resource<D> for FileResource {
             Err(Error::new(EPERM))
         }
     }
-}
+}*/
 
 impl Drop for FileResource {
     fn drop(&mut self) {

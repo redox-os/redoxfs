@@ -212,7 +212,7 @@ impl<D: Disk> FileSystem<D> {
     }
 
     /// start a filesystem transaction, required for making any changes
-    pub fn tx<F: FnOnce(&mut Transaction<D>) -> Result<T>, T>(&mut self, f: F) -> Result<T> {
+    pub fn tx<T>(&mut self, f: impl FnOnce(&mut Transaction<D>) -> Result<T>) -> Result<T> {
         let mut tx = Transaction::new(self);
         let t = f(&mut tx)?;
         tx.commit(false)?;

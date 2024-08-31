@@ -47,6 +47,7 @@ uuid = { version = "1.4", default-features = false }
 redox-path = "0.3.0"
 libredox = { version = "0.1.3", optional = true }
 redox-scheme = {  version = "0.2.1", optional = true }
+slab = "0.4.9"
 
 [features]
 default = ["std", "log"]

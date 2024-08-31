@@ -1,10 +1,4 @@
-extern crate libc;
-
-#[cfg(target_os = "redox")]
-extern crate syscall;
-
-extern crate redoxfs;
-extern crate uuid;
+#![cfg_attr(target_os = "redox", feature(hash_set_entry))]
 
 use std::env;
 use std::fs::File;
