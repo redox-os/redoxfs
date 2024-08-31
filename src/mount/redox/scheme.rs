@@ -1,5 +1,7 @@
-use core::num::NonZeroUsize;
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::io::{Cursor, Seek};
+use std::num::NonZeroUsize;
 use std::str;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,7 +19,7 @@ use syscall::flag::{
     O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
-use syscall::{MunmapFlags, EBADFD};
+use syscall::{MunmapFlags, EBADFD, EOVERFLOW};
 
 use redox_path::{
     canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path,
@@ -27,10 +29,11 @@ use redox_path::{
 use crate::mount::redox::resource::{FileMmapInfo, InodeKind};
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
-use super::resource::Inode;
+use super::resource::{InodeKey, InodeInfo};
 
 struct OpenHandle {
     inode: TreePtr<Node>,
+    path: String,
     flags: usize,
     uid: u32,
     // TODO: remove, instead this should be fetched directly using a getdents-like syscall
@@ -41,7 +44,7 @@ pub struct FileScheme<D: Disk> {
     name: String,
     pub(crate) fs: FileSystem<D>,
     handles: Slab<OpenHandle>,
-    inodes: HashSet<Inode>,
+    inodes: HashMap<InodeKey, InodeInfo>,
 }
 
 impl<D: Disk> FileScheme<D> {
@@ -50,7 +53,7 @@ impl<D: Disk> FileScheme<D> {
             name,
             fs,
             handles: Slab::new(),
-            inodes: HashSet::new(),
+            inodes: HashMap::new(),
         }
     }
 
@@ -220,9 +223,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                         }
                     }
                     OpenHandle {
-                        inode: node,
+                        inode: node.ptr(),
                         flags,
                         uid,
+                        path: path.to_owned(),
                         dir_data: Some(data.into_boxed_slice()),
                     }
                 } else if node.data().is_symlink()
@@ -279,20 +283,26 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                             tx.truncate_node(node_ptr, 0, mtime.as_secs(), mtime.subsec_nanos())
                         })?;
                     }
-                    self.inodes.get_or_insert_with(node_ptr, || {
-                        Inode {
-                            path: path.to_owned(),
-                            parent_ptr_opt,
-                            node_ptr,
-                            kind: InodeKind::File {
-                                mmaps: FileMmapInfo::default(),
-                            },
-                            open_handles: NonZeroUsize::new(1).unwrap(),
+
+                    match self.inodes.entry(InodeKey(node_ptr)) {
+                        Entry::Occupied(mut occupied) => {
+                            let mut rc = &mut occupied.get_mut().open_handles;
+                            *rc = rc.checked_add(1).ok_or(Error::new(EOVERFLOW))?;
                         }
-                    });
+                        Entry::Vacant(vacant) => {
+                            vacant.insert(InodeInfo {
+                                parent_ptr_opt,
+                                kind: InodeKind::File {
+                                    mmaps: FileMmapInfo::default(),
+                                },
+                                open_handles: NonZeroUsize::new(1).unwrap(),
+                            });
+                        },
+                    }
 
                     OpenHandle {
-                        inode: node,
+                        inode: node_ptr,
+                        path: path.to_owned(),
                         dir_data: None,
                         flags,
                         uid,
@@ -346,10 +356,8 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                     Ok(node_ptr)
                 })?;
 
-                let prev = self.inodes.insert(Inode {
-                    path: path.to_owned(),
+                let prev = self.inodes.insert(InodeKey(node_ptr), InodeInfo {
                     parent_ptr_opt,
-                    node_ptr,
                     kind: if dir {
                         InodeKind::Dir
                     } else {
@@ -359,10 +367,11 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                     },
                     open_handles: NonZeroUsize::new(1).unwrap(),
                 });
-                assert!(!prev, "newly created inode already inserted");
+                assert!(prev.is_none(), "newly created inode already inserted");
 
                 OpenHandle {
                     inode: node_ptr,
+                    path: path.to_owned(),
                     flags,
                     uid,
                     dir_data: Some(Box::new([])),
@@ -370,7 +379,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
             }
         };
 
-        Ok(OpenResult::ThisScheme { number: self.handles.insert(resource), flags: NewFdFlags::POSITIONED })
+        Ok(OpenResult::ThisScheme { number: self.handles.insert(new_handle), flags: NewFdFlags::POSITIONED })
     }
 
     fn rmdir(&mut self, url: &str, uid: u32, gid: u32) -> Result<usize> {
@@ -497,34 +506,16 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
 
     fn fpath(&mut self, id: usize, buf: &mut [u8]) -> Result<usize> {
+        use std::io::Write;
+
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let file = &self.handles[id];
 
-        let name = self.name.as_bytes();
-
-        let mut i = 0;
-        while i < buf.len() && i < name.len() {
-            buf[i] = name[i];
-            i += 1;
-        }
-        if i < buf.len() {
-            buf[i] = b':';
-            i += 1;
-        }
-        if i < buf.len() {
-            buf[i] = b'/';
-            i += 1;
+        let mut dst = Cursor::new(buf);
+        if write!(dst, "/scheme/{}/", self.name).is_ok() {
+            let _ = write!(dst, "{}", self.handles[id].path);
         }
 
-        let path = file.path().as_bytes();
-        let mut j = 0;
-        while i < buf.len() && j < path.len() {
-            buf[i] = path[j];
-            i += 1;
-            j += 1;
-        }
-
-        Ok(i)
+        Ok(dst.stream_position().unwrap().try_into().unwrap())
     }
 
     //TODO: this function has too much code, try to simplify it
@@ -534,39 +525,23 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
 
         let file = &mut self.handles[id];
-        let inode = self.inodes.get(&file.inode).ok_or(Error::new(EBADFD))?;
+        let inode = file.inode;
+        let inode_info = self.inodes.get(&InodeKey(inode)).ok_or(Error::new(EBADFD))?;
 
         //TODO: Check for EINVAL
         // The new pathname contained a path prefix of the old, or, more generally,
         // an attempt was made to make a directory a subdirectory of itself.
 
-        let mut old_name = String::new();
-        for part in file.path().split('/') {
-            if !part.is_empty() {
-                old_name = part.to_string();
-            }
-        }
-        if old_name.is_empty() {
-            return Err(Error::new(EPERM));
-        }
-
-        let mut new_name = String::new();
-        for part in new_path.split('/') {
-            if !part.is_empty() {
-                new_name = part.to_string();
-            }
-        }
-        if new_name.is_empty() {
-            return Err(Error::new(EPERM));
-        }
+        let old_name = file.path.split('/').find(|part| !part.is_empty()).ok_or(Error::new(EPERM))?.to_owned();
+        let new_name = new_path.split('/').find(|part| !part.is_empty()).ok_or(Error::new(EPERM))?;
 
         let scheme_name = &self.name;
 
         self.fs.tx(|tx| {
             // Can't remove root
-            let orig_parent_ptr = inode.parent_ptr_opt.ok_or(Error::new(EBUSY))?;
+            let orig_parent_ptr = inode_info.parent_ptr_opt.ok_or(Error::new(EBUSY))?;
 
-            let orig_node = tx.read_tree(file.node_ptr())?;
+            let orig_node = tx.read_tree(inode)?;
 
             if !orig_node.data().owner(uid) {
                 // println!("orig_node not owned by caller {}", uid);
@@ -612,7 +587,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
 
             tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)?;
 
-            file.set_path(new_path);
+            file.path = new_path.to_owned();
             Ok(0)
         })
     }
@@ -633,7 +608,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
 
     fn fsync(&mut self, id: usize) -> Result<usize> {
         // println!("Fsync {}", id);
-        self.fs.tx(|tx| self.handles[id].sync(fmaps, tx))
+        self.fs.tx(|tx| self.handles[id].sync(tx))
     }
 
     fn ftruncate(&mut self, id: usize, len: usize) -> Result<usize> {
@@ -647,10 +622,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
 
     fn mmap_prep(&mut self, id: usize, offset: u64, size: usize, flags: MapFlags) -> Result<usize> {
-        self.fs.tx(|tx| self.handles[id].fmap(fmaps, flags, size, offset, tx))
+        self.fs.tx(|tx| self.handles[id].fmap(flags, size, offset, tx))
     }
     fn munmap(&mut self, id: usize, offset: u64, size: usize, _flags: MunmapFlags) -> Result<usize> {
-        self.fs.tx(|tx| self.handles[id].funmap(fmaps, offset, size, tx))
+        self.fs.tx(|tx| self.handles[id].funmap(offset, size, tx))
     }
 
     fn close(&mut self, id: usize) -> Result<usize> {

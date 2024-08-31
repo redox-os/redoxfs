@@ -1,5 +1,3 @@
-#![cfg_attr(target_os = "redox", feature(hash_set_entry))]
-
 use std::env;
 use std::fs::File;
 use std::io::{self, Read, Write};

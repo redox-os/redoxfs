@@ -286,26 +286,25 @@ impl Fmap {
     }
 }
 
-pub struct Inode {
-    pub(crate) path: String,
+pub struct InodeInfo {
     pub(crate) parent_ptr_opt: Option<TreePtr<Node>>,
-    pub(crate) node_ptr: TreePtr<Node>,
     pub(crate) kind: InodeKind,
 
     // Counts references to this inode. If both this and nlink approach zero, the inode will (TODO)
     // be deallocated when closed.
     pub(crate) open_handles: NonZeroUsize,
 }
+pub struct InodeKey(pub TreePtr<Node>);
 
-impl PartialEq for Inode {
+impl PartialEq for InodeKey {
     fn eq(&self, other: &Self) -> bool {
-        self.node_ptr == other.node_ptr
+        self.0.id() == other.0.id()
     }
 }
-impl Eq for Inode {}
-impl Hash for Inode {
+impl Eq for InodeKey {}
+impl Hash for InodeKey {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        state.write_u32(self.node_ptr.id())
+        state.write_u32(self.0.id())
     }
 }
 
@@ -612,20 +611,6 @@ impl Default for FileMmapInfo {
         }
     }
 }*/
-
-impl Drop for FileResource {
-    fn drop(&mut self) {
-        /*
-        if !self.fmaps.is_empty() {
-            eprintln!(
-                "redoxfs: file {} still has {} fmaps!",
-                self.path,
-                self.fmaps.len()
-            );
-        }
-        */
-    }
-}
 
 impl range_tree::Value for Fmap {
     type K = u64;
