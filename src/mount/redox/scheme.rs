@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use redox_scheme::{CallerCtx, OpenResult, SchemeMut};
 use alloc::collections::BTreeSet;
+use libredox::call::MmapArgs;
 use slab::Slab;
 
 use syscall::data::{Stat, StatVfs, TimeSpec};
@@ -19,7 +20,8 @@ use syscall::flag::{
     O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
-use syscall::{MunmapFlags, EBADFD, EOVERFLOW};
+use syscall::{MunmapFlags, EBADFD, EOVERFLOW, MODE_PERM, O_APPEND, PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE};
+use redox_scheme::{CallerCtx, OpenResult, SchemeMut};
 
 use redox_path::{
     canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path,
@@ -29,8 +31,9 @@ use redox_path::{
 use crate::mount::redox::resource::{FileMmapInfo, InodeKind};
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
-use super::resource::{InodeKey, InodeInfo};
+use super::resource::{Fmap, InodeInfo, InodeKey};
 
+#[derive(Clone)]
 struct OpenHandle {
     inode: TreePtr<Node>,
     path: String,
@@ -295,7 +298,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                                 kind: InodeKind::File {
                                     mmaps: FileMmapInfo::default(),
                                 },
-                                open_handles: NonZeroUsize::new(1).unwrap(),
+                                open_handles: 1,
                             });
                         },
                     }
@@ -365,7 +368,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                             mmaps: FileMmapInfo::default(),
                         }
                     },
-                    open_handles: NonZeroUsize::new(1).unwrap(),
+                    open_handles: 1,
                 });
                 assert!(prev.is_none(), "newly created inode already inserted");
 
@@ -471,33 +474,119 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
             return Err(Error::new(EINVAL));
         }
 
-        let new_handle = self.handles[old_id].dup()?;
-        let id = self.handles.insert(new_handle);
+        let old_handle = &self.handles[old_id];
+        let new_handle = old_handle.clone();
 
-        Ok(id)
+        let inode = self.inodes.get_mut(&InodeKey(old_handle.inode)).ok_or(Error::new(EBADF))?;
+        inode.open_handles = inode.open_handles.checked_add(1).ok_or(Error::new(EOVERFLOW))?;
+
+        Ok(self.handles.insert(new_handle))
     }
 
     fn read(&mut self, id: usize, buf: &mut [u8], offset: u64, _fcntl_flags: u32) -> Result<usize> {
+        let handle = &self.handles[id];
+        if handle.flags & O_ACCMODE != O_RDWR && handle.flags & O_ACCMODE != O_RDONLY {
+            return Err(Error::new(EBADF));
+        }
+
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        self.fs.tx(|tx| self.handles[id].read(buf, offset, tx))
+        self.fs.tx(|tx| {
+            let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            tx.read_node(
+                handle.inode,
+                offset,
+                buf,
+                atime.as_secs(),
+                atime.subsec_nanos(),
+            )
+        })
     }
 
     fn write(&mut self, id: usize, buf: &[u8], offset: u64, _fcntl_flags: u32) -> Result<usize> {
+        let handle = &self.handles[id];
+
+        if handle.flags & O_ACCMODE != O_RDWR && handle.flags & O_ACCMODE != O_WRONLY {
+            return Err(Error::new(EBADF));
+        }
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        self.fs.tx(|tx| self.handles[id].write(buf, offset, tx))
+        self.fs.tx(|tx| {
+            let effective_offset = if handle.flags & O_APPEND == O_APPEND {
+                let node = tx.read_tree(handle.inode)?;
+                node.data().size()
+            } else {
+                offset
+            };
+            let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            tx.write_node(
+                handle.inode,
+                effective_offset,
+                buf,
+                mtime.as_secs(),
+                mtime.subsec_nanos(),
+            )
+        })
     }
 
     fn fsize(&mut self, id: usize) -> Result<u64> {
         // println!("Seek {}, {} {}", id, pos, whence);
-        self.fs.tx(|tx| self.handles[id].fsize(tx))
+        self.fs.tx(|tx| {
+            Ok(tx.read_tree(self.handles[id].inode)?.data().size())
+        })
     }
 
     fn fchmod(&mut self, id: usize, mode: u16) -> Result<usize> {
-        self.fs.tx(|tx| self.handles[id].fchmod(mode, tx))
+        let handle = &self.handles[id];
+
+        self.fs.tx(|tx|  {
+            let mut node = tx.read_tree(handle.inode)?;
+
+            if node.data().uid() != handle.uid && handle.uid != 0 {
+                return Err(Error::new(EPERM));
+            }
+            let old_mode = node.data().mode();
+            let new_mode = (old_mode & !MODE_PERM) | (mode & MODE_PERM);
+            if old_mode != new_mode {
+                node.data_mut().set_mode(new_mode);
+                tx.sync_tree(node)?;
+            }
+
+            Ok(0)
+        })
     }
 
     fn fchown(&mut self, id: usize, uid: u32, gid: u32) -> Result<usize> {
-        self.fs.tx(|tx| self.handles[id].fchown(uid, gid, tx))
+        let handle = &self.handles[id];
+
+        self.fs.tx(|tx| {
+            let mut node = tx.read_tree(handle.inode)?;
+
+            let old_uid = node.data().uid();
+            if old_uid != handle.uid && handle.uid != 0 {
+                return Err(Error::new(EPERM));
+            }
+            let mut node_changed = false;
+
+            if uid as i32 != -1 {
+                if uid != old_uid {
+                    node.data_mut().set_uid(uid);
+                    node_changed = true;
+                }
+            }
+
+            if gid as i32 != -1 {
+                let old_gid = node.data().gid();
+                if gid != old_gid {
+                    node.data_mut().set_gid(gid);
+                    node_changed = true;
+                }
+            }
+
+            if node_changed {
+                tx.sync_tree(node)?;
+            }
+
+            Ok(0)
+        })
     }
 
     fn fevent(&mut self, id: usize, _flags: EventFlags) -> Result<EventFlags> {
@@ -593,8 +682,34 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
 
     fn fstat(&mut self, id: usize, stat: &mut Stat) -> Result<usize> {
+        let handle = &self.handles[id];
+
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
-        self.fs.tx(|tx| self.handles[id].stat(stat, tx))
+        self.fs.tx(|tx| {
+            let node = tx.read_tree(handle.inode)?;
+
+            let ctime = node.data().ctime();
+            let mtime = node.data().mtime();
+            let atime = node.data().atime();
+            *stat = Stat {
+                st_dev: 0, // TODO
+                st_ino: node.id() as u64,
+                st_mode: node.data().mode(),
+                st_nlink: node.data().links(),
+                st_uid: node.data().uid(),
+                st_gid: node.data().gid(),
+                st_size: node.data().size(),
+                st_mtime: mtime.0,
+                st_mtime_nsec: mtime.1,
+                st_atime: atime.0,
+                st_atime_nsec: atime.1,
+                st_ctime: ctime.0,
+                st_ctime_nsec: ctime.1,
+                ..Default::default()
+            };
+
+            Ok(0)
+        })
     }
 
     fn fstatvfs(&mut self, _id: usize, stat: &mut StatVfs) -> Result<usize> {
@@ -607,42 +722,186 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
 
     fn fsync(&mut self, id: usize) -> Result<usize> {
+        let handle = &self.handles[id];
+        let InodeInfo { kind: InodeKind::File { mmaps }, .. } = self.inodes.get_mut(&InodeKey(handle.inode)).ok_or(Error::new(EBADFD))? else {
+            return Ok(0);
+        };
+
         // println!("Fsync {}", id);
-        self.fs.tx(|tx| self.handles[id].sync(tx))
+        self.fs.tx(|tx| {
+            unsafe {
+                mmaps.msync(handle.inode, tx)?;
+            }
+            Ok(())
+        })?;
+
+        Ok(0)
     }
 
     fn ftruncate(&mut self, id: usize, len: usize) -> Result<usize> {
+        let handle = &self.handles[id];
+
+        if handle.flags & O_ACCMODE != O_RDWR && handle.flags & O_ACCMODE != O_WRONLY {
+            return Err(Error::new(EBADF));
+        }
+
         // println!("Ftruncate {}, {}", id, len);
-        self.fs.tx(|tx| self.handles[id].truncate(len, tx))
+        self.fs.tx(|tx| {
+            let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            tx.truncate_node(
+                handle.inode,
+                len as u64,
+                mtime.as_secs(),
+                mtime.subsec_nanos(),
+            )?;
+            Ok(0)
+        })
     }
 
     fn futimens(&mut self, id: usize, times: &[TimeSpec]) -> Result<usize> {
+        let handle = &self.handles[id];
+
         // println!("Futimens {}, {}", id, times.len());
-        self.fs.tx(|tx| self.handles[id].utimens(times, tx))
+        self.fs.tx(|tx| {
+            let mut node = tx.read_tree(handle.inode)?;
+
+            if node.data().uid() != handle.uid && handle.uid != 0 {
+                return Err(Error::new(EPERM));
+            }
+            if let &[atime, mtime] = times {
+                let mut node_changed = false;
+
+                let old_mtime = node.data().mtime();
+                let new_mtime = (mtime.tv_sec as u64, mtime.tv_nsec as u32);
+                if old_mtime != new_mtime {
+                    node.data_mut().set_mtime(new_mtime.0, new_mtime.1);
+                    node_changed = true;
+                }
+
+                let old_atime = node.data().atime();
+                let new_atime = (atime.tv_sec as u64, atime.tv_nsec as u32);
+                if old_atime != new_atime {
+                    node.data_mut().set_atime(new_atime.0, new_atime.1);
+                    node_changed = true;
+                }
+
+                if node_changed {
+                    tx.sync_tree(node)?;
+                }
+            }
+            Ok(0)
+        })
     }
 
-    fn mmap_prep(&mut self, id: usize, offset: u64, size: usize, flags: MapFlags) -> Result<usize> {
-        self.fs.tx(|tx| self.handles[id].fmap(flags, size, offset, tx))
+    fn mmap_prep(&mut self, id: usize, offset: u64, unaligned_size: usize, flags: MapFlags) -> Result<usize> {
+        let handle = &self.handles[id];
+        let InodeInfo { kind: InodeKind::File { mmaps }, .. } = self.inodes.get_mut(&InodeKey(handle.inode)).ok_or(Error::new(EBADFD))? else {
+            // can't mmap directories
+            return Err(Error::new(EBADF));
+        };
+
+        let accmode = handle.flags & O_ACCMODE;
+
+        // PROT_EXEC is equivalent to PROT_READ in this case
+        if (flags.contains(PROT_READ) || flags.contains(PROT_EXEC)) && !(accmode == O_RDWR || accmode == O_RDONLY) {
+            return Err(Error::new(EBADF));
+        }
+        if flags.contains(PROT_WRITE) && !(accmode == O_RDWR || accmode == O_WRONLY) {
+            return Err(Error::new(EBADF));
+        }
+        if offset % u64::try_from(PAGE_SIZE).unwrap() != 0 {
+            return Err(Error::new(EINVAL));
+        }
+
+        self.fs.tx(|tx| {
+            let aligned_size = unaligned_size.next_multiple_of(PAGE_SIZE);
+
+            let new_size = (offset as usize + aligned_size).next_multiple_of(PAGE_SIZE);
+            if new_size > mmaps.size {
+                mmaps.base = if mmaps.base.is_null() {
+                    unsafe {
+                        libredox::call::mmap(MmapArgs {
+                            length: new_size,
+                            // PRIVATE/SHARED doesn't matter once the pages are passed in the fmap
+                            // handler.
+                            prot: libredox::flag::PROT_READ
+                                | libredox::flag::PROT_WRITE,
+                            flags: libredox::flag::MAP_PRIVATE,
+
+                            offset: 0,
+                            fd: !0,
+                            addr: core::ptr::null_mut(),
+                        }
+                        )? as *mut u8
+                    }
+                } else {
+                    unsafe {
+                        syscall::syscall5(
+                            syscall::SYS_MREMAP,
+                            mmaps.base as usize,
+                            mmaps.size,
+                            0,
+                            new_size,
+                            syscall::MremapFlags::empty().bits() | (PROT_READ | PROT_WRITE).bits(),
+                        )? as *mut u8
+                    }
+                };
+                mmaps.size = new_size;
+            }
+
+            let affected_fmaps = mmaps
+                .ranges
+                .remove_and_unused(offset..offset + aligned_size as u64);
+
+            for (range, v_opt) in affected_fmaps {
+                //dbg!(&range);
+                if let Some(mut fmap) = v_opt {
+                    fmap.rc += 1;
+                    fmap.flags |= flags;
+
+                    let _ = mmaps
+                        .ranges
+                        .insert(range.start, range.end - range.start, fmap);
+                } else {
+                    let map = unsafe {
+                        Fmap::new(
+                            handle.inode,
+                            flags,
+                            unaligned_size,
+                            offset,
+                            mmaps.base,
+                            tx,
+                        )?
+                    };
+                    let _ = mmaps.ranges.insert(offset, aligned_size as u64, map);
+                }
+            }
+
+            Ok(mmaps.base as usize + offset as usize)
+        })
     }
     fn munmap(&mut self, id: usize, offset: u64, size: usize, _flags: MunmapFlags) -> Result<usize> {
-        self.fs.tx(|tx| self.handles[id].funmap(offset, size, tx))
+        let handle = &self.handles[id];
+        let InodeInfo { kind: InodeKind::File { mmaps }, .. } = self.inodes.get_mut(&InodeKey(handle.inode)).ok_or(Error::new(EBADFD))? else {
+            return Err(Error::new(EBADF));
+        };
+
+        self.fs.tx(|tx| {
+            unsafe {
+                mmaps.munmap(handle.inode, offset, size, tx)?;
+            }
+            Ok(0)
+        })
     }
 
     fn close(&mut self, id: usize) -> Result<usize> {
         // println!("Close {}", id);
         let file = self.handles.remove(id);
-        /*let file_info = self
-            .fmap
-            .get_mut(&file.node_ptr().id())
-            .ok_or(Error::new(EBADFD))?;
 
-        file_info.open_fds = file_info
-            .open_fds
-            .checked_sub(1)
-            .expect("open_fds not tracked correctly");*/
+        let inode = self.inodes.get_mut(&InodeKey(file.inode)).ok_or(Error::new(EBADFD))?;
+        inode.open_handles = inode.open_handles.checked_sub(1).expect("inode refcount underflow");
 
-        // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
-        // particular inode, remove that inode here.
+        // TODO: Remove file if open_handles and nlink are 0 and `mmaps` is empty
 
         Ok(0)
     }
