@@ -3,20 +3,23 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use redox_scheme::{CallerCtx, OpenResult, SchemeMut};
 use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::error::{
     Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
     EPERM, EXDEV,
 };
 use syscall::flag::{
-    EventFlags, MapFlags, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY,
-    O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
+    EventFlags, MapFlags, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
+    O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
 use syscall::{MunmapFlags, EBADFD};
-use redox_scheme::{CallerCtx, OpenResult, SchemeMut};
 
-use redox_path::{canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path, RedoxPath};
+use redox_path::{
+    canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path,
+    RedoxPath,
+};
 
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
@@ -361,7 +364,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.files.insert(id, resource);
 
-        Ok(OpenResult::ThisScheme { number: id, flags: NewFdFlags::POSITIONED })
+        Ok(OpenResult::ThisScheme {
+            number: id,
+            flags: NewFdFlags::POSITIONED,
+        })
     }
 
     fn rmdir(&mut self, url: &str, uid: u32, gid: u32) -> Result<usize> {
@@ -372,31 +378,32 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         let scheme_name = &self.name;
         self.fs.tx(|tx| {
             let mut nodes = Vec::new();
-            if let Some((child, child_name)) =
+
+            let Some((child, child_name)) =
                 Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes)?
-            {
-                if let Some((parent, _parent_name)) = nodes.last() {
-                    if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                        // println!("dir not writable {:o}", parent.1.mode);
-                        return Err(Error::new(EACCES));
-                    }
+            else {
+                return Err(Error::new(ENOENT));
+            };
 
-                    if child.data().is_dir() {
-                        if !child.data().permission(uid, gid, Node::MODE_WRITE) {
-                            // println!("dir not writable {:o}", parent.1.mode);
-                            return Err(Error::new(EACCES));
-                        }
+            let Some((parent, _parent_name)) = nodes.last() else {
+                return Err(Error::new(EPERM));
+            };
 
-                        tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
-                            .and(Ok(0))
-                    } else {
-                        Err(Error::new(ENOTDIR))
-                    }
-                } else {
-                    Err(Error::new(EPERM))
+            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
+            if child.data().is_dir() {
+                if !child.data().permission(uid, gid, Node::MODE_WRITE) {
+                    // println!("dir not writable {:o}", parent.1.mode);
+                    return Err(Error::new(EACCES));
                 }
+
+                tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
+                    .and(Ok(0))
             } else {
-                Err(Error::new(ENOENT))
+                Err(Error::new(ENOTDIR))
             }
         })
     }
@@ -410,38 +417,36 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         self.fs.tx(|tx| {
             let mut nodes = Vec::new();
 
-            // TODO: Clean up indentation using let-else, possibly elsewhere too.
-
-            if let Some((child, child_name)) =
+            let Some((child, child_name)) =
                 Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes)?
-            {
-                if let Some((parent, _parent_name)) = nodes.last() {
-                    if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                        // println!("dir not writable {:o}", parent.1.mode);
-                        return Err(Error::new(EACCES));
-                    }
+            else {
+                return Err(Error::new(ENOENT));
+            };
 
-                    if !child.data().is_dir() {
-                        if child.data().uid() != uid && uid != 0 {
-                            // println!("file not owned by current user {}", parent.1.uid);
-                            return Err(Error::new(EACCES));
-                        }
+            let Some((parent, _parent_name)) = nodes.last() else {
+                return Err(Error::new(EPERM));
+            };
 
-                        if child.data().is_symlink() {
-                            tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
-                                .and(Ok(0))
-                        } else {
-                            tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
-                                .and(Ok(0))
-                        }
-                    } else {
-                        Err(Error::new(EISDIR))
-                    }
+            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
+            if !child.data().is_dir() {
+                if child.data().uid() != uid && uid != 0 {
+                    // println!("file not owned by current user {}", parent.1.uid);
+                    return Err(Error::new(EACCES));
+                }
+
+                if child.data().is_symlink() {
+                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
+                        .and(Ok(0))
                 } else {
-                    Err(Error::new(EPERM))
+                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
+                        .and(Ok(0))
                 }
             } else {
-                Err(Error::new(ENOENT))
+                Err(Error::new(EISDIR))
             }
         })
     }
