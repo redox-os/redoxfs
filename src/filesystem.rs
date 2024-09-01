@@ -30,7 +30,7 @@ impl<D: Disk> FileSystem<D> {
     ) -> Result<Self> {
         for ring_block in block_opt.map_or(0..65536, |x| x..x + 1) {
             let mut header = Header::default();
-            unsafe { disk.read_at(ring_block, &mut header)? };
+            disk.read_at(ring_block, &mut header)?;
 
             // Skip invalid headers
             if !header.valid() {
@@ -40,7 +40,7 @@ impl<D: Disk> FileSystem<D> {
             let block = ring_block - (header.generation() % HEADER_RING);
             for i in 0..HEADER_RING {
                 let mut other_header = Header::default();
-                unsafe { disk.read_at(block + i, &mut other_header)? };
+                disk.read_at(block + i, &mut other_header)?;
 
                 // Skip invalid headers
                 if !other_header.valid() {
@@ -85,7 +85,7 @@ impl<D: Disk> FileSystem<D> {
                 aes_blocks: Vec::with_capacity(BLOCK_SIZE as usize / aes::BLOCK_SIZE),
             };
 
-            unsafe { fs.reset_allocator()? };
+            fs.reset_allocator()?;
 
             // Squash allocations and sync
             Transaction::new(&mut fs).commit(squash)?;
@@ -131,9 +131,7 @@ impl<D: Disk> FileSystem<D> {
                     i += 1;
                 }
 
-                unsafe {
-                    disk.write_at(block as u64, &data)?;
-                }
+                disk.write_at(block as u64, &data)?;
             }
 
             let mut header = Header::new(size);
@@ -158,7 +156,7 @@ impl<D: Disk> FileSystem<D> {
             };
 
             // Write header generation zero
-            let count = unsafe { fs.disk.write_at(fs.block, &fs.header)? };
+            let count = fs.disk.write_at(fs.block, &fs.header)?;
             if count != core::mem::size_of_val(&fs.header) {
                 // Wrote wrong number of bytes
                 #[cfg(feature = "log")]
@@ -167,37 +165,35 @@ impl<D: Disk> FileSystem<D> {
             }
 
             // Set tree and alloc pointers and write header generation one
-            fs.tx(|tx| unsafe {
+            fs.tx(|tx| {
                 let tree = BlockData::new(
-                    BlockAddr::new(HEADER_RING + 1, BlockLevel::default()),
+                    unsafe { BlockAddr::new(HEADER_RING + 1, BlockLevel::default()) },
                     TreeList::empty(BlockLevel::default()).unwrap(),
                 );
 
                 let mut alloc = BlockData::new(
-                    BlockAddr::new(HEADER_RING + 2, BlockLevel::default()),
+                    unsafe { BlockAddr::new(HEADER_RING + 2, BlockLevel::default()) },
                     AllocList::empty(BlockLevel::default()).unwrap(),
                 );
                 let alloc_free = size / BLOCK_SIZE - (block_offset + HEADER_RING + 4);
                 alloc.data_mut().entries[0] = AllocEntry::new(HEADER_RING + 4, alloc_free as i64);
 
-                tx.header.tree = tx.write_block(tree)?;
-                tx.header.alloc = tx.write_block(alloc)?;
+                tx.header.tree = tx.write_block_raw(tree)?;
+                tx.header.alloc = tx.write_block_raw(alloc)?;
                 tx.header_changed = true;
 
                 Ok(())
             })?;
 
-            unsafe {
-                fs.reset_allocator()?;
-            }
+            fs.reset_allocator()?;
 
-            fs.tx(|tx| unsafe {
+            fs.tx(|tx| {
                 let mut root = BlockData::new(
-                    BlockAddr::new(HEADER_RING + 3, BlockLevel::default()),
+                    unsafe { BlockAddr::new(HEADER_RING + 3, BlockLevel::default()) },
                     Node::new(Node::MODE_DIR | 0o755, 0, 0, ctime, ctime_nsec),
                 );
                 root.data_mut().set_links(1);
-                let root_ptr = tx.write_block(root)?;
+                let root_ptr = tx.write_block_raw(root)?;
                 assert_eq!(tx.insert_tree(root_ptr)?.id(), 1);
                 Ok(())
             })?;
@@ -225,9 +221,8 @@ impl<D: Disk> FileSystem<D> {
 
     /// Reset allocator to state stored on disk
     ///
-    /// # Safety
     /// Unsafe, it must only be called when openning the filesystem
-    unsafe fn reset_allocator(&mut self) -> Result<()> {
+    fn reset_allocator(&mut self) -> Result<()> {
         self.allocator = Allocator::default();
 
         // To avoid having to update all prior alloc blocks, there is only a previous pointer
@@ -251,12 +246,12 @@ impl<D: Disk> FileSystem<D> {
                 if count < 0 {
                     for i in 0..-count {
                         //TODO: replace assert with error?
-                        let addr = BlockAddr::new(index + i as u64, BlockLevel::default());
+                        let addr = unsafe { BlockAddr::new(index + i as u64, BlockLevel::default()) };
                         assert_eq!(self.allocator.allocate_exact(addr), Some(addr));
                     }
                 } else {
                     for i in 0..count {
-                        let addr = BlockAddr::new(index + i as u64, BlockLevel::default());
+                        let addr = unsafe { BlockAddr::new(index + i as u64, BlockLevel::default()) };
                         self.allocator.deallocate(addr);
                     }
                 }

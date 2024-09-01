@@ -60,11 +60,11 @@ impl DiskFile {
 }
 
 impl Disk for DiskFile {
-    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         self.file.read_at(buffer, block * BLOCK_SIZE).or_eio()
     }
 
-    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         self.file.write_at(buffer, block * BLOCK_SIZE).or_eio()
     }
 
