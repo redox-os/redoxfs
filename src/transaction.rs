@@ -12,7 +12,11 @@ use syscall::error::{
     Error, Result, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, ERANGE,
 };
 
-use crate::{AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr, ALLOC_LIST_ENTRIES, HEADER_RING, DIR_ENTRY_MAX_LENGTH};
+use crate::{
+    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait,
+    DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr,
+    ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
+};
 
 pub struct Transaction<'a, D: Disk> {
     fs: &'a mut FileSystem<D>,
@@ -211,10 +215,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let gen_block = gen % HEADER_RING;
 
         // Write header
-        let count = 
-            self.fs
-                .disk
-                .write_at(self.fs.block + gen_block, &self.header)?;
+        let count = self
+            .fs
+            .disk
+            .write_at(self.fs.block + gen_block, &self.header)?;
         if count != mem::size_of_val(&self.header) {
             // Read wrong number of bytes
             #[cfg(feature = "log")]
@@ -248,10 +252,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         if let Some(raw) = self.write_cache.get(&ptr.addr()) {
             data.copy_from_slice(raw);
         } else {
-            let count = 
-                self.fs
-                    .disk
-                    .read_at(self.fs.block + ptr.addr().index(), &mut data)?;
+            let count = self
+                .fs
+                .disk
+                .read_at(self.fs.block + ptr.addr().index(), &mut data)?;
             if count != data.len() {
                 // Read wrong number of bytes
                 #[cfg(feature = "log")]
@@ -311,7 +315,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         // Expand record if larger level requested
-        let (_old_addr, old_raw) = unsafe { record.into_parts() };
+        let (_old_addr, old_raw) = record.into_parts();
         let mut raw = match T::empty(level) {
             Some(empty) => empty,
             None => {
@@ -580,7 +584,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         node_ptr: TreePtr<Node>,
     ) -> Result<()> {
-       self.check_name(&parent_ptr, name)?;
+        self.check_name(&parent_ptr, name)?;
 
         let entry = DirEntry::new(node_ptr, name);
 
@@ -764,9 +768,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    fn check_name(&mut self,
-                  parent_ptr: &TreePtr<Node>,
-                  name: &str) -> Result<()> {
+    fn check_name(&mut self, parent_ptr: &TreePtr<Node>, name: &str) -> Result<()> {
         if name.contains(':') {
             return Err(Error::new(EINVAL));
         }
@@ -1101,7 +1103,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
             if buf[i..i + len] != record.data()[j..j + len] {
                 // CoW record using its current level
-                let mut old_addr = record.swap_addr(self.allocate_unchecked(record.addr().level())?);
+                let mut old_addr =
+                    record.swap_addr(self.allocate_unchecked(record.addr().level())?);
 
                 // If the record was resized we need to dealloc the original ptr
                 if old_addr.is_null() {

@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec};
 use core::{mem, ops, slice, str};
 
-use crate::{BlockLevel, BlockTrait, Node, TreePtr, RECORD_LEVEL, DIR_ENTRY_MAX_LENGTH};
+use crate::{BlockLevel, BlockTrait, Node, TreePtr, DIR_ENTRY_MAX_LENGTH, RECORD_LEVEL};
 
 #[repr(packed)]
 pub struct DirEntry {
@@ -60,7 +60,7 @@ pub struct DirList {
     pub entries: Box<[DirEntry]>,
 }
 
-unsafe impl BlockTrait for DirList {
+impl BlockTrait for DirList {
     fn empty(level: BlockLevel) -> Option<Self> {
         if level.0 <= RECORD_LEVEL {
             let entries = level.bytes() as usize / mem::size_of::<DirEntry>();

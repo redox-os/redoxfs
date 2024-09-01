@@ -94,10 +94,12 @@ fn bootloader_password() -> Option<Vec<u8>> {
             addr: core::ptr::null_mut(),
             length: aligned_size,
             prot: libredox::flag::PROT_READ,
-            flags:  libredox::flag::MAP_SHARED,
+            flags: libredox::flag::MAP_SHARED,
             fd: fd.raw(),
             offset: addr as u64,
-        }).expect("failed to map REDOXFS_PASSWORD").cast::<u8>();
+        })
+        .expect("failed to map REDOXFS_PASSWORD")
+        .cast::<u8>();
 
         for i in 0..size {
             password.push(password_map.add(i).read());

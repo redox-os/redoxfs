@@ -9,8 +9,8 @@ const BLOCK_LIST_ENTRIES: usize = BLOCK_SIZE as usize / mem::size_of::<BlockPtr<
 pub struct BlockAddr(u64);
 
 impl BlockAddr {
-    // Unsafe because this can create invalid blocks
-    pub(crate) unsafe fn new(index: u64, level: BlockLevel) -> Self {
+    /// Unsafe because this can create invalid blocks
+    pub(crate) fn new(index: u64, level: BlockLevel) -> Self {
         // Level must only use the lowest four bits
         if level.0 > 0xF {
             panic!("block level used more than four bits");
@@ -25,7 +25,7 @@ impl BlockAddr {
     }
 
     pub fn null(level: BlockLevel) -> Self {
-        unsafe { Self::new(0, level) }
+        Self::new(0, level)
     }
 
     pub fn index(&self) -> u64 {
@@ -65,10 +65,8 @@ impl BlockLevel {
     }
 }
 
-pub unsafe trait BlockTrait {
-    fn empty(level: BlockLevel) -> Option<Self>
-    where
-        Self: Sized;
+pub trait BlockTrait: Sized {
+    fn empty(level: BlockLevel) -> Option<Self>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -103,7 +101,7 @@ impl<T> BlockData<T> {
         &mut self.data
     }
 
-    pub(crate) unsafe fn into_parts(self) -> (BlockAddr, T) {
+    pub(crate) fn into_parts(self) -> (BlockAddr, T) {
         (self.addr, self.data)
     }
 }
@@ -130,7 +128,7 @@ pub struct BlockList<T> {
     pub ptrs: [BlockPtr<T>; BLOCK_LIST_ENTRIES],
 }
 
-unsafe impl<T> BlockTrait for BlockList<T> {
+impl<T> BlockTrait for BlockList<T> {
     fn empty(level: BlockLevel) -> Option<Self> {
         if level.0 == 0 {
             Some(Self {
@@ -256,7 +254,7 @@ impl<T> fmt::Debug for BlockPtr<T> {
 #[repr(packed)]
 pub struct BlockRaw([u8; BLOCK_SIZE as usize]);
 
-unsafe impl BlockTrait for BlockRaw {
+impl BlockTrait for BlockRaw {
     fn empty(level: BlockLevel) -> Option<Self> {
         if level.0 == 0 {
             Some(Self([0; BLOCK_SIZE as usize]))

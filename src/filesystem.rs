@@ -2,10 +2,9 @@ use aes::{Aes128, BlockDecrypt, BlockEncrypt};
 use alloc::{collections::VecDeque, vec::Vec};
 use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 
-use crate::{Allocator, BlockAddr, BlockLevel, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING};
 #[cfg(feature = "std")]
-use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt,  TreeList};
-
+use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt, TreeList};
+use crate::{Allocator, BlockAddr, BlockLevel, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING};
 
 /// A file system
 pub struct FileSystem<D: Disk> {
@@ -167,12 +166,12 @@ impl<D: Disk> FileSystem<D> {
             // Set tree and alloc pointers and write header generation one
             fs.tx(|tx| {
                 let tree = BlockData::new(
-                    unsafe { BlockAddr::new(HEADER_RING + 1, BlockLevel::default()) },
+                    BlockAddr::new(HEADER_RING + 1, BlockLevel::default()),
                     TreeList::empty(BlockLevel::default()).unwrap(),
                 );
 
                 let mut alloc = BlockData::new(
-                    unsafe { BlockAddr::new(HEADER_RING + 2, BlockLevel::default()) },
+                    BlockAddr::new(HEADER_RING + 2, BlockLevel::default()),
                     AllocList::empty(BlockLevel::default()).unwrap(),
                 );
                 let alloc_free = size / BLOCK_SIZE - (block_offset + HEADER_RING + 4);
@@ -189,7 +188,7 @@ impl<D: Disk> FileSystem<D> {
 
             fs.tx(|tx| {
                 let mut root = BlockData::new(
-                    unsafe { BlockAddr::new(HEADER_RING + 3, BlockLevel::default()) },
+                    BlockAddr::new(HEADER_RING + 3, BlockLevel::default()),
                     Node::new(Node::MODE_DIR | 0o755, 0, 0, ctime, ctime_nsec),
                 );
                 root.data_mut().set_links(1);
@@ -246,12 +245,12 @@ impl<D: Disk> FileSystem<D> {
                 if count < 0 {
                     for i in 0..-count {
                         //TODO: replace assert with error?
-                        let addr = unsafe { BlockAddr::new(index + i as u64, BlockLevel::default()) };
+                        let addr = BlockAddr::new(index + i as u64, BlockLevel::default());
                         assert_eq!(self.allocator.allocate_exact(addr), Some(addr));
                     }
                 } else {
                     for i in 0..count {
-                        let addr = unsafe { BlockAddr::new(index + i as u64, BlockLevel::default()) };
+                        let addr = BlockAddr::new(index + i as u64, BlockLevel::default());
                         self.allocator.deallocate(addr);
                     }
                 }

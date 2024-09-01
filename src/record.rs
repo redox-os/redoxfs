@@ -6,7 +6,7 @@ use crate::{BlockLevel, BlockTrait, RECORD_LEVEL};
 //TODO: this is a box to prevent stack overflows
 pub struct RecordRaw(Box<[u8]>);
 
-unsafe impl BlockTrait for RecordRaw {
+impl BlockTrait for RecordRaw {
     fn empty(level: BlockLevel) -> Option<Self> {
         if level.0 <= RECORD_LEVEL {
             Some(Self(vec![0; level.bytes() as usize].into_boxed_slice()))

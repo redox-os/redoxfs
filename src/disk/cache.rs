@@ -1,5 +1,5 @@
-use std::collections::{HashMap, VecDeque};
 use std::cmp;
+use std::collections::{HashMap, VecDeque};
 use syscall::error::Result;
 
 use crate::disk::Disk;
