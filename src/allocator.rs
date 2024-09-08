@@ -123,7 +123,7 @@ impl Allocator {
     }
 }
 
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct AllocEntry {
     index: Le<u64>,
     count: Le<i64>,
@@ -187,7 +187,7 @@ impl fmt::Debug for AllocEntry {
 }
 
 /// Alloc log node
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct AllocList {
     pub prev: BlockPtr<AllocList>,
     pub entries: [AllocEntry; ALLOC_LIST_ENTRIES],

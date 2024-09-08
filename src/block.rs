@@ -125,7 +125,7 @@ impl<T: ops::Deref<Target = [u8]>> BlockData<T> {
     }
 }
 
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct BlockList<T> {
     pub ptrs: [BlockPtr<T>; BLOCK_LIST_ENTRIES],
 }
@@ -176,7 +176,7 @@ impl<T> ops::DerefMut for BlockList<T> {
     }
 }
 
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct BlockPtr<T> {
     addr: Le<u64>,
     hash: Le<u64>,
@@ -253,7 +253,7 @@ impl<T> fmt::Debug for BlockPtr<T> {
     }
 }
 
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct BlockRaw([u8; BLOCK_SIZE as usize]);
 
 unsafe impl BlockTrait for BlockRaw {

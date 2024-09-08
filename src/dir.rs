@@ -3,7 +3,7 @@ use core::{mem, ops, slice, str};
 
 use crate::{BlockLevel, BlockTrait, Node, TreePtr, RECORD_LEVEL, DIR_ENTRY_MAX_LENGTH};
 
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct DirEntry {
     node_ptr: TreePtr<Node>,
     name: [u8; DIR_ENTRY_MAX_LENGTH],

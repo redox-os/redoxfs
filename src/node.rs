@@ -80,7 +80,7 @@ type BlockListL3 = BlockList<BlockListL2>;
 type BlockListL4 = BlockList<BlockListL3>;
 
 /// A file/folder node
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct Node {
     pub mode: Le<u16>,
     pub uid: Le<u32>,

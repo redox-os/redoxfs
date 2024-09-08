@@ -10,7 +10,7 @@ pub const HEADER_RING: u64 = 256;
 
 /// The header of the filesystem
 #[derive(Clone, Copy)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct Header {
     /// Signature, should be SIGNATURE
     pub signature: [u8; 8],

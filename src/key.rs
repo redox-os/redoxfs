@@ -40,7 +40,7 @@ impl Salt {
 
 /// The key slot, containing the salt and encrypted key that are used with one password
 #[derive(Clone, Copy, Default)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct KeySlot {
     salt: Salt,
     encrypted_key: EncryptedKey,

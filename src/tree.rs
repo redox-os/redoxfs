@@ -45,7 +45,7 @@ impl<T> TreeData<T> {
     }
 }
 
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct TreeList<T> {
     pub ptrs: [BlockPtr<T>; TREE_LIST_ENTRIES],
 }
@@ -85,7 +85,7 @@ impl<T> ops::DerefMut for TreeList<T> {
     }
 }
 
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct TreePtr<T> {
     id: Le<u32>,
     phantom: PhantomData<T>,
