@@ -1,5 +1,5 @@
+use std::cmp;
 use std::collections::{HashMap, VecDeque};
-use std::{cmp, ptr};
 use syscall::error::Result;
 
 use crate::disk::Disk;
@@ -7,7 +7,7 @@ use crate::BLOCK_SIZE;
 
 fn copy_memory(src: &[u8], dest: &mut [u8]) -> usize {
     let len = cmp::min(src.len(), dest.len());
-    unsafe { ptr::copy(src.as_ptr(), dest.as_mut_ptr(), len) };
+    dest[..len].copy_from_slice(&src[..len]);
     len
 }
 
@@ -42,7 +42,7 @@ impl<T: Disk> DiskCache<T> {
 }
 
 impl<T: Disk> Disk for DiskCache<T> {
-    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         // println!("Cache read at {}", block);
 
         let mut read = 0;
@@ -82,7 +82,7 @@ impl<T: Disk> Disk for DiskCache<T> {
         Ok(read)
     }
 
-    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         //TODO: Write only blocks that have changed
         // println!("Cache write at {}", block);
 

@@ -50,7 +50,7 @@ pub struct TreeList<T> {
     pub ptrs: [BlockPtr<T>; TREE_LIST_ENTRIES],
 }
 
-unsafe impl<T> BlockTrait for TreeList<T> {
+impl<T> BlockTrait for TreeList<T> {
     fn empty(level: BlockLevel) -> Option<Self> {
         if level.0 == 0 {
             Some(Self {

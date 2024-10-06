@@ -46,7 +46,7 @@ impl Allocator {
             self.levels[level].push(index + level_size);
         }
 
-        Some(unsafe { BlockAddr::new(index, block_level) })
+        Some(BlockAddr::new(index, block_level))
     }
 
     pub fn allocate_exact(&mut self, exact_addr: BlockAddr) -> Option<BlockAddr> {
@@ -80,7 +80,7 @@ impl Allocator {
             }
         }
 
-        Some(unsafe { BlockAddr::new(index_opt?, exact_addr.level()) })
+        Some(BlockAddr::new(index_opt?, exact_addr.level()))
     }
 
     pub fn deallocate(&mut self, addr: BlockAddr) {
@@ -193,7 +193,7 @@ pub struct AllocList {
     pub entries: [AllocEntry; ALLOC_LIST_ENTRIES],
 }
 
-unsafe impl BlockTrait for AllocList {
+impl BlockTrait for AllocList {
     fn empty(level: BlockLevel) -> Option<Self> {
         if level.0 == 0 {
             Some(Self {
@@ -255,7 +255,7 @@ fn allocator_test() {
 
     assert_eq!(alloc.allocate(BlockLevel::default()), None);
 
-    alloc.deallocate(unsafe { BlockAddr::new(1, BlockLevel::default()) });
+    alloc.deallocate(BlockAddr::new(1, BlockLevel::default()));
     assert_eq!(
         alloc.allocate(BlockLevel::default()),
         Some(unsafe { BlockAddr::new(1, BlockLevel::default()) })
