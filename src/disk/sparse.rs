@@ -36,13 +36,13 @@ impl DiskSparse {
 }
 
 impl Disk for DiskSparse {
-    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
         let count = try_disk!(self.file.read(buffer));
         Ok(count)
     }
 
-    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
         let count = try_disk!(self.file.write(buffer));
         Ok(count)
