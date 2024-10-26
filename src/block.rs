@@ -48,12 +48,13 @@ pub struct BlockLevel(pub(crate) usize);
 
 impl BlockLevel {
     pub(crate) fn for_bytes(bytes: u64) -> Self {
-        //TODO: optimize
-        let mut level = BlockLevel(0);
-        while level.bytes() < bytes {
-            level.0 += 1;
+        if bytes == 0 {
+            return BlockLevel(0);
         }
-        level
+        let level = bytes.div_ceil(BLOCK_SIZE)
+            .next_power_of_two()
+            .trailing_zeros() as usize;
+        BlockLevel(level)
     }
 
     pub fn blocks(self) -> i64 {
