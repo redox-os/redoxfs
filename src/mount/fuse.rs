@@ -374,7 +374,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
         name: &OsStr,
         mode: u32,
         _umask: u32,
-        flags: i32,
+        _flags: i32,
         reply: ReplyCreate,
     ) {
         let parent_ptr = TreePtr::<Node>::new(parent_id as u32);
@@ -390,7 +390,7 @@ impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
         }) {
             Ok(node) => {
                 // println!("Create {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);
-                reply.created(&TTL, &node_attr(&node), 0, 0, flags as u32);
+                reply.created(&TTL, &node_attr(&node), 0, 0, 0);
             }
             Err(error) => {
                 reply.error(error.errno);
