@@ -1,40 +1,46 @@
-use std::ops::DerefMut;
 use std::path::Path;
 use std::process::Command;
-use std::{fs, sync, thread, time};
-
-use crate::{unmount_path, DiskSparse, FileSystem};
+use std::{fs, thread, time};
+use crate::{unmount_path, DiskSparse, FileSystem, Node, TreePtr};
 
 fn with_redoxfs<T, F>(callback: F) -> T
 where
     T: Send + Sync + 'static,
-    F: FnMut(&Path) -> T + Send + Sync + 'static,
+    F: FnOnce(FileSystem<DiskSparse>) -> T + Send + Sync + 'static,
 {
     let disk_path = "image.bin";
-    let mount_path = "image";
 
     let res = {
         let disk = DiskSparse::create(dbg!(disk_path), 1024 * 1024 * 1024).unwrap();
 
+        let ctime = dbg!(time::SystemTime::now().duration_since(time::UNIX_EPOCH)).unwrap();
+        let fs = FileSystem::create(disk, None, ctime.as_secs(), ctime.subsec_nanos()).unwrap();
+
+        callback(fs)
+    };
+
+    dbg!(fs::remove_file(dbg!(disk_path))).unwrap();
+
+    res
+}
+
+fn with_mounted<T, F>(callback: F) -> T
+where
+    T: Send + Sync + 'static,
+    F: FnOnce(&Path) -> T + Send + Sync + 'static,
+{
+    let mount_path = "image";
+
+    let res = with_redoxfs(move |fs| {
         if cfg!(not(target_os = "redox")) {
             if !Path::new(mount_path).exists() {
                 dbg!(fs::create_dir(dbg!(mount_path))).unwrap();
             }
         }
-
-        let ctime = dbg!(time::SystemTime::now().duration_since(time::UNIX_EPOCH)).unwrap();
-        let fs = FileSystem::create(disk, None, ctime.as_secs(), ctime.subsec_nanos()).unwrap();
-
-        let callback_mutex = sync::Arc::new(sync::Mutex::new(callback));
         let join_handle = crate::mount(fs, dbg!(mount_path), move |real_path| {
-            let callback_mutex = callback_mutex.clone();
             let real_path = real_path.to_owned();
             thread::spawn(move || {
-                let res = {
-                    let mut callback_guard = callback_mutex.lock().unwrap();
-                    let callback = callback_guard.deref_mut();
-                    callback(&real_path)
-                };
+                let res = callback(&real_path);
 
                 if cfg!(target_os = "redox") {
                     dbg!(fs::remove_file(dbg!(format!(":{}", mount_path)))).unwrap();
@@ -54,9 +60,7 @@ where
         .unwrap();
 
         join_handle.join().unwrap()
-    };
-
-    dbg!(fs::remove_file(dbg!(disk_path))).unwrap();
+    });
 
     if cfg!(not(target_os = "redox")) {
         dbg!(fs::remove_dir(dbg!(mount_path))).unwrap();
@@ -67,7 +71,7 @@ where
 
 #[test]
 fn simple() {
-    with_redoxfs(|path| {
+    with_mounted(|path| {
         dbg!(fs::create_dir(&path.join("test"))).unwrap();
     })
 }
@@ -78,7 +82,7 @@ fn mmap() {
     use syscall;
 
     //TODO
-    with_redoxfs(|path| {
+    with_mounted(|path| {
         use std::slice;
 
         let path = dbg!(path.join("test"));
@@ -128,4 +132,26 @@ fn mmap() {
         mmap_inner(true);
         mmap_inner(false);
     })
+}
+
+#[test]
+fn create_remove_should_not_increase_size() {
+    with_redoxfs(|mut fs| {
+        let initially_free = fs.allocator().free();
+
+        let tree_ptr = TreePtr::<Node>::root();
+        let name = "test";
+        let _ = fs.tx(|tx| {
+            tx.create_node(
+                tree_ptr,
+                name,
+                Node::MODE_FILE | 0644,
+                1,
+                0,
+            )?;
+            tx.remove_node(tree_ptr, name, Node::MODE_FILE)
+        }).unwrap();
+
+        assert_eq!(fs.allocator().free(), initially_free);
+    });
 }
