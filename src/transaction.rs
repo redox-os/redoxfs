@@ -372,10 +372,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(block.create_ptr())
     }
 
-    pub fn read_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
+    fn read_tree_and_addr<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: TreePtr<T>,
-    ) -> Result<TreeData<T>> {
+    ) -> Result<(TreeData<T>, BlockAddr)> {
         if ptr.is_null() {
             // ID is invalid (should this return None?)
             #[cfg(feature = "log")]
@@ -401,7 +401,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
         };
         data.copy_from_slice(raw.data());
 
-        Ok(TreeData::new(ptr.id(), data))
+        Ok((TreeData::new(ptr.id(), data), raw.addr()))
+    }
+
+    pub fn read_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: TreePtr<T>,
+    ) -> Result<TreeData<T>> {
+        Ok(self.read_tree_and_addr(ptr)?.0)
     }
 
     //TODO: improve performance, reduce writes
@@ -666,7 +673,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 if let Some(entry_name) = entry.name() {
                     if entry_name == name {
                         // Read node and test type against requested type
-                        let node = self.read_tree(node_ptr)?;
+                        let (node, addr) = self.read_tree_and_addr(node_ptr)?;
                         if node.data().mode() & Node::MODE_TYPE == mode {
                             if node.data().is_dir()
                                 && node.data().size() > 0
@@ -677,7 +684,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                             }
 
                             // Save node and clear entry
-                            node_opt = Some(node);
+                            node_opt = Some((node, addr));
                             *entry = DirEntry::default();
                             break;
                         } else if node.data().is_dir() {
@@ -691,14 +698,16 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
             }
 
-            if let Some(mut node) = node_opt {
+            if let Some((mut node, addr)) = node_opt {
                 let links = node.data().links();
-                if links > 1 {
+                let remove_node = if links > 1 {
                     node.data_mut().set_links(links - 1);
+                    false
                 } else {
                     node.data_mut().set_links(0);
                     self.truncate_node_inner(&mut node, 0)?;
-                }
+                    true
+                };
 
                 if record_offset == records - 1 && dir.data().is_empty() {
                     let mut remove_record = record_offset;
@@ -728,8 +737,15 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     self.sync_node_record_ptr(&mut parent, record_offset, dir_record_ptr)?;
                 }
 
-                // Sync both parent and node at the same time
-                self.sync_trees(&[parent, node])?;
+                if remove_node {
+                    self.sync_tree(parent)?;
+                    unsafe {
+                        self.deallocate(addr);
+                    }
+                } else {
+                    // Sync both parent and node at the same time
+                    self.sync_trees(&[parent, node])?;
+                }
 
                 return Ok(());
             }
