@@ -1,17 +1,21 @@
 use std::path::Path;
 use std::process::Command;
 use std::{fs, thread, time};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 use crate::{unmount_path, DiskSparse, FileSystem, Node, TreePtr};
+
+static IMAGE_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 fn with_redoxfs<T, F>(callback: F) -> T
 where
     T: Send + Sync + 'static,
     F: FnOnce(FileSystem<DiskSparse>) -> T + Send + Sync + 'static,
 {
-    let disk_path = "image.bin";
+    let disk_path = format!("image{}.bin", IMAGE_SEQ.fetch_add(1, Relaxed));
 
     let res = {
-        let disk = DiskSparse::create(dbg!(disk_path), 1024 * 1024 * 1024).unwrap();
+        let disk = DiskSparse::create(dbg!(&disk_path), 1024 * 1024 * 1024).unwrap();
 
         let ctime = dbg!(time::SystemTime::now().duration_since(time::UNIX_EPOCH)).unwrap();
         let fs = FileSystem::create(disk, None, ctime.as_secs(), ctime.subsec_nanos()).unwrap();
@@ -29,27 +33,29 @@ where
     T: Send + Sync + 'static,
     F: FnOnce(&Path) -> T + Send + Sync + 'static,
 {
-    let mount_path = "image";
+    let mount_path_o = format!("image{}", IMAGE_SEQ.fetch_add(1, Relaxed));
+    let mount_path = mount_path_o.clone();
 
     let res = with_redoxfs(move |fs| {
         if cfg!(not(target_os = "redox")) {
-            if !Path::new(mount_path).exists() {
-                dbg!(fs::create_dir(dbg!(mount_path))).unwrap();
+            if !Path::new(&mount_path).exists() {
+                dbg!(fs::create_dir(dbg!(&mount_path))).unwrap();
             }
         }
         let join_handle = crate::mount(fs, dbg!(mount_path), move |real_path| {
             let real_path = real_path.to_owned();
             thread::spawn(move || {
                 let res = callback(&real_path);
+                let real_path = real_path.to_str().unwrap();
 
                 if cfg!(target_os = "redox") {
-                    dbg!(fs::remove_file(dbg!(format!(":{}", mount_path)))).unwrap();
+                    dbg!(fs::remove_file(dbg!(format!(":{}", real_path)))).unwrap();
                 } else {
                     if !dbg!(Command::new("sync").status()).unwrap().success() {
                         panic!("sync failed");
                     }
 
-                    if !unmount_path(mount_path).is_ok() {
+                    if !unmount_path(real_path).is_ok() {
                         panic!("umount failed");
                     }
                 }
@@ -63,7 +69,7 @@ where
     });
 
     if cfg!(not(target_os = "redox")) {
-        dbg!(fs::remove_dir(dbg!(mount_path))).unwrap();
+        dbg!(fs::remove_dir(dbg!(mount_path_o))).unwrap();
     }
 
     res

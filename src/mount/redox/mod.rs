@@ -14,7 +14,7 @@ pub fn mount<D, P, T, F>(filesystem: FileSystem<D>, mountpoint: P, mut callback:
 where
     D: Disk,
     P: AsRef<Path>,
-    F: FnMut(&Path) -> T,
+    F: FnOnce(&Path) -> T,
 {
     let mountpoint = mountpoint.as_ref();
     let socket = Socket::<V2>::create(&format!("{}", mountpoint.display()))?;
