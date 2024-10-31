@@ -19,13 +19,13 @@ macro_rules! try_disk {
 pub struct DiskIo<T>(pub T);
 
 impl<T: Read + Write + Seek> Disk for DiskIo<T> {
-    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         try_disk!(self.0.seek(SeekFrom::Start(block * BLOCK_SIZE)));
         let count = try_disk!(self.0.read(buffer));
         Ok(count)
     }
 
-    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         try_disk!(self.0.seek(SeekFrom::Start(block * BLOCK_SIZE)));
         let count = try_disk!(self.0.write(buffer));
         Ok(count)

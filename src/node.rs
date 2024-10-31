@@ -107,7 +107,7 @@ pub struct Node {
     pub level4: [BlockPtr<BlockListL4>; 12],
 }
 
-unsafe impl BlockTrait for Node {
+impl BlockTrait for Node {
     fn empty(level: BlockLevel) -> Option<Self> {
         if level.0 == 0 {
             Some(Self::default())
