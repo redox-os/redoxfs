@@ -1,9 +1,7 @@
 extern crate libc;
-
+extern crate redoxfs;
 #[cfg(target_os = "redox")]
 extern crate syscall;
-
-extern crate redoxfs;
 extern crate uuid;
 
 use std::env;
@@ -83,13 +81,13 @@ fn bootloader_password() -> Option<Vec<u8>> {
         addr_env.to_str().expect("REDOXFS_PASSWORD_ADDR not valid"),
         16,
     )
-    .expect("failed to parse REDOXFS_PASSWORD_ADDR");
+        .expect("failed to parse REDOXFS_PASSWORD_ADDR");
 
     let size = usize::from_str_radix(
         size_env.to_str().expect("REDOXFS_PASSWORD_SIZE not valid"),
         16,
     )
-    .expect("failed to parse REDOXFS_PASSWORD_SIZE");
+        .expect("failed to parse REDOXFS_PASSWORD_SIZE");
 
     let mut password = Vec::with_capacity(size);
     unsafe {
@@ -102,7 +100,7 @@ fn bootloader_password() -> Option<Vec<u8>> {
             addr: core::ptr::null_mut(),
             length: aligned_size,
             prot: libredox::flag::PROT_READ,
-            flags:  libredox::flag::MAP_SHARED,
+            flags: libredox::flag::MAP_SHARED,
             fd: fd.raw(),
             offset: addr as u64,
         }).expect("failed to map REDOXFS_PASSWORD").cast::<u8>();
@@ -116,8 +114,19 @@ fn bootloader_password() -> Option<Vec<u8>> {
     Some(password)
 }
 
+fn print_err_exit(err: impl AsRef<str>) -> ! {
+    eprintln!("{}", err.as_ref());
+    usage();
+    process::exit(1)
+}
+
+fn print_usage_exit() -> ! {
+    usage();
+    process::exit(1)
+}
+
 fn usage() {
-    println!("redoxfs [--uuid] [disk or uuid] [mountpoint] [block in hex]");
+    println!("redoxfs --no-daemon [-d] [--uuid] [disk or uuid] [mountpoint] [block in hex]");
 }
 
 enum DiskId {
@@ -263,7 +272,7 @@ fn filesystem_by_uuid(
     None
 }
 
-fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write: File) -> ! {
+fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write: Option<File>) -> ! {
     setsig();
 
     let filesystem_opt = match *disk_id {
@@ -280,7 +289,10 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write:
                 path,
                 mounted_path.display()
             );
-            let _ = write.write(&[0]);
+
+            if let Some(ref mut write) = write {
+                let _ = write.write(&[0]);
+            }
         }) {
             Ok(()) => {
                 process::exit(0);
@@ -303,7 +315,10 @@ fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write:
         }
     }
 
-    let _ = write.write(&[1]);
+    if let Some(ref mut write) = write {
+        let _ = write.write(&[1]);
+    }
+
     process::exit(1);
 }
 
@@ -312,79 +327,70 @@ fn main() {
 
     let mut args = env::args().skip(1);
 
-    let disk_id = match args.next() {
-        Some(arg) => {
-            if arg == "--uuid" {
-                let uuid = match args.next() {
-                    Some(arg) => match Uuid::parse_str(&arg) {
-                        Ok(uuid) => uuid,
-                        Err(err) => {
-                            println!("redoxfs: invalid uuid '{}': {}", arg, err);
-                            usage();
-                            process::exit(1);
-                        }
-                    },
-                    None => {
-                        println!("redoxfs: no uuid provided");
-                        usage();
-                        process::exit(1);
-                    }
-                };
+    let mut daemonise = true;
+    let mut disk_id: Option<DiskId> = None;
+    let mut mountpoint: Option<String> = None;
+    let mut block_opt: Option<u64> = None;
 
-                DiskId::Uuid(uuid)
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--no-daemon" | "-d" => daemonise = false,
+
+            "--uuid" if disk_id.is_none() => {
+                disk_id = Some(DiskId::Uuid(match args.next().as_deref().map(Uuid::parse_str) {
+                    Some(Ok(uuid)) => uuid,
+                    Some(Err(err)) => print_err_exit(format!("redoxfs: invalid uuid '{}': {}", arg, err)),
+                    None => print_err_exit("redoxfs: no uuid provided")
+                }));
+            }
+
+            disk if disk_id.is_none() => disk_id = Some(DiskId::Path(disk.to_owned())),
+
+            mnt if disk_id.is_some() => mountpoint = Some(mnt.to_owned()),
+
+            opts if mountpoint.is_some() => match u64::from_str_radix(opts, 16) {
+                Ok(block) => block_opt = Some(block),
+                Err(err) => print_err_exit(format!("redoxfs: invalid block '{}': {}", opts, err))
+            },
+
+            _ => print_usage_exit()
+        }
+    }
+
+    let Some(disk_id) = disk_id else {
+        print_err_exit("redoxfs: no disk provided");
+    };
+
+    let Some(mountpoint) = mountpoint else {
+        print_err_exit("redoxfs: no mountpoint provided");
+    };
+
+    if daemonise {
+        let mut pipes = [0; 2];
+        if pipe(&mut pipes) == 0 {
+            let mut read = unsafe { File::from_raw_fd(pipes[0] as RawFd) };
+            let write = unsafe { File::from_raw_fd(pipes[1] as RawFd) };
+
+            let pid = fork();
+            if pid == 0 {
+                drop(read);
+
+                daemon(&disk_id, &mountpoint, block_opt, Some(write));
+            } else if pid > 0 {
+                drop(write);
+
+                let mut res = [0];
+                read.read_exact(&mut res).unwrap();
+
+                process::exit(res[0] as i32);
             } else {
-                DiskId::Path(arg)
+                panic!("redoxfs: failed to fork");
             }
-        }
-        None => {
-            println!("redoxfs: no disk provided");
-            usage();
-            process::exit(1);
-        }
-    };
-
-    let mountpoint = match args.next() {
-        Some(arg) => arg,
-        None => {
-            println!("redoxfs: no mountpoint provided");
-            usage();
-            process::exit(1);
-        }
-    };
-
-    let block_opt = match args.next() {
-        Some(arg) => match u64::from_str_radix(&arg, 16) {
-            Ok(block) => Some(block),
-            Err(err) => {
-                println!("redoxfs: invalid block '{}': {}", arg, err);
-                usage();
-                process::exit(1);
-            }
-        },
-        None => None,
-    };
-
-    let mut pipes = [0; 2];
-    if pipe(&mut pipes) == 0 {
-        let mut read = unsafe { File::from_raw_fd(pipes[0] as RawFd) };
-        let write = unsafe { File::from_raw_fd(pipes[1] as RawFd) };
-
-        let pid = fork();
-        if pid == 0 {
-            drop(read);
-
-            daemon(&disk_id, &mountpoint, block_opt, write);
-        } else if pid > 0 {
-            drop(write);
-
-            let mut res = [0];
-            read.read_exact(&mut res).unwrap();
-
-            process::exit(res[0] as i32);
         } else {
-            panic!("redoxfs: failed to fork");
+            panic!("redoxfs: failed to create pipe");
         }
     } else {
-        panic!("redoxfs: failed to create pipe");
+        println!("redoxfs: running in foreground");
+        daemon(&disk_id, &mountpoint, block_opt, None);
     }
 }
