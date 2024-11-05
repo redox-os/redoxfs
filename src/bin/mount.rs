@@ -346,7 +346,7 @@ fn main() {
 
             disk if disk_id.is_none() => disk_id = Some(DiskId::Path(disk.to_owned())),
 
-            mnt if disk_id.is_some() => mountpoint = Some(mnt.to_owned()),
+            mnt if disk_id.is_some() && mountpoint.is_none() => mountpoint = Some(mnt.to_owned()),
 
             opts if mountpoint.is_some() => match u64::from_str_radix(opts, 16) {
                 Ok(block) => block_opt = Some(block),
