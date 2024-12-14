@@ -26,6 +26,8 @@ Being MIT licensed, RedoxFS can be bundled on GPL-licensed operating systems (Li
 cargo install redoxfs
 ```
 
+You can also build RedoxFS from this repository.
+
 - Configure your storage device to allow rootless usage
 
 If you are on Linux you need root permission to acess block devices (storage), but it's recommended to run RedoxFS as rootless.
