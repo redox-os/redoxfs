@@ -18,6 +18,32 @@ Current features:
 
 Being MIT licensed, RedoxFS can be bundled on GPL-licensed operating systems (Linux, for example).
 
+### How to mount a partition
+
+- Install RedoxFS
+
+```sh
+cargo install redoxfs
+```
+
+You can also build RedoxFS from this repository.
+
+- Configure your storage device to allow rootless usage
+
+If you are on Linux you need root permission to acess block devices (storage), but it's recommended to run RedoxFS as rootless.
+
+To do that you need to configure your storage device permission to your user with the following command:
+
+```sh
+sudo setfacl -m u:your-username:rw /path/to/disk
+```
+
+- Mount your RedoxFS partition
+
+```sh
+redoxfs /path/to/disk /path/to/mount
+```
+
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![crates.io](http://meritbadge.herokuapp.com/redoxfs)](https://crates.io/crates/redoxfs)
 [![docs.rs](https://docs.rs/redoxfs/badge.svg)](https://docs.rs/redoxfs)
