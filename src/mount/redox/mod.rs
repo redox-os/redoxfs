@@ -1,7 +1,7 @@
+use redox_scheme::{RequestKind, SignalBehavior, Socket, V2};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use redox_scheme::{RequestKind, SignalBehavior, Socket, V2};
 
 use crate::{Disk, FileSystem, Transaction, IS_UMT};
 
@@ -26,12 +26,14 @@ where
     while IS_UMT.load(Ordering::SeqCst) == 0 {
         let req = match socket.next_request(SignalBehavior::Restart)? {
             None => break,
-            Some(req) => if let RequestKind::Call(r) = req.kind() {
-                r
-            } else {
-                // TODO: Redoxfs does not yet support asynchronous file IO. It might still make
-                // sense to implement cancellation for huge buffers, e.g. dd bs=1G
-                continue;
+            Some(req) => {
+                if let RequestKind::Call(r) = req.kind() {
+                    r
+                } else {
+                    // TODO: Redoxfs does not yet support asynchronous file IO. It might still make
+                    // sense to implement cancellation for huge buffers, e.g. dd bs=1G
+                    continue;
+                }
             }
         };
         let response = req.handle_scheme_mut(&mut scheme);

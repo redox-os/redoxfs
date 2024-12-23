@@ -2,10 +2,9 @@ use aes::{Aes128, BlockDecrypt, BlockEncrypt};
 use alloc::{collections::VecDeque, vec::Vec};
 use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 
-use crate::{Allocator, BlockAddr, BlockLevel, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING};
 #[cfg(feature = "std")]
-use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt,  TreeList};
-
+use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt, TreeList};
+use crate::{Allocator, BlockAddr, BlockLevel, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING};
 
 /// A file system
 pub struct FileSystem<D: Disk> {

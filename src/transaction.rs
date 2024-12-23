@@ -12,7 +12,11 @@ use syscall::error::{
     Error, Result, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, ERANGE,
 };
 
-use crate::{AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr, ALLOC_LIST_ENTRIES, HEADER_RING, DIR_ENTRY_MAX_LENGTH};
+use crate::{
+    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait,
+    DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr,
+    ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
+};
 
 pub struct Transaction<'a, D: Disk> {
     fs: &'a mut FileSystem<D>,
@@ -842,9 +846,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    fn check_name(&mut self,
-                  parent_ptr: &TreePtr<Node>,
-                  name: &str) -> Result<()> {
+    fn check_name(&mut self, parent_ptr: &TreePtr<Node>, name: &str) -> Result<()> {
         if name.contains(':') {
             return Err(Error::new(EINVAL));
         }

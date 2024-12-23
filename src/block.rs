@@ -65,7 +65,8 @@ impl BlockLevel {
         if bytes == 0 {
             return BlockLevel(0);
         }
-        let level = bytes.div_ceil(BLOCK_SIZE)
+        let level = bytes
+            .div_ceil(BLOCK_SIZE)
             .next_power_of_two()
             .trailing_zeros() as usize;
         BlockLevel(level)
