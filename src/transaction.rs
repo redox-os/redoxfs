@@ -1047,24 +1047,35 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ) -> Result<usize> {
         let node_size = node.data().size();
         let record_level = node.data().record_level();
-        let mut i = 0;
-        while i < buf.len() && offset < node_size {
+
+        let mut bytes_read = 0;
+        while bytes_read < buf.len() && offset < node_size {
+            // How many bytes we've read into the next record
             let j = (offset % record_level.bytes()) as usize;
+
+            // Number of bytes to read in this iteration
             let len = min(
-                buf.len() - i,
-                min(record_level.bytes() - j as u64, node_size - offset) as usize,
+                buf.len() - bytes_read, // number of bytes we have left in `buf`
+                min(
+                    record_level.bytes() - j as u64, // number of bytes we haven't read in this record
+                    node_size - offset,              // number of bytes left in this node
+                ) as usize,
             );
+
+            let record_idx = offset / record_level.bytes();
+            let record_ptr = self.node_record_ptr(node, record_idx)?;
+
+            // The level of the record to read.
+            // This is at most `record_level` due to the way `len` is computed.
             let level = BlockLevel::for_bytes((j + len) as u64);
 
-            let record_ptr = self.node_record_ptr(node, offset / record_level.bytes())?;
             let record = unsafe { self.read_record(record_ptr, level)? };
+            buf[bytes_read..bytes_read + len].copy_from_slice(&record.data()[j..j + len]);
 
-            buf[i..i + len].copy_from_slice(&record.data()[j..j + len]);
-
-            i += len;
+            bytes_read += len;
             offset += len as u64;
         }
-        Ok(i)
+        Ok(bytes_read)
     }
 
     pub fn read_node(
