@@ -649,15 +649,16 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         node_ptr: TreePtr<Node>,
     ) -> Result<()> {
-       self.check_name(&parent_ptr, name)?;
-
-        let entry = DirEntry::new(node_ptr, name);
+        self.check_name(&parent_ptr, name)?;
 
         let mut parent = self.read_tree(parent_ptr)?;
-
         let mut node = self.read_tree(node_ptr)?;
+
+        // Increment node reference counter
         let links = node.data().links();
         node.data_mut().set_links(links + 1);
+
+        let entry = DirEntry::new(node_ptr, name);
 
         let record_level = parent.data().record_level();
         let record_end = parent.data().size() / record_level.bytes();
@@ -665,21 +666,19 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let mut dir_record_ptr = self.node_record_ptr(&parent, record_offset)?;
             let mut dir_ptr: BlockPtr<DirList> = unsafe { dir_record_ptr.cast() };
             let mut dir = self.read_block(dir_ptr)?;
-            let mut dir_changed = false;
+
             for old_entry in dir.data_mut().entries.iter_mut() {
-                // Skip filled entries
                 if !old_entry.node_ptr().is_null() {
                     continue;
                 }
 
+                // Write our new entry into the first
+                // free slot in this directory
                 *old_entry = entry;
-                dir_changed = true;
-                break;
-            }
-            if dir_changed {
+
+                // Write updated blocks
                 dir_ptr = self.sync_block(dir)?;
                 dir_record_ptr = unsafe { dir_ptr.cast() };
-
                 self.sync_node_record_ptr(&mut parent, record_offset, dir_record_ptr)?;
                 self.sync_trees(&[parent, node])?;
 
