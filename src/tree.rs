@@ -147,12 +147,13 @@ impl<T> TreePtr<T> {
         const NUM: u32 = 1 << SHIFT;
         const MASK: u32 = NUM - 1;
         let id = self.id();
-        (
-            ((id >> (3 * SHIFT)) & MASK) as usize,
-            ((id >> (2 * SHIFT)) & MASK) as usize,
-            ((id >> SHIFT) & MASK) as usize,
-            (id & MASK) as usize,
-        )
+
+        let i3 = ((id >> (3 * SHIFT)) & MASK) as usize;
+        let i2 = ((id >> (2 * SHIFT)) & MASK) as usize;
+        let i1 = ((id >> SHIFT) & MASK) as usize;
+        let i0 = (id & MASK) as usize;
+
+        return (i3, i2, i1, i0);
     }
 }
 
