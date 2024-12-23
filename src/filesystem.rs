@@ -226,7 +226,7 @@ impl<D: Disk> FileSystem<D> {
     /// Reset allocator to state stored on disk
     ///
     /// # Safety
-    /// Unsafe, it must only be called when openning the filesystem
+    /// Unsafe, it must only be called when opening the filesystem
     unsafe fn reset_allocator(&mut self) -> Result<()> {
         self.allocator = Allocator::default();
 
