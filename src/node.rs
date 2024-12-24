@@ -3,6 +3,7 @@ use endian_num::Le;
 
 use crate::{BlockLevel, BlockList, BlockPtr, BlockTrait, RecordRaw, BLOCK_SIZE, RECORD_LEVEL};
 
+/// An index into a [`Node`]'s block table.
 pub enum NodeLevel {
     L0(usize),
     L1(usize, usize),
@@ -13,6 +14,11 @@ pub enum NodeLevel {
 
 impl NodeLevel {
     // Warning: this uses constant record offsets, make sure to sync with Node
+
+    /// Return the [`NodeLevel`] of the record with the given index.
+    /// - the first 128 are level 0,
+    /// - the next 64*256 are level 1,
+    /// - ...and so on.
     pub fn new(mut record_offset: u64) -> Option<Self> {
         // 1 << 8 = 256, this is the number of entries in a BlockList
         const SHIFT: u64 = 8;
@@ -82,28 +88,65 @@ type BlockListL4 = BlockList<BlockListL3>;
 /// A file/folder node
 #[repr(C, packed)]
 pub struct Node {
+    /// This node's type & permissions.
+    /// - first four bits are permissions
+    /// - next four bits are permissions for the file's user
+    /// - next four bits are permissions for the file's group
+    /// - last four bits are permissions for everyone else
     pub mode: Le<u16>,
+
+    /// The uid that owns this file
     pub uid: Le<u32>,
+
+    /// The gid that owns this file
     pub gid: Le<u32>,
+
+    /// The number of links to this file
+    /// (directory entries, symlinks, etc)
     pub links: Le<u32>,
+
+    /// The length of this file, in bytes
     pub size: Le<u64>,
+
     pub ctime: Le<u64>,
     pub ctime_nsec: Le<u32>,
     pub mtime: Le<u64>,
     pub mtime_nsec: Le<u32>,
     pub atime: Le<u64>,
     pub atime_nsec: Le<u32>,
+
     pub record_level: Le<u32>,
+
     pub padding: [u8; BLOCK_SIZE as usize - 4094],
-    // 128 * RECORD_SIZE (16 MiB, 128 KiB each)
+
+    /// The first 128 blocks of this file.
+    ///
+    /// Total size: 128 * RECORD_SIZE (16 MiB, 128 KiB each)
     pub level0: [BlockPtr<RecordRaw>; 128],
-    // 64 * 256 * RECORD_SIZE (2 GiB, 32 MiB each)
+
+    /// The next 64 * 256 blocks of this file,
+    /// stored behind 64 level one tables.
+    ///
+    /// Total size: 64 * 256 * RECORD_SIZE (2 GiB, 32 MiB each)
     pub level1: [BlockPtr<BlockListL1>; 64],
-    // 32 * 256 * 256 * RECORD_SIZE (256 GiB, 8 GiB each)
+
+    /// The next 32 * 256 * 256 blocks of this file,
+    /// stored behind 32 level two tables.
+    /// Each level two table points to 256 level one tables.
+    ///
+    /// Total size: 32 * 256 * 256 * RECORD_SIZE (256 GiB, 8 GiB each)
     pub level2: [BlockPtr<BlockListL2>; 32],
-    // 16 * 256 * 256 * 256 * RECORD_SIZE (32 TiB, 2 TiB each)
+
+    /// The next 16 * 256 * 256 * 256 blocks of this file,
+    /// stored behind 16 level three tables.
+    ///
+    /// Total size: 16 * 256 * 256 * 256 * RECORD_SIZE (32 TiB, 2 TiB each)
     pub level3: [BlockPtr<BlockListL3>; 16],
-    // 12 * 256 * 256 * 256 * 256 * RECORD_SIZE (6 PiB, 512 TiB each)
+
+    /// The next 12 * 256 * 256 * 256 * 256 blocks of this file,
+    /// stored behind 12 level four tables.
+    ///
+    /// Total size: 12 * 256 * 256 * 256 * 256 * RECORD_SIZE (6 PiB, 512 TiB each)
     pub level4: [BlockPtr<BlockListL4>; 12],
 }
 
@@ -148,11 +191,13 @@ impl Node {
     pub const MODE_DIR: u16 = 0x4000;
     pub const MODE_SYMLINK: u16 = 0xA000;
 
+    /// Mask for node permission bits
     pub const MODE_PERM: u16 = 0x0FFF;
     pub const MODE_EXEC: u16 = 0o1;
     pub const MODE_WRITE: u16 = 0o2;
     pub const MODE_READ: u16 = 0o4;
 
+    /// Create a new, empty node with the given metadata
     pub fn new(mode: u16, uid: u32, gid: u32, ctime: u64, ctime_nsec: u32) -> Self {
         Self {
             mode: mode.into(),
@@ -177,22 +222,32 @@ impl Node {
         }
     }
 
+    /// This node's type & permissions.
+    /// - first four bits are permissions
+    /// - next four bits are permissions for the file's user
+    /// - next four bits are permissions for the file's group
+    /// - last four bits are permissions for everyone else
     pub fn mode(&self) -> u16 {
         self.mode.to_ne()
     }
 
+    /// The uid that owns this file
     pub fn uid(&self) -> u32 {
         self.uid.to_ne()
     }
 
+    /// The gid that owns this file
     pub fn gid(&self) -> u32 {
         self.gid.to_ne()
     }
 
+    /// The number of links to this file
+    /// (directory entries, symlinks, etc)
     pub fn links(&self) -> u32 {
         self.links.to_ne()
     }
 
+    /// The length of this file, in bytes.
     pub fn size(&self) -> u64 {
         self.size.to_ne()
     }

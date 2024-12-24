@@ -12,7 +12,11 @@ use syscall::error::{
     Error, Result, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, ERANGE,
 };
 
-use crate::{AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr, ALLOC_LIST_ENTRIES, HEADER_RING, DIR_ENTRY_MAX_LENGTH};
+use crate::{
+    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait,
+    DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr,
+    ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
+};
 
 pub struct Transaction<'a, D: Disk> {
     fs: &'a mut FileSystem<D>,
@@ -48,7 +52,13 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    // Unsafe because order must be done carefully and changes must be flushed to disk
+    //
+    // MARK: block operations
+    //
+
+    /// Allocate a new block of size `level`, returning its address.
+    /// - returns `Err(ENOSPC)` if a block of this size could not be alloated.
+    /// - unsafe because order must be done carefully and changes must be flushed to disk
     unsafe fn allocate(&mut self, level: BlockLevel) -> Result<BlockAddr> {
         match self.allocator.allocate(level) {
             Some(addr) => {
@@ -59,7 +69,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
     }
 
-    // Unsafe because order must be done carefully and changes must be flushed to disk
+    /// Deallocate the given block.
+    /// - unsafe because order must be done carefully and changes must be flushed to disk
     unsafe fn deallocate(&mut self, addr: BlockAddr) {
         //TODO: should we use some sort of not-null abstraction?
         assert!(!addr.is_null());
@@ -96,6 +107,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
     }
 
+    /// Drain `self.allocator_log` and `self.deallocate`,
+    /// updating the [`AllocList`] with the resulting state.
+    ///
+    /// This method does not write anything to disk,
+    /// all writes are cached.
+    ///
+    /// If `squash` is true, fully rebuild the allocator log
+    /// using the state of `self.allocator`.
     fn sync_allocator(&mut self, squash: bool) -> Result<bool> {
         let mut prev_ptr = BlockPtr::default();
         if squash {
@@ -185,14 +204,18 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(true)
     }
 
-    //TODO: change this function, provide another way to squash, only write header in commit
+    // TODO: change this function, provide another way to squash, only write header in commit
+    /// Write all changes cached in this [`Transaction`] to disk.
     pub fn sync(&mut self, squash: bool) -> Result<bool> {
         // Make sure alloc is synced
         self.sync_allocator(squash)?;
 
         // Write all items in write cache
         for (addr, raw) in self.write_cache.iter_mut() {
+            // sync_alloc must have changed alloc block pointer
+            // if we have any blocks to write
             assert!(self.header_changed);
+
             self.fs.encrypt(raw);
             let count = unsafe { self.fs.disk.write_at(self.fs.block + addr.index(), raw)? };
             if count != raw.len() {
@@ -204,6 +227,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
         self.write_cache.clear();
 
+        // Do nothing if there are no changes to write.
+        //
+        // This only happens if `self.write_cache` was empty,
+        // and the fs header wasn't changed by another operation.
         if !self.header_changed {
             return Ok(false);
         }
@@ -314,7 +341,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
             return Ok(record);
         }
 
-        // Expand record if larger level requested
+        // If a larger level was requested,
+        // create a fake record with the requested level
+        // and fill it with the data in the original record.
         let (_old_addr, old_raw) = unsafe { record.into_parts() };
         let mut raw = match T::empty(level) {
             Some(empty) => empty,
@@ -372,6 +401,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(block.create_ptr())
     }
 
+    //
+    // MARK: tree operations
+    //
+
+    /// Walk the tree and return the contents and address
+    /// of the data block that `ptr` points too.
     fn read_tree_and_addr<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: TreePtr<T>,
@@ -404,6 +439,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok((TreeData::new(ptr.id(), data), raw.addr()))
     }
 
+    /// Walk the tree and return the contents of the data block that `ptr` points too.
     pub fn read_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: TreePtr<T>,
@@ -411,11 +447,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(self.read_tree_and_addr(ptr)?.0)
     }
 
-    //TODO: improve performance, reduce writes
+    /// Insert `block_ptr` into the first free slot in the tree,
+    /// returning a pointer to that slot.
     pub fn insert_tree<T: Deref<Target = [u8]>>(
         &mut self,
         block_ptr: BlockPtr<T>,
     ) -> Result<TreePtr<T>> {
+        // TODO: improve performance, reduce writes
+
         // Remember that if there is a free block at any level it will always sync when it
         // allocates at the lowest level, so we can save a write by not writing each level as it
         // is allocated.
@@ -442,6 +481,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                                 continue;
                             }
 
+                            // TODO: do we need to write all of these?
                             // Write updates to newly allocated blocks
                             l0.data_mut().ptrs[i0] = block_ptr.cast();
                             l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
@@ -503,7 +543,13 @@ impl<'a, D: Disk> Transaction<'a, D> {
         self.sync_trees(&[node])
     }
 
-    //TODO: use more efficient methods for reading directories
+    //
+    // MARK: node operations
+    //
+
+    // TODO: use more efficient methods for reading directories
+    /// Write all children of `parent_ptr` to `children`.
+    /// `parent_ptr` must point to a directory node.
     pub fn child_nodes(
         &mut self,
         parent_ptr: TreePtr<Node>,
@@ -513,6 +559,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let record_level = parent.data().record_level();
         for record_offset in 0..(parent.data().size() / record_level.bytes()) {
             let block_ptr = self.node_record_ptr(&parent, record_offset)?;
+            // TODO: is this safe? what if child_nodes is called on
+            // a node that isn't a directory?
             let dir_ptr: BlockPtr<DirList> = unsafe { block_ptr.cast() };
             let dir = self.read_block(dir_ptr)?;
             for entry in dir.data().entries.iter() {
@@ -531,6 +579,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
     }
 
     //TODO: improve performance (h-tree?)
+    /// Find a node that is a child of the `parent_ptr` and is named `name`.
+    /// Returns ENOENT if this node is not found.
     pub fn find_node(&mut self, parent_ptr: TreePtr<Node>, name: &str) -> Result<TreeData<Node>> {
         let parent = self.read_tree(parent_ptr)?;
         let record_level = parent.data().record_level();
@@ -559,7 +609,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Err(Error::new(ENOENT))
     }
 
-    //TODO: improve performance (h-tree?)
+    // TODO: improve performance (h-tree?)
+    /// Create a new node in the tree with the given parameters.
     pub fn create_node(
         &mut self,
         parent_ptr: TreePtr<Node>,
@@ -598,15 +649,16 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         node_ptr: TreePtr<Node>,
     ) -> Result<()> {
-       self.check_name(&parent_ptr, name)?;
-
-        let entry = DirEntry::new(node_ptr, name);
+        self.check_name(&parent_ptr, name)?;
 
         let mut parent = self.read_tree(parent_ptr)?;
-
         let mut node = self.read_tree(node_ptr)?;
+
+        // Increment node reference counter
         let links = node.data().links();
         node.data_mut().set_links(links + 1);
+
+        let entry = DirEntry::new(node_ptr, name);
 
         let record_level = parent.data().record_level();
         let record_end = parent.data().size() / record_level.bytes();
@@ -614,21 +666,19 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let mut dir_record_ptr = self.node_record_ptr(&parent, record_offset)?;
             let mut dir_ptr: BlockPtr<DirList> = unsafe { dir_record_ptr.cast() };
             let mut dir = self.read_block(dir_ptr)?;
-            let mut dir_changed = false;
+
             for old_entry in dir.data_mut().entries.iter_mut() {
-                // Skip filled entries
                 if !old_entry.node_ptr().is_null() {
                     continue;
                 }
 
+                // Write our new entry into the first
+                // free slot in this directory
                 *old_entry = entry;
-                dir_changed = true;
-                break;
-            }
-            if dir_changed {
+
+                // Write updated blocks
                 dir_ptr = self.sync_block(dir)?;
                 dir_record_ptr = unsafe { dir_ptr.cast() };
-
                 self.sync_node_record_ptr(&mut parent, record_offset, dir_record_ptr)?;
                 self.sync_trees(&[parent, node])?;
 
@@ -636,7 +686,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
             }
         }
 
-        // Append a new dirlist, with first entry set to new entry
+        // We couldn't find a free direntry slot, this directory is full.
+        // We now need to add a new dirlist block to the parent node,
+        // with `entry` as its first member.
+
         let mut dir =
             BlockData::<DirList>::empty(unsafe { self.allocate(BlockLevel::default())? }).unwrap();
         dir.data_mut().entries[0] = entry;
@@ -763,7 +816,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ) -> Result<()> {
         let orig = self.find_node(orig_parent_ptr, orig_name)?;
 
-        //TODO: only allow ENOENT as an error?
+        // TODO: only allow ENOENT as an error?
         if let Ok(new) = self.find_node(new_parent_ptr, new_name) {
             // Move to same name, return
             if new.id() == orig.id() {
@@ -771,6 +824,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             }
 
             // Remove new name
+            // (we renamed to a node that already exists, overwrite it.)
             self.remove_node(
                 new_parent_ptr,
                 new_name,
@@ -791,9 +845,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    fn check_name(&mut self,
-                  parent_ptr: &TreePtr<Node>,
-                  name: &str) -> Result<()> {
+    fn check_name(&mut self, parent_ptr: &TreePtr<Node>, name: &str) -> Result<()> {
         if name.contains(':') {
             return Err(Error::new(EINVAL));
         }
@@ -809,6 +861,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
+    /// Get a pointer to a the record of `node` with the given offset.
+    /// (i.e, to the `n`th record of `node`.)
     fn node_record_ptr(
         &mut self,
         node: &TreeData<Node>,
@@ -931,6 +985,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
     }
 
+    /// Set the record at `ptr` as the data at `record_offset` of `node`.
     fn sync_node_record_ptr(
         &mut self,
         node: &mut TreeData<Node>,
@@ -992,24 +1047,35 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ) -> Result<usize> {
         let node_size = node.data().size();
         let record_level = node.data().record_level();
-        let mut i = 0;
-        while i < buf.len() && offset < node_size {
+
+        let mut bytes_read = 0;
+        while bytes_read < buf.len() && offset < node_size {
+            // How many bytes we've read into the next record
             let j = (offset % record_level.bytes()) as usize;
+
+            // Number of bytes to read in this iteration
             let len = min(
-                buf.len() - i,
-                min(record_level.bytes() - j as u64, node_size - offset) as usize,
+                buf.len() - bytes_read, // number of bytes we have left in `buf`
+                min(
+                    record_level.bytes() - j as u64, // number of bytes we haven't read in this record
+                    node_size - offset,              // number of bytes left in this node
+                ) as usize,
             );
+
+            let record_idx = offset / record_level.bytes();
+            let record_ptr = self.node_record_ptr(node, record_idx)?;
+
+            // The level of the record to read.
+            // This is at most `record_level` due to the way `len` is computed.
             let level = BlockLevel::for_bytes((j + len) as u64);
 
-            let record_ptr = self.node_record_ptr(node, offset / record_level.bytes())?;
             let record = unsafe { self.read_record(record_ptr, level)? };
+            buf[bytes_read..bytes_read + len].copy_from_slice(&record.data()[j..j + len]);
 
-            buf[i..i + len].copy_from_slice(&record.data()[j..j + len]);
-
-            i += len;
+            bytes_read += len;
             offset += len as u64;
         }
-        Ok(i)
+        Ok(bytes_read)
     }
 
     pub fn read_node(
@@ -1052,7 +1118,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         if old_size < size {
-            // If size is smaller, write zeroes until the size matches
+            // If we're "truncating" to a larger size,
+            // write zeroes until the size matches
             let zeroes = RecordRaw::empty(record_level).unwrap();
 
             let mut offset = old_size;
@@ -1088,6 +1155,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(true)
     }
 
+    /// Truncate the given node to the given size.
+    ///
+    /// If `size` is larger than the node's current size,
+    /// expand the node with zeroes.
     pub fn truncate_node(
         &mut self,
         node_ptr: TreePtr<Node>,
@@ -1166,6 +1237,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(node_changed)
     }
 
+    /// Write the bytes at `buf` to `node` starting at `offset`.
     pub fn write_node(
         &mut self,
         node_ptr: TreePtr<Node>,
