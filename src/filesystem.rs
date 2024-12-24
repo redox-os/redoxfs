@@ -2,10 +2,9 @@ use aes::{Aes128, BlockDecrypt, BlockEncrypt};
 use alloc::{collections::VecDeque, vec::Vec};
 use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 
-use crate::{Allocator, BlockAddr, BlockLevel, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING};
 #[cfg(feature = "std")]
-use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt,  TreeList};
-
+use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt, TreeList};
+use crate::{Allocator, BlockAddr, BlockLevel, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING};
 
 /// A file system
 pub struct FileSystem<D: Disk> {
@@ -121,94 +120,96 @@ impl<D: Disk> FileSystem<D> {
         let size = disk.size()?;
         let block_offset = (reserved.len() as u64 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-        if size >= (block_offset + HEADER_RING + 4) * BLOCK_SIZE {
-            for block in 0..block_offset as usize {
-                let mut data = [0; BLOCK_SIZE as usize];
+        if size < (block_offset + HEADER_RING + 4) * BLOCK_SIZE {
+            return Err(Error::new(syscall::error::ENOSPC));
+        }
 
-                let mut i = 0;
-                while i < data.len() && block * BLOCK_SIZE as usize + i < reserved.len() {
-                    data[i] = reserved[block * BLOCK_SIZE as usize + i];
-                    i += 1;
-                }
+        // Fill reserved data, pad with zeroes
+        for block in 0..block_offset as usize {
+            let mut data = [0; BLOCK_SIZE as usize];
 
-                unsafe {
-                    disk.write_at(block as u64, &data)?;
-                }
+            let mut i = 0;
+            while i < data.len() && block * BLOCK_SIZE as usize + i < reserved.len() {
+                data[i] = reserved[block * BLOCK_SIZE as usize + i];
+                i += 1;
             }
-
-            let mut header = Header::new(size);
-
-            let aes_opt = match password_opt {
-                Some(password) => {
-                    //TODO: handle errors
-                    header.key_slots[0] =
-                        KeySlot::new(password, Salt::new().unwrap(), Key::new().unwrap()).unwrap();
-                    Some(header.key_slots[0].key(password).unwrap().into_aes())
-                }
-                None => None,
-            };
-
-            let mut fs = FileSystem {
-                disk,
-                block: block_offset,
-                header,
-                allocator: Allocator::default(),
-                aes_opt,
-                aes_blocks: Vec::with_capacity(BLOCK_SIZE as usize / aes::BLOCK_SIZE),
-            };
-
-            // Write header generation zero
-            let count = unsafe { fs.disk.write_at(fs.block, &fs.header)? };
-            if count != core::mem::size_of_val(&fs.header) {
-                // Wrote wrong number of bytes
-                #[cfg(feature = "log")]
-                log::error!("CREATE: WRONG NUMBER OF BYTES");
-                return Err(Error::new(syscall::error::EIO));
-            }
-
-            // Set tree and alloc pointers and write header generation one
-            fs.tx(|tx| unsafe {
-                let tree = BlockData::new(
-                    BlockAddr::new(HEADER_RING + 1, BlockLevel::default()),
-                    TreeList::empty(BlockLevel::default()).unwrap(),
-                );
-
-                let mut alloc = BlockData::new(
-                    BlockAddr::new(HEADER_RING + 2, BlockLevel::default()),
-                    AllocList::empty(BlockLevel::default()).unwrap(),
-                );
-                let alloc_free = size / BLOCK_SIZE - (block_offset + HEADER_RING + 4);
-                alloc.data_mut().entries[0] = AllocEntry::new(HEADER_RING + 4, alloc_free as i64);
-
-                tx.header.tree = tx.write_block(tree)?;
-                tx.header.alloc = tx.write_block(alloc)?;
-                tx.header_changed = true;
-
-                Ok(())
-            })?;
 
             unsafe {
-                fs.reset_allocator()?;
+                disk.write_at(block as u64, &data)?;
             }
-
-            fs.tx(|tx| unsafe {
-                let mut root = BlockData::new(
-                    BlockAddr::new(HEADER_RING + 3, BlockLevel::default()),
-                    Node::new(Node::MODE_DIR | 0o755, 0, 0, ctime, ctime_nsec),
-                );
-                root.data_mut().set_links(1);
-                let root_ptr = tx.write_block(root)?;
-                assert_eq!(tx.insert_tree(root_ptr)?.id(), 1);
-                Ok(())
-            })?;
-
-            // Make sure everything is synced and squash allocations
-            Transaction::new(&mut fs).commit(true)?;
-
-            Ok(fs)
-        } else {
-            Err(Error::new(syscall::error::ENOSPC))
         }
+
+        let mut header = Header::new(size);
+
+        let aes_opt = match password_opt {
+            Some(password) => {
+                //TODO: handle errors
+                header.key_slots[0] =
+                    KeySlot::new(password, Salt::new().unwrap(), Key::new().unwrap()).unwrap();
+                Some(header.key_slots[0].key(password).unwrap().into_aes())
+            }
+            None => None,
+        };
+
+        let mut fs = FileSystem {
+            disk,
+            block: block_offset,
+            header,
+            allocator: Allocator::default(),
+            aes_opt,
+            aes_blocks: Vec::with_capacity(BLOCK_SIZE as usize / aes::BLOCK_SIZE),
+        };
+
+        // Write header generation zero
+        let count = unsafe { fs.disk.write_at(fs.block, &fs.header)? };
+        if count != core::mem::size_of_val(&fs.header) {
+            // Wrote wrong number of bytes
+            #[cfg(feature = "log")]
+            log::error!("CREATE: WRONG NUMBER OF BYTES");
+            return Err(Error::new(syscall::error::EIO));
+        }
+
+        // Set tree and alloc pointers and write header generation one
+        fs.tx(|tx| unsafe {
+            let tree = BlockData::new(
+                BlockAddr::new(HEADER_RING + 1, BlockLevel::default()),
+                TreeList::empty(BlockLevel::default()).unwrap(),
+            );
+
+            let mut alloc = BlockData::new(
+                BlockAddr::new(HEADER_RING + 2, BlockLevel::default()),
+                AllocList::empty(BlockLevel::default()).unwrap(),
+            );
+
+            let alloc_free = size / BLOCK_SIZE - (block_offset + HEADER_RING + 4);
+            alloc.data_mut().entries[0] = AllocEntry::new(HEADER_RING + 4, alloc_free as i64);
+
+            tx.header.tree = tx.write_block(tree)?;
+            tx.header.alloc = tx.write_block(alloc)?;
+            tx.header_changed = true;
+
+            Ok(())
+        })?;
+
+        unsafe {
+            fs.reset_allocator()?;
+        }
+
+        fs.tx(|tx| unsafe {
+            let mut root = BlockData::new(
+                BlockAddr::new(HEADER_RING + 3, BlockLevel::default()),
+                Node::new(Node::MODE_DIR | 0o755, 0, 0, ctime, ctime_nsec),
+            );
+            root.data_mut().set_links(1);
+            let root_ptr = tx.write_block(root)?;
+            assert_eq!(tx.insert_tree(root_ptr)?.id(), 1);
+            Ok(())
+        })?;
+
+        // Make sure everything is synced and squash allocations
+        Transaction::new(&mut fs).commit(true)?;
+
+        Ok(fs)
     }
 
     /// start a filesystem transaction, required for making any changes
@@ -226,7 +227,7 @@ impl<D: Disk> FileSystem<D> {
     /// Reset allocator to state stored on disk
     ///
     /// # Safety
-    /// Unsafe, it must only be called when openning the filesystem
+    /// Unsafe, it must only be called when opening the filesystem
     unsafe fn reset_allocator(&mut self) -> Result<()> {
         self.allocator = Allocator::default();
 
@@ -267,52 +268,58 @@ impl<D: Disk> FileSystem<D> {
     }
 
     pub(crate) fn decrypt(&mut self, data: &mut [u8]) -> bool {
-        if let Some(ref aes) = self.aes_opt {
-            assert_eq!(data.len() % aes::BLOCK_SIZE, 0);
-
-            self.aes_blocks.clear();
-            for i in 0..data.len() / aes::BLOCK_SIZE {
-                self.aes_blocks.push(aes::Block::clone_from_slice(
-                    &data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE],
-                ));
-            }
-
-            aes.decrypt_blocks(&mut self.aes_blocks);
-
-            for i in 0..data.len() / aes::BLOCK_SIZE {
-                data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE]
-                    .copy_from_slice(&self.aes_blocks[i]);
-            }
-            self.aes_blocks.clear();
-
-            true
+        let aes = if let Some(ref aes) = self.aes_opt {
+            aes
         } else {
-            false
+            // Do nothing if encryption is disabled
+            return false;
+        };
+
+        assert_eq!(data.len() % aes::BLOCK_SIZE, 0);
+
+        self.aes_blocks.clear();
+        for i in 0..data.len() / aes::BLOCK_SIZE {
+            self.aes_blocks.push(aes::Block::clone_from_slice(
+                &data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE],
+            ));
         }
+
+        aes.decrypt_blocks(&mut self.aes_blocks);
+
+        for i in 0..data.len() / aes::BLOCK_SIZE {
+            data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE]
+                .copy_from_slice(&self.aes_blocks[i]);
+        }
+        self.aes_blocks.clear();
+
+        true
     }
 
     pub(crate) fn encrypt(&mut self, data: &mut [u8]) -> bool {
-        if let Some(ref aes) = self.aes_opt {
-            assert_eq!(data.len() % aes::BLOCK_SIZE, 0);
-
-            self.aes_blocks.clear();
-            for i in 0..data.len() / aes::BLOCK_SIZE {
-                self.aes_blocks.push(aes::Block::clone_from_slice(
-                    &data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE],
-                ));
-            }
-
-            aes.encrypt_blocks(&mut self.aes_blocks);
-
-            for i in 0..data.len() / aes::BLOCK_SIZE {
-                data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE]
-                    .copy_from_slice(&self.aes_blocks[i]);
-            }
-            self.aes_blocks.clear();
-
-            true
+        let aes = if let Some(ref aes) = self.aes_opt {
+            aes
         } else {
-            false
+            // Do nothing if encryption is disabled
+            return false;
+        };
+
+        assert_eq!(data.len() % aes::BLOCK_SIZE, 0);
+
+        self.aes_blocks.clear();
+        for i in 0..data.len() / aes::BLOCK_SIZE {
+            self.aes_blocks.push(aes::Block::clone_from_slice(
+                &data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE],
+            ));
         }
+
+        aes.encrypt_blocks(&mut self.aes_blocks);
+
+        for i in 0..data.len() / aes::BLOCK_SIZE {
+            data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE]
+                .copy_from_slice(&self.aes_blocks[i]);
+        }
+        self.aes_blocks.clear();
+
+        true
     }
 }

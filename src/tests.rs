@@ -1,9 +1,9 @@
+use crate::{unmount_path, DiskSparse, FileSystem, Node, TreePtr};
 use std::path::Path;
 use std::process::Command;
-use std::{fs, thread, time};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
-use crate::{unmount_path, DiskSparse, FileSystem, Node, TreePtr};
+use std::{fs, thread, time};
 
 static IMAGE_SEQ: AtomicUsize = AtomicUsize::new(0);
 
@@ -147,16 +147,12 @@ fn create_remove_should_not_increase_size() {
 
         let tree_ptr = TreePtr::<Node>::root();
         let name = "test";
-        let _ = fs.tx(|tx| {
-            tx.create_node(
-                tree_ptr,
-                name,
-                Node::MODE_FILE | 0644,
-                1,
-                0,
-            )?;
-            tx.remove_node(tree_ptr, name, Node::MODE_FILE)
-        }).unwrap();
+        let _ = fs
+            .tx(|tx| {
+                tx.create_node(tree_ptr, name, Node::MODE_FILE | 0644, 1, 0)?;
+                tx.remove_node(tree_ptr, name, Node::MODE_FILE)
+            })
+            .unwrap();
 
         assert_eq!(fs.allocator().free(), initially_free);
     });

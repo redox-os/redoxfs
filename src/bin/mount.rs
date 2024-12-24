@@ -81,13 +81,13 @@ fn bootloader_password() -> Option<Vec<u8>> {
         addr_env.to_str().expect("REDOXFS_PASSWORD_ADDR not valid"),
         16,
     )
-        .expect("failed to parse REDOXFS_PASSWORD_ADDR");
+    .expect("failed to parse REDOXFS_PASSWORD_ADDR");
 
     let size = usize::from_str_radix(
         size_env.to_str().expect("REDOXFS_PASSWORD_SIZE not valid"),
         16,
     )
-        .expect("failed to parse REDOXFS_PASSWORD_SIZE");
+    .expect("failed to parse REDOXFS_PASSWORD_SIZE");
 
     let mut password = Vec::with_capacity(size);
     unsafe {
@@ -103,7 +103,9 @@ fn bootloader_password() -> Option<Vec<u8>> {
             flags: libredox::flag::MAP_SHARED,
             fd: fd.raw(),
             offset: addr as u64,
-        }).expect("failed to map REDOXFS_PASSWORD").cast::<u8>();
+        })
+        .expect("failed to map REDOXFS_PASSWORD")
+        .cast::<u8>();
 
         for i in 0..size {
             password.push(password_map.add(i).read());
@@ -272,7 +274,12 @@ fn filesystem_by_uuid(
     None
 }
 
-fn daemon(disk_id: &DiskId, mountpoint: &str, block_opt: Option<u64>, mut write: Option<File>) -> ! {
+fn daemon(
+    disk_id: &DiskId,
+    mountpoint: &str,
+    block_opt: Option<u64>,
+    mut write: Option<File>,
+) -> ! {
     setsig();
 
     let filesystem_opt = match *disk_id {
@@ -337,11 +344,15 @@ fn main() {
             "--no-daemon" | "-d" => daemonise = false,
 
             "--uuid" if disk_id.is_none() => {
-                disk_id = Some(DiskId::Uuid(match args.next().as_deref().map(Uuid::parse_str) {
-                    Some(Ok(uuid)) => uuid,
-                    Some(Err(err)) => print_err_exit(format!("redoxfs: invalid uuid '{}': {}", arg, err)),
-                    None => print_err_exit("redoxfs: no uuid provided")
-                }));
+                disk_id = Some(DiskId::Uuid(
+                    match args.next().as_deref().map(Uuid::parse_str) {
+                        Some(Ok(uuid)) => uuid,
+                        Some(Err(err)) => {
+                            print_err_exit(format!("redoxfs: invalid uuid '{}': {}", arg, err))
+                        }
+                        None => print_err_exit("redoxfs: no uuid provided"),
+                    },
+                ));
             }
 
             disk if disk_id.is_none() => disk_id = Some(DiskId::Path(disk.to_owned())),
@@ -350,10 +361,10 @@ fn main() {
 
             opts if mountpoint.is_some() => match u64::from_str_radix(opts, 16) {
                 Ok(block) => block_opt = Some(block),
-                Err(err) => print_err_exit(format!("redoxfs: invalid block '{}': {}", opts, err))
+                Err(err) => print_err_exit(format!("redoxfs: invalid block '{}': {}", opts, err)),
             },
 
-            _ => print_usage_exit()
+            _ => print_usage_exit(),
         }
     }
 
