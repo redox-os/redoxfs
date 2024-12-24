@@ -7,12 +7,16 @@ use crate::{BlockLevel, BlockPtr, BlockRaw, BlockTrait};
 const TREE_LIST_SHIFT: u32 = 8;
 const TREE_LIST_ENTRIES: usize = 1 << TREE_LIST_SHIFT;
 
-// Tree with 4 levels
+/// A tree with 4 levels
 pub type Tree = TreeList<TreeList<TreeList<TreeList<BlockRaw>>>>;
 
+/// A [`TreePtr`] and the contents of the block it references.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TreeData<T> {
+    /// The value of the [`TreePtr`]
     id: u32,
+
+    // The data
     data: T,
 }
 
@@ -45,6 +49,8 @@ impl<T> TreeData<T> {
     }
 }
 
+/// A list of pointers to blocks of type `T`.
+/// This is one level of a [`Tree`], defined above.
 #[repr(C, packed)]
 pub struct TreeList<T> {
     pub ptrs: [BlockPtr<T>; TREE_LIST_ENTRIES],
@@ -85,6 +91,7 @@ impl<T> ops::DerefMut for TreeList<T> {
     }
 }
 
+/// A pointer to an entry in a [`Tree`].
 #[repr(C, packed)]
 pub struct TreePtr<T> {
     id: Le<u32>,
@@ -92,6 +99,8 @@ pub struct TreePtr<T> {
 }
 
 impl<T> TreePtr<T> {
+    /// Get a [`TreePtr`] to the filesystem root
+    /// directory's node.
     pub fn root() -> Self {
         Self::new(1)
     }
@@ -103,6 +112,11 @@ impl<T> TreePtr<T> {
         }
     }
 
+    /// Create a [`TreePtr`] from [`Tree`] indices,
+    /// Where `indexes` is `(i3, i2, i1, i0)`.
+    /// - `i3` is the index into the level 3 table,
+    /// - `i2` is the index into the level 2 table at `i3`
+    /// - ...and so on.
     pub fn from_indexes(indexes: (usize, usize, usize, usize)) -> Self {
         const SHIFT: u32 = TREE_LIST_SHIFT;
         let id = ((indexes.0 << (3 * SHIFT)) as u32)
@@ -123,17 +137,23 @@ impl<T> TreePtr<T> {
         self.id() == 0
     }
 
+    /// Get this indices of this [`TreePtr`] in a [`Tree`].
+    /// Returns `(i3, i2, i1, i0)`:
+    /// - `i3` is the index into the level 3 table,
+    /// - `i2` is the index into the level 2 table at `i3`
+    /// - ...and so on.
     pub fn indexes(&self) -> (usize, usize, usize, usize) {
         const SHIFT: u32 = TREE_LIST_SHIFT;
         const NUM: u32 = 1 << SHIFT;
         const MASK: u32 = NUM - 1;
         let id = self.id();
-        (
-            ((id >> (3 * SHIFT)) & MASK) as usize,
-            ((id >> (2 * SHIFT)) & MASK) as usize,
-            ((id >> SHIFT) & MASK) as usize,
-            (id & MASK) as usize,
-        )
+
+        let i3 = ((id >> (3 * SHIFT)) & MASK) as usize;
+        let i2 = ((id >> (2 * SHIFT)) & MASK) as usize;
+        let i1 = ((id >> SHIFT) & MASK) as usize;
+        let i0 = (id & MASK) as usize;
+
+        return (i3, i2, i1, i0);
     }
 }
 

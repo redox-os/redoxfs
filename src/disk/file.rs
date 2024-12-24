@@ -3,7 +3,7 @@ use std::io::{Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
-use syscall::error::{Result, Error, EIO};
+use syscall::error::{Error, Result, EIO};
 
 use crate::disk::Disk;
 use crate::BLOCK_SIZE;
@@ -43,7 +43,11 @@ impl<T> ResultExt for std::io::Result<T> {
 
 impl DiskFile {
     pub fn open(path: impl AsRef<Path>) -> Result<DiskFile> {
-        let file = OpenOptions::new().read(true).write(true).open(path).or_eio()?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .or_eio()?;
         Ok(DiskFile { file })
     }
 

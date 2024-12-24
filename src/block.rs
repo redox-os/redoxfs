@@ -5,6 +5,11 @@ use crate::BLOCK_SIZE;
 
 const BLOCK_LIST_ENTRIES: usize = BLOCK_SIZE as usize / mem::size_of::<BlockPtr<BlockRaw>>();
 
+/// An address of a data block.
+///
+/// This encodes a block's position _and_ [`BlockLevel`]:
+/// the first four bits of this `u64` encode the block's level,
+/// the rest encode its index.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BlockAddr(u64);
 
@@ -43,35 +48,50 @@ impl BlockAddr {
     }
 }
 
+/// The size of a block.
+///
+/// Level 0 blocks are blocks of [`BLOCK_SIZE`] bytes.
+/// A level 1 block consists of two consecutive level 0 blocks.
+/// A level n block consists of two consecutive level n-1 blocks.
+///
+/// See [`crate::Allocator`] docs for more details.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BlockLevel(pub(crate) usize);
 
 impl BlockLevel {
+    /// Returns the smallest block level that can contain
+    /// the given number of bytes.
     pub(crate) fn for_bytes(bytes: u64) -> Self {
         if bytes == 0 {
             return BlockLevel(0);
         }
-        let level = bytes.div_ceil(BLOCK_SIZE)
+        let level = bytes
+            .div_ceil(BLOCK_SIZE)
             .next_power_of_two()
             .trailing_zeros() as usize;
         BlockLevel(level)
     }
 
+    /// The number of [`BLOCK_SIZE`] blocks (i.e, level 0 blocks)
+    /// in a block of this level
     pub fn blocks(self) -> i64 {
         1 << self.0
     }
 
+    /// The number of bytes in a block of this level
     pub fn bytes(self) -> u64 {
         BLOCK_SIZE << self.0
     }
 }
 
 pub unsafe trait BlockTrait {
+    /// Create an empty block of this type.
     fn empty(level: BlockLevel) -> Option<Self>
     where
         Self: Sized;
 }
 
+/// A [`BlockAddr`] and the data it points to.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BlockData<T> {
     addr: BlockAddr,
@@ -87,15 +107,6 @@ impl<T> BlockData<T> {
         self.addr
     }
 
-    #[must_use = "don't forget to de-allocate old block address"]
-    pub fn swap_addr(&mut self, addr: BlockAddr) -> BlockAddr {
-        // Address levels must match
-        assert_eq!(self.addr.level(), addr.level());
-        let old = self.addr;
-        self.addr = addr;
-        old
-    }
-
     pub fn data(&self) -> &T {
         &self.data
     }
@@ -106,6 +117,19 @@ impl<T> BlockData<T> {
 
     pub(crate) unsafe fn into_parts(self) -> (BlockAddr, T) {
         (self.addr, self.data)
+    }
+
+    /// Set the address of this [`BlockData`] to `addr`, returning this
+    /// block's old address. This method does not update block data.
+    ///
+    /// `addr` must point to a block with the same level as this block.
+    #[must_use = "don't forget to de-allocate old block address"]
+    pub fn swap_addr(&mut self, addr: BlockAddr) -> BlockAddr {
+        // Address levels must match
+        assert_eq!(self.addr.level(), addr.level());
+        let old = self.addr;
+        self.addr = addr;
+        old
     }
 }
 
@@ -177,6 +201,13 @@ impl<T> ops::DerefMut for BlockList<T> {
     }
 }
 
+/// An address of a data block, along with a checksum of its data.
+///
+/// This encodes a block's position _and_ [`BlockLevel`].
+/// the first four bits of `addr` encode the block's level,
+/// the rest encode its index.
+///
+/// Also see [`BlockAddr`].
 #[repr(C, packed)]
 pub struct BlockPtr<T> {
     addr: Le<u64>,

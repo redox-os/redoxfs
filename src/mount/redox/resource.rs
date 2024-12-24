@@ -9,7 +9,7 @@ use syscall::data::{Stat, TimeSpec};
 use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, EPERM};
 use syscall::flag::{
     MapFlags, F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY,
-    PROT_READ, PROT_WRITE
+    PROT_READ, PROT_WRITE,
 };
 use syscall::{EBADFD, PAGE_SIZE};
 
@@ -192,7 +192,10 @@ impl<D: Disk> Resource<D> for DirResource {
 
     fn read(&mut self, buf: &mut [u8], offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
         let data = self.data.as_ref().ok_or(Error::new(EISDIR))?;
-        let src = usize::try_from(offset).ok().and_then(|o| data.get(o..)).unwrap_or(&[]);
+        let src = usize::try_from(offset)
+            .ok()
+            .and_then(|o| data.get(o..))
+            .unwrap_or(&[]);
 
         let byte_count = core::cmp::min(src.len(), buf.len());
         buf[..byte_count].copy_from_slice(&src[..byte_count]);
@@ -462,15 +465,13 @@ impl<D: Disk> Resource<D> for FileResource {
                         length: new_size,
                         // PRIVATE/SHARED doesn't matter once the pages are passed in the fmap
                         // handler.
-                        prot: libredox::flag::PROT_READ
-                            | libredox::flag::PROT_WRITE,
+                        prot: libredox::flag::PROT_READ | libredox::flag::PROT_WRITE,
                         flags: libredox::flag::MAP_PRIVATE,
 
                         offset: 0,
                         fd: !0,
                         addr: core::ptr::null_mut(),
-                    }
-                    )? as *mut u8
+                    })? as *mut u8
                 }
             } else {
                 unsafe {
