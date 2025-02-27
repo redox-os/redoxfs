@@ -170,17 +170,20 @@ fn many_create_remove_should_not_increase_size() {
         for i in 0..600 {
             let _ = fs
                 .tx(|tx| {
-                    tx.create_node(tree_ptr, &format!("{}{}", name, i), Node::MODE_FILE | 0644, 1, 0)?;
+                    tx.create_node(
+                        tree_ptr,
+                        &format!("{}{}", name, i),
+                        Node::MODE_FILE | 0644,
+                        1,
+                        0,
+                    )?;
                     tx.remove_node(tree_ptr, &format!("{}{}", name, i), Node::MODE_FILE)
                 })
                 .unwrap();
         }
 
         // If we don't syunc with squash, then every ~21 iterations increases size by 1
-        let _ = fs
-        .tx(|tx|{
-            tx.sync(true)
-        });
+        let _ = fs.tx(|tx| tx.sync(true));
 
         // Any value greater than 0 indicates a storage leak
         let diff = initially_free - fs.allocator().free();

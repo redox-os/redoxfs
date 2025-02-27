@@ -530,7 +530,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-
     pub fn sync_trees<T: Deref<Target = [u8]>>(&mut self, nodes: &[TreeData<T>]) -> Result<()> {
         for node in nodes.iter().rev() {
             let ptr = node.ptr();
