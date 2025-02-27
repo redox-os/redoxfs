@@ -1,5 +1,4 @@
-use crate::{unmount_path, DiskFile, DiskSparse, FileSystem, Node, TreePtr};
-use core::time::Duration;
+use crate::{unmount_path, DiskSparse, FileSystem, Node, TreePtr};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicUsize;
