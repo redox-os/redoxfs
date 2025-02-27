@@ -471,7 +471,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
                             // Skip if already in use
                             if !pn.is_null() {
-                                // println!("Skip used tree index: {:?}", (i3, i2, i1, i0));
                                 continue;
                             }
 
@@ -479,7 +478,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
                             // Skip if this is a reserved node (null)
                             if tree_ptr.is_null() {
-                                // println!("Skip reserved tree index: {:?}", tree_ptr.indexes());
                                 continue;
                             }
 
@@ -492,7 +490,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
                             self.header.tree = self.sync_block(l3)?;
                             self.header_changed = true;
 
-                            // println!("Inserted tree index: {:?}", tree_ptr.indexes());
                             return Ok(tree_ptr);
                         }
                     }
@@ -503,6 +500,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Err(Error::new(ENOSPC))
     }
 
+    /// Clear the previously claimed slot in the tree for the given `ptr`. Note that this
+    /// should only be called after the corresponding node block has already been deallocated.
     fn remove_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: TreePtr<T>,
@@ -520,7 +519,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let mut l1 = self.read_block(l2.data().ptrs[i2])?;
         let mut l0 = self.read_block(l1.data().ptrs[i1])?;
 
-        // TODO: Clear the value in the tree, but do not deallocate the block
+        // Clear the value in the tree, but do not deallocate the block, as that should already
+        // have been done at the node level.
         l0.data_mut().ptrs[i0] = BlockPtr::default();
         l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
         l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
@@ -822,8 +822,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
 
                 if remove_node {
-                    // println!("+ remove node from tree: {:?}", node_tree_ptr.indexes());
-                    // println!("+ impacts parent: {:?}", parent_ptr.indexes());
                     self.sync_tree(parent)?;
                     self.remove_tree(node_tree_ptr)?;
                     unsafe {
