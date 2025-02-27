@@ -471,6 +471,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
                             // Skip if already in use
                             if !pn.is_null() {
+                                // println!("Skip used tree index: {:?}", (i3, i2, i1, i0));
                                 continue;
                             }
 
@@ -478,6 +479,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
                             // Skip if this is a reserved node (null)
                             if tree_ptr.is_null() {
+                                // println!("Skip reserved tree index: {:?}", tree_ptr.indexes());
                                 continue;
                             }
 
@@ -490,6 +492,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                             self.header.tree = self.sync_block(l3)?;
                             self.header_changed = true;
 
+                            // println!("Inserted tree index: {:?}", tree_ptr.indexes());
                             return Ok(tree_ptr);
                         }
                     }
@@ -499,6 +502,34 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         Err(Error::new(ENOSPC))
     }
+
+    fn remove_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: TreePtr<T>,
+    ) -> Result<()> {
+        if ptr.is_null() {
+            // ID is invalid (should this return None?)
+            #[cfg(feature = "log")]
+            log::error!("READ_TREE: ID IS NULL");
+            return Err(Error::new(ENOENT));
+        }
+
+        let (i3, i2, i1, i0) = ptr.indexes();
+        let mut l3 = self.read_block(self.header.tree)?;
+        let mut l2 = self.read_block(l3.data().ptrs[i3])?;
+        let mut l1 = self.read_block(l2.data().ptrs[i2])?;
+        let mut l0 = self.read_block(l1.data().ptrs[i1])?;
+
+        // TODO: Clear the value in the tree, but do not deallocate the block
+        l0.data_mut().ptrs[i0] = BlockPtr::default();
+        l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
+        l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
+        l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
+        self.header.tree = self.sync_block(l3)?;
+        self.header_changed = true;
+        Ok(())
+    }
+
 
     pub fn sync_trees<T: Deref<Target = [u8]>>(&mut self, nodes: &[TreeData<T>]) -> Result<()> {
         for node in nodes.iter().rev() {
@@ -737,7 +768,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                             }
 
                             // Save node and clear entry
-                            node_opt = Some((node, addr));
+                            node_opt = Some((entry.node_ptr(), node, addr));
                             *entry = DirEntry::default();
                             break;
                         } else if node.data().is_dir() {
@@ -751,7 +782,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
             }
 
-            if let Some((mut node, addr)) = node_opt {
+            if let Some((node_tree_ptr, mut node, addr)) = node_opt {
                 let links = node.data().links();
                 let remove_node = if links > 1 {
                     node.data_mut().set_links(links - 1);
@@ -791,7 +822,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
 
                 if remove_node {
+                    // println!("+ remove node from tree: {:?}", node_tree_ptr.indexes());
+                    // println!("+ impacts parent: {:?}", parent_ptr.indexes());
                     self.sync_tree(parent)?;
+                    self.remove_tree(node_tree_ptr)?;
                     unsafe {
                         self.deallocate(addr);
                     }
