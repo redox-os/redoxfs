@@ -157,3 +157,35 @@ fn create_remove_should_not_increase_size() {
         assert_eq!(fs.allocator().free(), initially_free);
     });
 }
+
+#[test]
+fn many_create_remove_should_not_increase_size() {
+    with_redoxfs(|mut fs| {
+        let initially_free = fs.allocator().free();
+        let tree_ptr = TreePtr::<Node>::root();
+        let name = "test";
+
+        // Iterate over 255 times to prove deleted files don't retain space within the node tree
+        for i in 0..600 {
+            let _ = fs
+                .tx(|tx| {
+                    tx.create_node(
+                        tree_ptr,
+                        &format!("{}{}", name, i),
+                        Node::MODE_FILE | 0644,
+                        1,
+                        0,
+                    )?;
+                    tx.remove_node(tree_ptr, &format!("{}{}", name, i), Node::MODE_FILE)
+                })
+                .unwrap();
+        }
+
+        // Sync with squash to exclude the allocation log growth from the assertion
+        let _ = fs.tx(|tx| tx.sync(true));
+
+        // Any value greater than 0 indicates a storage leak
+        let diff = initially_free - fs.allocator().free();
+        assert_eq!(diff, 0);
+    });
+}
