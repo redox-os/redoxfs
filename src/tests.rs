@@ -1,4 +1,4 @@
-use crate::{unmount_path, DiskSparse, FileSystem, Node, TreePtr};
+use crate::{unmount_path, DiskSparse, FileSystem, Node, TreePtr, ALLOC_GC_THRESHOLD};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicUsize;
@@ -166,7 +166,11 @@ fn many_create_remove_should_not_increase_size() {
         let name = "test";
 
         // Iterate over 255 times to prove deleted files don't retain space within the node tree
-        for i in 0..600 {
+        // Iterate to an ALLOC_GC_THRESHOLD boundary to ensure the allocator GC reclaims space
+        let start = fs.header.generation.to_ne();
+        let end = start + ALLOC_GC_THRESHOLD;
+        let end = end - (end % ALLOC_GC_THRESHOLD) + 1 + ALLOC_GC_THRESHOLD;
+        for i in start..end {
             let _ = fs
                 .tx(|tx| {
                     tx.create_node(
@@ -180,9 +184,6 @@ fn many_create_remove_should_not_increase_size() {
                 })
                 .unwrap();
         }
-
-        // Sync with squash to exclude the allocation log growth from the assertion
-        let _ = fs.tx(|tx| tx.sync(true));
 
         // Any value greater than 0 indicates a storage leak
         let diff = initially_free - fs.allocator().free();
