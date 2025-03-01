@@ -181,7 +181,7 @@ fn many_create_remove_should_not_increase_size() {
                 .unwrap();
         }
 
-        // If we don't syunc with squash, then every ~21 iterations increases size by 1
+        // Sync with squash to exclude the allocation log growth from the assertion
         let _ = fs.tx(|tx| tx.sync(true));
 
         // Any value greater than 0 indicates a storage leak
