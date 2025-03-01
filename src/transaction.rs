@@ -15,7 +15,7 @@ use syscall::error::{
 use crate::{
     AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait,
     DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr,
-    ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
+    ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
 };
 
 pub struct Transaction<'a, D: Disk> {
@@ -113,11 +113,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
     /// This method does not write anything to disk,
     /// all writes are cached.
     ///
-    /// If `squash` is true, fully rebuild the allocator log
-    /// using the state of `self.allocator`.
-    fn sync_allocator(&mut self, squash: bool) -> Result<bool> {
+    /// To keep the allocator log from growing excessively, it will
+    /// periodically be fully rebuilt using the state of `self.allocator`.
+    /// This rebuild can be forced by setting `force_squash` to `true`.
+    fn sync_allocator(&mut self, force_squash: bool) -> Result<bool> {
         let mut prev_ptr = BlockPtr::default();
-        if squash {
+        let should_gc = self.header.generation() % ALLOC_GC_THRESHOLD == 0
+            && self.header.generation() >= ALLOC_GC_THRESHOLD;
+        if force_squash || should_gc {
             // Clear and rebuild alloc log
             self.allocator_log.clear();
             let levels = self.allocator.levels();
@@ -204,11 +207,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(true)
     }
 
-    // TODO: change this function, provide another way to squash, only write header in commit
     /// Write all changes cached in this [`Transaction`] to disk.
-    pub fn sync(&mut self, squash: bool) -> Result<bool> {
+    pub fn sync(&mut self, force_squash: bool) -> Result<bool> {
         // Make sure alloc is synced
-        self.sync_allocator(squash)?;
+        self.sync_allocator(force_squash)?;
 
         // Write all items in write cache
         for (addr, raw) in self.write_cache.iter_mut() {
