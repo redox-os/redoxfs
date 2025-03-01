@@ -9,6 +9,8 @@ extern crate alloc;
 
 use core::sync::atomic::AtomicUsize;
 
+// The alloc log grows by 1 block about every 21 generations
+pub const ALLOC_GC_THRESHOLD: u64 = 1024;
 pub const BLOCK_SIZE: u64 = 4096;
 // A record is 4KiB << 5 = 128KiB
 pub const RECORD_LEVEL: usize = 5;

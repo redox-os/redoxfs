@@ -15,7 +15,7 @@ use syscall::error::{
 use crate::{
     AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait,
     DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr,
-    ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
+    ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
 };
 
 pub struct Transaction<'a, D: Disk> {
@@ -117,7 +117,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
     /// using the state of `self.allocator`.
     fn sync_allocator(&mut self, squash: bool) -> Result<bool> {
         let mut prev_ptr = BlockPtr::default();
-        if squash {
+        let should_gc = self.header.generation() % ALLOC_GC_THRESHOLD == 0
+            && self.header.generation() >= ALLOC_GC_THRESHOLD;
+        if squash || should_gc {
             // Clear and rebuild alloc log
             self.allocator_log.clear();
             let levels = self.allocator.levels();
