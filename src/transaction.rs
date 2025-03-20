@@ -494,11 +494,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
                             // Write updates to newly allocated blocks
                             l0.data_mut().set_branch_full(i0, true);
                             l0.data_mut().ptrs[i0] = block_ptr.cast();
-                            l1.data_mut().set_branch_full(i1, l0.data().tree_list_is_full());
+                            l1.data_mut()
+                                .set_branch_full(i1, l0.data().tree_list_is_full());
                             l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
-                            l2.data_mut().set_branch_full(i2, l1.data().tree_list_is_full());
+                            l2.data_mut()
+                                .set_branch_full(i2, l1.data().tree_list_is_full());
                             l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
-                            l3.data_mut().set_branch_full(i3, l2.data().tree_list_is_full());
+                            l3.data_mut()
+                                .set_branch_full(i3, l2.data().tree_list_is_full());
                             l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
                             self.header.tree = self.sync_block(l3)?;
                             self.header_changed = true;

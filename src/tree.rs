@@ -59,22 +59,21 @@ pub struct TreeList<T> {
 
 impl<T> TreeList<T> {
     pub fn tree_list_is_full(&self) -> bool {
-        self.full_flags[1] == u128::MAX & !(3 << 126) &&
-        self.full_flags[0] == u128::MAX
+        self.full_flags[1] == u128::MAX & !(3 << 126) && self.full_flags[0] == u128::MAX
     }
 
     pub fn branch_is_full(&self, index: usize) -> bool {
         assert!(index < TREE_LIST_ENTRIES);
         let shift = index % 128;
         let full_flags_index = (index / 128) as usize;
-        return self.full_flags[full_flags_index] & (1 << shift) != 0
-    } 
+        return self.full_flags[full_flags_index] & (1 << shift) != 0;
+    }
 
     pub fn set_branch_full(&mut self, index: usize, full: bool) {
         assert!(index < TREE_LIST_ENTRIES);
         let shift = index % 128;
         let full_flags_index = (index / 128) as usize;
-        
+
         if full {
             self.full_flags[full_flags_index] |= 1 << shift;
         } else {
