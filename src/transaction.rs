@@ -455,39 +455,53 @@ impl<'a, D: Disk> Transaction<'a, D> {
         &mut self,
         block_ptr: BlockPtr<T>,
     ) -> Result<TreePtr<T>> {
-        // TODO: improve performance, reduce writes
-
         // Remember that if there is a free block at any level it will always sync when it
         // allocates at the lowest level, so we can save a write by not writing each level as it
         // is allocated.
         unsafe {
             let mut l3 = self.read_block(self.header.tree)?;
             for i3 in 0..l3.data().ptrs.len() {
+                if l3.data().branch_is_full(i3) {
+                    continue;
+                }
                 let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
                 for i2 in 0..l2.data().ptrs.len() {
+                    if l2.data().branch_is_full(i2) {
+                        continue;
+                    }
                     let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     for i1 in 0..l1.data().ptrs.len() {
+                        if l1.data().branch_is_full(i1) {
+                            continue;
+                        }
                         let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
                         for i0 in 0..l0.data().ptrs.len() {
-                            let pn = l0.data().ptrs[i0];
-
-                            // Skip if already in use
-                            if !pn.is_null() {
+                            if l0.data().branch_is_full(i0) {
                                 continue;
                             }
+
+                            let pn = l0.data().ptrs[i0];
+                            assert!(pn.is_null());
 
                             let tree_ptr = TreePtr::from_indexes((i3, i2, i1, i0));
 
                             // Skip if this is a reserved node (null)
                             if tree_ptr.is_null() {
+                                l0.data_mut().set_branch_full(i0, true);
                                 continue;
                             }
 
-                            // TODO: do we need to write all of these?
                             // Write updates to newly allocated blocks
+                            l0.data_mut().set_branch_full(i0, true);
                             l0.data_mut().ptrs[i0] = block_ptr.cast();
+                            l1.data_mut()
+                                .set_branch_full(i1, l0.data().tree_list_is_full());
                             l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
+                            l2.data_mut()
+                                .set_branch_full(i2, l1.data().tree_list_is_full());
                             l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
+                            l3.data_mut()
+                                .set_branch_full(i3, l2.data().tree_list_is_full());
                             l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
                             self.header.tree = self.sync_block(l3)?;
                             self.header_changed = true;
@@ -523,9 +537,13 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         // Clear the value in the tree, but do not deallocate the block, as that should already
         // have been done at the node level.
+        l0.data_mut().set_branch_full(i0, false);
         l0.data_mut().ptrs[i0] = BlockPtr::default();
+        l1.data_mut().set_branch_full(i1, false);
         l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
+        l2.data_mut().set_branch_full(i2, false);
         l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
+        l3.data_mut().set_branch_full(i3, false);
         l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
         self.header.tree = self.sync_block(l3)?;
         self.header_changed = true;
@@ -681,8 +699,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         node_ptr: TreePtr<Node>,
     ) -> Result<()> {
-        self.check_name(&parent_ptr, name)?;
-
         let mut parent = self.read_tree(parent_ptr)?;
         let mut node = self.read_tree(node_ptr)?;
 
@@ -866,6 +882,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         // Link original file to new name
+        self.check_name(&new_parent_ptr, new_name)?;
         self.link_node(new_parent_ptr, new_name, orig.ptr())?;
 
         // Remove original file
