@@ -19,7 +19,7 @@ where
     let mountpoint = mountpoint.as_ref();
     let socket = Socket::<V2>::create(&format!("{}", mountpoint.display()))?;
 
-    let mounted_path = format!("{}:", mountpoint.display());
+    let mounted_path = format!("/scheme/{}", mountpoint.display());
     let res = callback(Path::new(&mounted_path));
 
     let mut scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem);
