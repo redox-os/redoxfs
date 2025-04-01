@@ -286,6 +286,7 @@ impl<T> fmt::Debug for BlockPtr<T> {
 }
 
 #[repr(C, packed)]
+#[derive(Clone)]
 pub struct BlockRaw([u8; BLOCK_SIZE as usize]);
 
 unsafe impl BlockTrait for BlockRaw {
@@ -295,12 +296,6 @@ unsafe impl BlockTrait for BlockRaw {
         } else {
             None
         }
-    }
-}
-
-impl Clone for BlockRaw {
-    fn clone(&self) -> Self {
-        Self(self.0)
     }
 }
 

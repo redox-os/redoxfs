@@ -4,6 +4,7 @@ use core::{mem, ops, slice, str};
 use crate::{BlockLevel, BlockTrait, Node, TreePtr, DIR_ENTRY_MAX_LENGTH, RECORD_LEVEL};
 
 #[repr(C, packed)]
+#[derive(Clone, Copy)]
 pub struct DirEntry {
     node_ptr: TreePtr<Node>,
     name: [u8; DIR_ENTRY_MAX_LENGTH],
@@ -37,14 +38,6 @@ impl DirEntry {
         str::from_utf8(&self.name[..len]).ok()
     }
 }
-
-impl Clone for DirEntry {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl Copy for DirEntry {}
 
 impl Default for DirEntry {
     fn default() -> Self {

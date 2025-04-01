@@ -172,6 +172,7 @@ impl Allocator {
 }
 
 #[repr(C, packed)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct AllocEntry {
     /// The index of the first block this [`AllocEntry`] refers to
     index: Le<u64>,
@@ -207,34 +208,6 @@ impl AllocEntry {
 
     pub fn is_null(&self) -> bool {
         self.count() == 0
-    }
-}
-
-impl Clone for AllocEntry {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl Copy for AllocEntry {}
-
-impl Default for AllocEntry {
-    fn default() -> Self {
-        Self {
-            index: 0.into(),
-            count: 0.into(),
-        }
-    }
-}
-
-impl fmt::Debug for AllocEntry {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let index = self.index();
-        let count = self.count();
-        f.debug_struct("AllocEntry")
-            .field("index", &index)
-            .field("count", &count)
-            .finish()
     }
 }
 

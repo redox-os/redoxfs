@@ -4,6 +4,7 @@ use core::ops;
 use crate::{BlockLevel, BlockTrait, RECORD_LEVEL};
 
 //TODO: this is a box to prevent stack overflows
+#[derive(Clone)]
 pub struct RecordRaw(Box<[u8]>);
 
 unsafe impl BlockTrait for RecordRaw {
@@ -13,12 +14,6 @@ unsafe impl BlockTrait for RecordRaw {
         } else {
             None
         }
-    }
-}
-
-impl Clone for RecordRaw {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
     }
 }
 
