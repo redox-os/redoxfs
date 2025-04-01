@@ -4,6 +4,7 @@ use core::{mem, ops, slice, str};
 use crate::{BlockLevel, BlockTrait, Node, TreePtr, DIR_ENTRY_MAX_LENGTH, RECORD_LEVEL};
 
 #[repr(C, packed)]
+#[derive(Clone, Copy)]
 pub struct DirEntry {
     node_ptr: TreePtr<Node>,
     name: [u8; DIR_ENTRY_MAX_LENGTH],
@@ -38,14 +39,6 @@ impl DirEntry {
     }
 }
 
-impl Clone for DirEntry {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl Copy for DirEntry {}
-
 impl Default for DirEntry {
     fn default() -> Self {
         Self {
@@ -75,12 +68,7 @@ unsafe impl BlockTrait for DirList {
 
 impl DirList {
     pub fn is_empty(&self) -> bool {
-        for entry in self.entries.iter() {
-            if !entry.node_ptr().is_null() {
-                return false;
-            }
-        }
-        true
+        self.entries.iter().all(|entry| entry.node_ptr().is_null())
     }
 }
 

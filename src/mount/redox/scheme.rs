@@ -452,30 +452,6 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
 
     /* Resource operations */
-    #[allow(unused_variables)]
-    fn dup(&mut self, old_id: usize, buf: &[u8]) -> Result<usize> {
-        // println!("Dup {}", old_id);
-
-        if !buf.is_empty() {
-            return Err(Error::new(EINVAL));
-        }
-
-        let resource = if let Some(old_resource) = self.files.get(&old_id) {
-            old_resource.dup()?
-        } else {
-            return Err(Error::new(EBADF));
-        };
-
-        self.fmap
-            .get_mut(&resource.node_ptr().id())
-            .ok_or(Error::new(EBADFD))?
-            .open_fds += 1;
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        self.files.insert(id, resource);
-
-        Ok(id)
-    }
-
     fn read(&mut self, id: usize, buf: &mut [u8], offset: u64, _fcntl_flags: u32) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;

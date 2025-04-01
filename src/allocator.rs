@@ -172,6 +172,7 @@ impl Allocator {
 }
 
 #[repr(C, packed)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct AllocEntry {
     /// The index of the first block this [`AllocEntry`] refers to
     index: Le<u64>,
@@ -207,34 +208,6 @@ impl AllocEntry {
 
     pub fn is_null(&self) -> bool {
         self.count() == 0
-    }
-}
-
-impl Clone for AllocEntry {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl Copy for AllocEntry {}
-
-impl Default for AllocEntry {
-    fn default() -> Self {
-        Self {
-            index: 0.into(),
-            count: 0.into(),
-        }
-    }
-}
-
-impl fmt::Debug for AllocEntry {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let index = self.index();
-        let count = self.count();
-        f.debug_struct("AllocEntry")
-            .field("index", &index)
-            .field("count", &count)
-            .finish()
     }
 }
 
@@ -329,7 +302,7 @@ fn allocator_test() {
         } else if level == 10 {
             assert_eq!(alloc.levels[level], [1024]);
         } else {
-            assert_eq!(alloc.levels[level], []);
+            assert_eq!(alloc.levels[level], [0u64; 0]);
         }
     }
 
@@ -343,6 +316,6 @@ fn allocator_test() {
 
     assert_eq!(alloc.levels.len(), 11);
     for level in 0..alloc.levels.len() {
-        assert_eq!(alloc.levels[level], []);
+        assert_eq!(alloc.levels[level], [0u64; 0]);
     }
 }
