@@ -68,12 +68,7 @@ unsafe impl BlockTrait for DirList {
 
 impl DirList {
     pub fn is_empty(&self) -> bool {
-        for entry in self.entries.iter() {
-            if !entry.node_ptr().is_null() {
-                return false;
-            }
-        }
-        true
+        self.entries.iter().all(|entry| entry.node_ptr().is_null())
     }
 }
 

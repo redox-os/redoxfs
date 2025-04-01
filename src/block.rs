@@ -169,12 +169,7 @@ unsafe impl<T> BlockTrait for BlockList<T> {
 
 impl<T> BlockList<T> {
     pub fn is_empty(&self) -> bool {
-        for ptr in self.ptrs.iter() {
-            if !ptr.is_null() {
-                return false;
-            }
-        }
-        true
+        self.ptrs.iter().all(|ptr| ptr.is_null())
     }
 }
 
