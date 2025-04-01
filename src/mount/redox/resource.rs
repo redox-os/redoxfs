@@ -24,8 +24,6 @@ pub trait Resource<D: Disk> {
 
     fn uid(&self) -> u32;
 
-    fn dup(&self) -> Result<Box<dyn Resource<D>>>;
-
     fn set_path(&mut self, path: &str);
 
     fn read(&mut self, buf: &mut [u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize>;
@@ -174,16 +172,6 @@ impl<D: Disk> Resource<D> for DirResource {
 
     fn uid(&self) -> u32 {
         self.uid
-    }
-
-    fn dup(&self) -> Result<Box<dyn Resource<D>>> {
-        Ok(Box::new(DirResource {
-            path: self.path.clone(),
-            parent_ptr_opt: self.parent_ptr_opt,
-            node_ptr: self.node_ptr,
-            data: self.data.clone(),
-            uid: self.uid,
-        }))
     }
 
     fn set_path(&mut self, path: &str) {
@@ -373,16 +361,6 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn uid(&self) -> u32 {
         self.uid
-    }
-
-    fn dup(&self) -> Result<Box<dyn Resource<D>>> {
-        Ok(Box::new(FileResource {
-            path: self.path.clone(),
-            parent_ptr_opt: self.parent_ptr_opt,
-            node_ptr: self.node_ptr,
-            flags: self.flags,
-            uid: self.uid,
-        }))
     }
 
     fn set_path(&mut self, path: &str) {
