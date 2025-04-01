@@ -190,3 +190,45 @@ fn many_create_remove_should_not_increase_size() {
         assert_eq!(diff, 0);
     });
 }
+
+#[test]
+fn many_create_then_many_remove_should_not_increase_size() {
+    with_redoxfs(|mut fs| {
+        let tree_ptr = TreePtr::<Node>::root();
+        let initially_free = fs.allocator().free();
+        let initial_size = fs.tx(|tx| tx.read_tree(tree_ptr)).unwrap().data().size();
+
+        let end = 3000;
+        for i in 0..end {
+            let _ = fs
+                .tx(|tx| {
+                    tx.create_node(
+                        tree_ptr,
+                        &format!("test{}", i),
+                        Node::MODE_FILE | 0644,
+                        1,
+                        0,
+                    )
+                })
+                .unwrap();
+        }
+
+        for i in 0..end - 1 {
+            let result =
+                fs.tx(|tx| tx.remove_node(tree_ptr, &format!("test{}", i), Node::MODE_FILE));
+            if result.is_err() {
+                println!("Failed to delete on iteration {i}");
+            }
+            result.unwrap();
+        }
+        let _ = fs.tx(|tx| tx.remove_node(tree_ptr, &format!("test{}", end - 1), Node::MODE_FILE));
+
+        let final_size = fs.tx(|tx| tx.read_tree(tree_ptr)).unwrap().data().size();
+        assert_eq!(initial_size, final_size);
+
+        // Any value greater than 0 indicates a storage leak
+        let _ = fs.tx(|tx| tx.sync(true));
+        let diff = initially_free - fs.allocator().free();
+        assert_eq!(diff, 0);
+    });
+}
