@@ -329,7 +329,7 @@ fn allocator_test() {
         } else if level == 10 {
             assert_eq!(alloc.levels[level], [1024]);
         } else {
-            assert_eq!(alloc.levels[level], []);
+            assert_eq!(alloc.levels[level], [0u64; 0]);
         }
     }
 
@@ -343,6 +343,6 @@ fn allocator_test() {
 
     assert_eq!(alloc.levels.len(), 11);
     for level in 0..alloc.levels.len() {
-        assert_eq!(alloc.levels[level], []);
+        assert_eq!(alloc.levels[level], [0u64; 0]);
     }
 }
