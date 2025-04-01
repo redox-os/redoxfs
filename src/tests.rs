@@ -141,24 +141,6 @@ fn mmap() {
 }
 
 #[test]
-fn create_remove_should_not_increase_size() {
-    with_redoxfs(|mut fs| {
-        let initially_free = fs.allocator().free();
-
-        let tree_ptr = TreePtr::<Node>::root();
-        let name = "test";
-        let _ = fs
-            .tx(|tx| {
-                tx.create_node(tree_ptr, name, Node::MODE_FILE | 0644, 1, 0)?;
-                tx.remove_node(tree_ptr, name, Node::MODE_FILE)
-            })
-            .unwrap();
-
-        assert_eq!(fs.allocator().free(), initially_free);
-    });
-}
-
-#[test]
 fn many_create_remove_should_not_increase_size() {
     with_redoxfs(|mut fs| {
         let initially_free = fs.allocator().free();
@@ -213,7 +195,7 @@ fn many_create_then_many_remove_should_not_increase_size() {
                 .unwrap();
         }
 
-        for i in 0..end - 1 {
+        for i in 0..end {
             let result =
                 fs.tx(|tx| tx.remove_node(tree_ptr, &format!("test{}", i), Node::MODE_FILE));
             if result.is_err() {
@@ -221,7 +203,6 @@ fn many_create_then_many_remove_should_not_increase_size() {
             }
             result.unwrap();
         }
-        let _ = fs.tx(|tx| tx.remove_node(tree_ptr, &format!("test{}", end - 1), Node::MODE_FILE));
 
         let final_size = fs.tx(|tx| tx.read_tree(tree_ptr)).unwrap().data().size();
         assert_eq!(initial_size, final_size);
