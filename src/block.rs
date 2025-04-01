@@ -169,12 +169,7 @@ unsafe impl<T> BlockTrait for BlockList<T> {
 
 impl<T> BlockList<T> {
     pub fn is_empty(&self) -> bool {
-        for ptr in self.ptrs.iter() {
-            if !ptr.is_null() {
-                return false;
-            }
-        }
-        true
+        self.ptrs.iter().all(|ptr| ptr.is_null())
     }
 }
 
@@ -286,6 +281,7 @@ impl<T> fmt::Debug for BlockPtr<T> {
 }
 
 #[repr(C, packed)]
+#[derive(Clone)]
 pub struct BlockRaw([u8; BLOCK_SIZE as usize]);
 
 unsafe impl BlockTrait for BlockRaw {
@@ -295,12 +291,6 @@ unsafe impl BlockTrait for BlockRaw {
         } else {
             None
         }
-    }
-}
-
-impl Clone for BlockRaw {
-    fn clone(&self) -> Self {
-        Self(self.0)
     }
 }
 
