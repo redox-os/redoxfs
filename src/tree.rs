@@ -62,6 +62,15 @@ impl<T> TreeList<T> {
         self.full_flags[1] == u128::MAX & !(3 << 126) && self.full_flags[0] == u128::MAX
     }
 
+    pub fn tree_list_is_empty(&self) -> bool {
+        for ptr in self.ptrs.iter() {
+            if !ptr.is_null() {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn branch_is_full(&self, index: usize) -> bool {
         assert!(index < TREE_LIST_ENTRIES);
         let shift = index % 128;

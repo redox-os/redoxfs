@@ -535,17 +535,45 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let mut l1 = self.read_block(l2.data().ptrs[i2])?;
         let mut l0 = self.read_block(l1.data().ptrs[i1])?;
 
-        // Clear the value in the tree, but do not deallocate the block, as that should already
-        // have been done at the node level.
+        // Clear the value in the tree, but do not deallocate the node block, as that should already
+        // have been done at the node level. The inner tree nodes can be deallocated if they are empty.
         l0.data_mut().set_branch_full(i0, false);
         l0.data_mut().ptrs[i0] = BlockPtr::default();
+        let l0_ptr = if l0.data().tree_list_is_empty() {
+            unsafe { self.deallocate(l0.addr()) };
+            BlockPtr::default()
+        } else {
+            self.sync_block(l0)?
+        };
+
         l1.data_mut().set_branch_full(i1, false);
-        l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
+        l1.data_mut().ptrs[i1] = l0_ptr;
+        let l1_ptr = if l1.data().tree_list_is_empty() {
+            unsafe { self.deallocate(l1.addr()) };
+            BlockPtr::default()
+        } else {
+            self.sync_block(l1)?
+        };
+
         l2.data_mut().set_branch_full(i2, false);
-        l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
+        l2.data_mut().ptrs[i2] = l1_ptr;
+        let l2_ptr = if l2.data().tree_list_is_empty() {
+            unsafe { self.deallocate(l2.addr()) };
+            BlockPtr::default()
+        } else {
+            self.sync_block(l2)?
+        };
+
         l3.data_mut().set_branch_full(i3, false);
-        l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
-        self.header.tree = self.sync_block(l3)?;
+        l3.data_mut().ptrs[i3] = l2_ptr;
+        let l3_ptr = if l3.data().tree_list_is_empty() {
+            unsafe { self.deallocate(l3.addr()) };
+            BlockPtr::default()
+        } else {
+            self.sync_block(l3)?
+        };
+
+        self.header.tree = l3_ptr;
         self.header_changed = true;
         Ok(())
     }
