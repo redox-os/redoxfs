@@ -119,7 +119,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
     fn sync_allocator(&mut self, force_squash: bool) -> Result<bool> {
         let mut prev_ptr = BlockPtr::default();
         let should_gc = self.header.generation() % ALLOC_GC_THRESHOLD == 0
-            && self.header.generation() >= ALLOC_GC_THRESHOLD;
+            && self.header.generation() >= ALLOC_GC_THRESHOLD
+            && self.allocator.free() > 0;
         if force_squash || should_gc {
             // Clear and rebuild alloc log
             self.allocator_log.clear();
