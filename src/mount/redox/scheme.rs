@@ -3,8 +3,9 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use redox_scheme::{CallerCtx, OpenResult, SchemeMut};
+use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult};
 use syscall::data::{Stat, StatVfs, TimeSpec};
+use syscall::dirent::DirentBuf;
 use syscall::error::{
     Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
     EPERM, EXDEV,
@@ -14,7 +15,7 @@ use syscall::flag::{
     O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
-use syscall::{MunmapFlags, EBADFD};
+use syscall::MunmapFlags;
 
 use redox_path::{
     canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path,
@@ -23,7 +24,7 @@ use redox_path::{
 
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
-use super::resource::{DirResource, FileResource, Resource};
+use super::resource::{DirResource, Entry, FileResource, Resource};
 
 pub struct FileScheme<D: Disk> {
     name: String,
@@ -164,8 +165,8 @@ fn dirname(path: &str) -> Option<String> {
     canonicalize_using_cwd(Some(path), "..")
 }
 
-impl<D: Disk> SchemeMut for FileScheme<D> {
-    fn xopen(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
+impl<D: Disk> SchemeSync for FileScheme<D> {
+    fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
         let CallerCtx { uid, gid, .. } = *ctx;
 
         let path = url.trim_matches('/');
@@ -196,10 +197,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                         let mut data = Vec::new();
                         for child in children.iter() {
                             if let Some(child_name) = child.name() {
-                                if !data.is_empty() {
-                                    data.push(b'\n');
-                                }
-                                data.extend_from_slice(&child_name.as_bytes());
+                                data.push(Entry {
+                                    node_ptr: child.node_ptr(),
+                                    name: child_name.to_string(),
+                                });
                             }
                         }
 
@@ -240,7 +241,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                             &mut resolve_nodes,
                         )
                     })?;
-                    return self.xopen(&resolved, flags, ctx);
+                    return self.open(&resolved, flags, ctx);
                 } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));
                 } else {
@@ -370,8 +371,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         })
     }
 
-    fn rmdir(&mut self, url: &str, uid: u32, gid: u32) -> Result<usize> {
+    fn rmdir(&mut self, url: &str, ctx: &CallerCtx) -> Result<()> {
         let path = url.trim_matches('/');
+        let uid = ctx.uid;
+        let gid = ctx.gid;
 
         // println!("Rmdir '{}'", path);
 
@@ -401,15 +404,17 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
                 }
 
                 tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
-                    .and(Ok(0))
+                    .and(Ok(()))
             } else {
                 Err(Error::new(ENOTDIR))
             }
         })
     }
 
-    fn unlink(&mut self, url: &str, uid: u32, gid: u32) -> Result<usize> {
+    fn unlink(&mut self, url: &str, ctx: &CallerCtx) -> Result<()> {
         let path = url.trim_matches('/');
+        let uid = ctx.uid;
+        let gid = ctx.gid;
 
         // println!("Unlink '{}'", path);
 
@@ -440,10 +445,10 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
 
                 if child.data().is_symlink() {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
-                        .and(Ok(0))
+                        .and(Ok(()))
                 } else {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
-                        .and(Ok(0))
+                        .and(Ok(()))
                 }
             } else {
                 Err(Error::new(EISDIR))
@@ -452,25 +457,39 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
 
     /* Resource operations */
-    fn read(&mut self, id: usize, buf: &mut [u8], offset: u64, _fcntl_flags: u32) -> Result<usize> {
+    fn read(
+        &mut self,
+        id: usize,
+        buf: &mut [u8],
+        offset: u64,
+        _fcntl_flags: u32,
+        _ctx: &CallerCtx,
+    ) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
         self.fs.tx(|tx| file.read(buf, offset, tx))
     }
 
-    fn write(&mut self, id: usize, buf: &[u8], offset: u64, _fcntl_flags: u32) -> Result<usize> {
+    fn write(
+        &mut self,
+        id: usize,
+        buf: &[u8],
+        offset: u64,
+        _fcntl_flags: u32,
+        _ctx: &CallerCtx,
+    ) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
         self.fs.tx(|tx| file.write(buf, offset, tx))
     }
 
-    fn fsize(&mut self, id: usize) -> Result<u64> {
+    fn fsize(&mut self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
         // println!("Seek {}, {} {}", id, pos, whence);
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
         self.fs.tx(|tx| file.fsize(tx))
     }
 
-    fn fchmod(&mut self, id: usize, mode: u16) -> Result<usize> {
+    fn fchmod(&mut self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
         if let Some(file) = self.files.get_mut(&id) {
             self.fs.tx(|tx| file.fchmod(mode, tx))
         } else {
@@ -478,15 +497,15 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
-    fn fchown(&mut self, id: usize, uid: u32, gid: u32) -> Result<usize> {
+    fn fchown(&mut self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
         if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.fchown(uid, gid, tx))
+            self.fs.tx(|tx| file.fchown(new_uid, new_gid, tx))
         } else {
             Err(Error::new(EBADF))
         }
     }
 
-    fn fcntl(&mut self, id: usize, cmd: usize, arg: usize) -> Result<usize> {
+    fn fcntl(&mut self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
         if let Some(file) = self.files.get_mut(&id) {
             file.fcntl(cmd, arg)
         } else {
@@ -494,7 +513,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
-    fn fevent(&mut self, id: usize, _flags: EventFlags) -> Result<EventFlags> {
+    fn fevent(&mut self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
         if let Some(_file) = self.files.get(&id) {
             // EPERM is returned for files that are always readable or writable
             Err(Error::new(EPERM))
@@ -503,7 +522,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
-    fn fpath(&mut self, id: usize, buf: &mut [u8]) -> Result<usize> {
+    fn fpath(&mut self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         if let Some(file) = self.files.get(&id) {
             let name = self.name.as_bytes();
@@ -537,8 +556,110 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
     }
 
     //TODO: this function has too much code, try to simplify it
-    fn frename(&mut self, id: usize, url: &str, uid: u32, gid: u32) -> Result<usize> {
+    fn flink(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
         let new_path = url.trim_matches('/');
+        let uid = ctx.uid;
+        let gid = ctx.gid;
+
+        // println!("Flink {}, {} from {}, {}", id, new_path, uid, gid);
+
+        if let Some(file) = self.files.get_mut(&id) {
+            //TODO: Check for EINVAL
+            // The new pathname contained a path prefix of the old, or, more generally,
+            // an attempt was made to make a directory a subdirectory of itself.
+
+            let mut old_name = String::new();
+            for part in file.path().split('/') {
+                if !part.is_empty() {
+                    old_name = part.to_string();
+                }
+            }
+            if old_name.is_empty() {
+                return Err(Error::new(EPERM));
+            }
+
+            let mut new_name = String::new();
+            for part in new_path.split('/') {
+                if !part.is_empty() {
+                    new_name = part.to_string();
+                }
+            }
+            if new_name.is_empty() {
+                return Err(Error::new(EPERM));
+            }
+
+            let scheme_name = &self.name;
+            self.fs.tx(|tx| {
+                let orig_parent_ptr = match file.parent_ptr_opt() {
+                    Some(some) => some,
+                    None => {
+                        // println!("orig is root");
+                        return Err(Error::new(EBUSY));
+                    }
+                };
+
+                let orig_node = tx.read_tree(file.node_ptr())?;
+
+                if !orig_node.data().owner(uid) {
+                    // println!("orig_node not owned by caller {}", uid);
+                    return Err(Error::new(EACCES));
+                }
+
+                let mut new_nodes = Vec::new();
+                let new_node_opt =
+                    Self::path_nodes(scheme_name, tx, new_path, uid, gid, &mut new_nodes)?;
+
+                if let Some((ref new_parent, _)) = new_nodes.last() {
+                    if !new_parent.data().owner(uid) {
+                        // println!("new_parent not owned by caller {}", uid);
+                        return Err(Error::new(EACCES));
+                    }
+
+                    if let Some((ref new_node, _)) = new_node_opt {
+                        if !new_node.data().owner(uid) {
+                            // println!("new dir not owned by caller {}", uid);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        if new_node.data().is_dir() {
+                            if !orig_node.data().is_dir() {
+                                // println!("orig_node is file, new is dir");
+                                return Err(Error::new(EACCES));
+                            }
+
+                            let mut children = Vec::new();
+                            tx.child_nodes(new_node.ptr(), &mut children)?;
+
+                            if !children.is_empty() {
+                                // println!("new dir not empty");
+                                return Err(Error::new(ENOTEMPTY));
+                            }
+                        } else {
+                            if orig_node.data().is_dir() {
+                                // println!("orig_node is dir, new is file");
+                                return Err(Error::new(ENOTDIR));
+                            }
+                        }
+                    }
+
+                    tx.link_node(new_parent.ptr(), &new_name, orig_node.ptr())?;
+
+                    file.set_path(new_path);
+                    Ok(0)
+                } else {
+                    Err(Error::new(EPERM))
+                }
+            })
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    //TODO: this function has too much code, try to simplify it
+    fn frename(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
+        let new_path = url.trim_matches('/');
+        let uid = ctx.uid;
+        let gid = ctx.gid;
 
         // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
 
@@ -634,7 +755,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
-    fn fstat(&mut self, id: usize, stat: &mut Stat) -> Result<usize> {
+    fn fstat(&mut self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
         if let Some(file) = self.files.get(&id) {
             self.fs.tx(|tx| file.stat(stat, tx))
@@ -643,20 +764,20 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
-    fn fstatvfs(&mut self, id: usize, stat: &mut StatVfs) -> Result<usize> {
+    fn fstatvfs(&mut self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
         if let Some(_file) = self.files.get(&id) {
             stat.f_bsize = BLOCK_SIZE as u32;
             stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
             stat.f_bfree = self.fs.allocator().free();
             stat.f_bavail = stat.f_bfree;
 
-            Ok(0)
+            Ok(())
         } else {
             Err(Error::new(EBADF))
         }
     }
 
-    fn fsync(&mut self, id: usize) -> Result<usize> {
+    fn fsync(&mut self, id: usize, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fsync {}", id);
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
         let fmaps = &mut self.fmap;
@@ -664,7 +785,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         self.fs.tx(|tx| file.sync(fmaps, tx))
     }
 
-    fn ftruncate(&mut self, id: usize, len: usize) -> Result<usize> {
+    fn ftruncate(&mut self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
         // println!("Ftruncate {}, {}", id, len);
         if let Some(file) = self.files.get_mut(&id) {
             self.fs.tx(|tx| file.truncate(len, tx))
@@ -673,7 +794,7 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
-    fn futimens(&mut self, id: usize, times: &[TimeSpec]) -> Result<usize> {
+    fn futimens(&mut self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
         // println!("Futimens {}, {}", id, times.len());
         if let Some(file) = self.files.get_mut(&id) {
             self.fs.tx(|tx| file.utimens(times, tx))
@@ -682,27 +803,55 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
         }
     }
 
-    fn mmap_prep(&mut self, id: usize, offset: u64, size: usize, flags: MapFlags) -> Result<usize> {
+    fn getdents<'buf>(
+        &mut self,
+        id: usize,
+        buf: DirentBuf<&'buf mut [u8]>,
+        opaque_offset: u64,
+    ) -> Result<DirentBuf<&'buf mut [u8]>> {
+        if let Some(file) = self.files.get_mut(&id) {
+            self.fs.tx(|tx| file.getdents(buf, opaque_offset, tx))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn mmap_prep(
+        &mut self,
+        id: usize,
+        offset: u64,
+        size: usize,
+        flags: MapFlags,
+        _ctx: &CallerCtx,
+    ) -> Result<usize> {
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
         let fmaps = &mut self.fmap;
 
         self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
     }
     #[allow(unused_variables)]
-    fn munmap(&mut self, id: usize, offset: u64, size: usize, flags: MunmapFlags) -> Result<usize> {
+    fn munmap(
+        &mut self,
+        id: usize,
+        offset: u64,
+        size: usize,
+        flags: MunmapFlags,
+        _ctx: &CallerCtx,
+    ) -> Result<()> {
         let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
         let fmaps = &mut self.fmap;
 
         self.fs.tx(|tx| file.funmap(fmaps, offset, size, tx))
     }
 
-    fn close(&mut self, id: usize) -> Result<usize> {
+    fn on_close(&mut self, id: usize) {
         // println!("Close {}", id);
-        let file = self.files.remove(&id).ok_or(Error::new(EBADF))?;
-        let file_info = self
-            .fmap
-            .get_mut(&file.node_ptr().id())
-            .ok_or(Error::new(EBADFD))?;
+        let Some(file) = self.files.remove(&id) else {
+            return;
+        };
+        let Some(file_info) = self.fmap.get_mut(&file.node_ptr().id()) else {
+            return;
+        };
 
         file_info.open_fds = file_info
             .open_fds
@@ -711,7 +860,5 @@ impl<D: Disk> SchemeMut for FileScheme<D> {
 
         // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
         // particular inode, remove that inode here.
-
-        Ok(0)
     }
 }

@@ -1,4 +1,4 @@
-use redox_scheme::{RequestKind, SignalBehavior, Socket, V2};
+use redox_scheme::{RequestKind, SignalBehavior, Socket};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -17,7 +17,7 @@ where
     F: FnOnce(&Path) -> T,
 {
     let mountpoint = mountpoint.as_ref();
-    let socket = Socket::<V2>::create(&format!("{}", mountpoint.display()))?;
+    let socket = Socket::create(&format!("{}", mountpoint.display()))?;
 
     let mounted_path = format!("/scheme/{}", mountpoint.display());
     let res = callback(Path::new(&mounted_path));
@@ -36,7 +36,7 @@ where
                 }
             }
         };
-        let response = req.handle_scheme_mut(&mut scheme);
+        let response = req.handle_sync(&mut scheme);
 
         if !socket.write_response(response, SignalBehavior::Restart)? {
             break;

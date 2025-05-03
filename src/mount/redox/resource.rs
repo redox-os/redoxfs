@@ -6,7 +6,8 @@ use libredox::call::MmapArgs;
 use range_tree::RangeTree;
 
 use syscall::data::{Stat, TimeSpec};
-use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, EPERM};
+use syscall::dirent::{DirEntry, DirentBuf, DirentKind};
+use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, ENOTDIR, EPERM};
 use syscall::flag::{
     MapFlags, F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY,
     PROT_READ, PROT_WRITE,
@@ -47,9 +48,9 @@ pub trait Resource<D: Disk> {
         offset: u64,
         size: usize,
         tx: &mut Transaction<D>,
-    ) -> Result<usize>;
+    ) -> Result<()>;
 
-    fn fchmod(&mut self, mode: u16, tx: &mut Transaction<D>) -> Result<usize> {
+    fn fchmod(&mut self, mode: u16, tx: &mut Transaction<D>) -> Result<()> {
         let mut node = tx.read_tree(self.node_ptr())?;
 
         if node.data().uid() == self.uid() || self.uid() == 0 {
@@ -60,13 +61,13 @@ pub trait Resource<D: Disk> {
                 tx.sync_tree(node)?;
             }
 
-            Ok(0)
+            Ok(())
         } else {
             Err(Error::new(EPERM))
         }
     }
 
-    fn fchown(&mut self, uid: u32, gid: u32, tx: &mut Transaction<D>) -> Result<usize> {
+    fn fchown(&mut self, uid: u32, gid: u32, tx: &mut Transaction<D>) -> Result<()> {
         let mut node = tx.read_tree(self.node_ptr())?;
 
         let old_uid = node.data().uid();
@@ -92,7 +93,7 @@ pub trait Resource<D: Disk> {
                 tx.sync_tree(node)?;
             }
 
-            Ok(0)
+            Ok(())
         } else {
             Err(Error::new(EPERM))
         }
@@ -102,7 +103,7 @@ pub trait Resource<D: Disk> {
 
     fn path(&self) -> &str;
 
-    fn stat(&self, stat: &mut Stat, tx: &mut Transaction<D>) -> Result<usize> {
+    fn stat(&self, stat: &mut Stat, tx: &mut Transaction<D>) -> Result<()> {
         let node = tx.read_tree(self.node_ptr())?;
 
         let ctime = node.data().ctime();
@@ -125,21 +126,33 @@ pub trait Resource<D: Disk> {
             ..Default::default()
         };
 
-        Ok(0)
+        Ok(())
     }
 
-    fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<usize>;
+    fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<()>;
 
-    fn truncate(&mut self, len: usize, tx: &mut Transaction<D>) -> Result<usize>;
+    fn truncate(&mut self, len: u64, tx: &mut Transaction<D>) -> Result<()>;
 
-    fn utimens(&mut self, times: &[TimeSpec], tx: &mut Transaction<D>) -> Result<usize>;
+    fn utimens(&mut self, times: &[TimeSpec], tx: &mut Transaction<D>) -> Result<()>;
+
+    fn getdents<'buf>(
+        &mut self,
+        buf: DirentBuf<&'buf mut [u8]>,
+        opaque_offset: u64,
+        tx: &mut Transaction<D>,
+    ) -> Result<DirentBuf<&'buf mut [u8]>>;
+}
+
+pub struct Entry {
+    pub node_ptr: TreePtr<Node>,
+    pub name: String,
 }
 
 pub struct DirResource {
     path: String,
     parent_ptr_opt: Option<TreePtr<Node>>,
     node_ptr: TreePtr<Node>,
-    data: Option<Vec<u8>>,
+    data: Option<Vec<Entry>>,
     uid: u32,
 }
 
@@ -148,7 +161,7 @@ impl DirResource {
         path: String,
         parent_ptr_opt: Option<TreePtr<Node>>,
         node_ptr: TreePtr<Node>,
-        data: Option<Vec<u8>>,
+        data: Option<Vec<Entry>>,
         uid: u32,
     ) -> DirResource {
         DirResource {
@@ -178,16 +191,8 @@ impl<D: Disk> Resource<D> for DirResource {
         self.path = path.to_string();
     }
 
-    fn read(&mut self, buf: &mut [u8], offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
-        let data = self.data.as_ref().ok_or(Error::new(EISDIR))?;
-        let src = usize::try_from(offset)
-            .ok()
-            .and_then(|o| data.get(o..))
-            .unwrap_or(&[]);
-
-        let byte_count = core::cmp::min(src.len(), buf.len());
-        buf[..byte_count].copy_from_slice(&src[..byte_count]);
-        Ok(byte_count)
+    fn read(&mut self, _buf: &mut [u8], _offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
+        Err(Error::new(EISDIR))
     }
 
     fn write(&mut self, _buf: &[u8], _offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
@@ -214,7 +219,7 @@ impl<D: Disk> Resource<D> for DirResource {
         _offset: u64,
         _size: usize,
         _tx: &mut Transaction<D>,
-    ) -> Result<usize> {
+    ) -> Result<()> {
         Err(Error::new(EBADF))
     }
 
@@ -226,16 +231,45 @@ impl<D: Disk> Resource<D> for DirResource {
         &self.path
     }
 
-    fn sync(&mut self, _fmaps: &mut Fmaps, _tx: &mut Transaction<D>) -> Result<usize> {
+    fn sync(&mut self, _fmaps: &mut Fmaps, _tx: &mut Transaction<D>) -> Result<()> {
         Err(Error::new(EBADF))
     }
 
-    fn truncate(&mut self, _len: usize, _tx: &mut Transaction<D>) -> Result<usize> {
+    fn truncate(&mut self, _len: u64, _tx: &mut Transaction<D>) -> Result<()> {
         Err(Error::new(EBADF))
     }
 
-    fn utimens(&mut self, _times: &[TimeSpec], _tx: &mut Transaction<D>) -> Result<usize> {
+    fn utimens(&mut self, _times: &[TimeSpec], _tx: &mut Transaction<D>) -> Result<()> {
         Err(Error::new(EBADF))
+    }
+
+    fn getdents<'buf>(
+        &mut self,
+        mut buf: DirentBuf<&'buf mut [u8]>,
+        opaque_offset: u64,
+        tx: &mut Transaction<D>,
+    ) -> Result<DirentBuf<&'buf mut [u8]>> {
+        match &self.data {
+            Some(data) => {
+                for (idx, entry) in data.iter().enumerate().skip(opaque_offset as usize) {
+                    let child = tx.read_tree(entry.node_ptr)?;
+                    buf.entry(DirEntry {
+                        inode: child.id() as u64,
+                        next_opaque_id: idx as u64 + 1,
+                        name: &entry.name,
+                        kind: match child.data().mode() & Node::MODE_TYPE {
+                            Node::MODE_DIR => DirentKind::Directory,
+                            Node::MODE_FILE => DirentKind::Regular,
+                            Node::MODE_SYMLINK => DirentKind::Symlink,
+                            //TODO: more types?
+                            _ => DirentKind::Unspecified,
+                        },
+                    })?;
+                }
+                Ok(buf)
+            }
+            None => Err(Error::new(EBADF)),
+        }
     }
 }
 
@@ -504,7 +538,7 @@ impl<D: Disk> Resource<D> for FileResource {
         offset: u64,
         size: usize,
         tx: &mut Transaction<D>,
-    ) -> Result<usize> {
+    ) -> Result<()> {
         let fmap_info = fmaps
             .get_mut(&self.node_ptr.id())
             .ok_or(Error::new(EBADFD))?;
@@ -536,7 +570,7 @@ impl<D: Disk> Resource<D> for FileResource {
         }
         //dbg!(&self.fmaps);
 
-        Ok(0)
+        Ok(())
     }
 
     fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize> {
@@ -554,7 +588,7 @@ impl<D: Disk> Resource<D> for FileResource {
         &self.path
     }
 
-    fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<usize> {
+    fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<()> {
         if let Some(fmap_info) = fmaps.get_mut(&self.node_ptr.id()) {
             for (range, fmap) in fmap_info.ranges.iter_mut() {
                 unsafe {
@@ -569,25 +603,20 @@ impl<D: Disk> Resource<D> for FileResource {
             }
         }
 
-        Ok(0)
+        Ok(())
     }
 
-    fn truncate(&mut self, len: usize, tx: &mut Transaction<D>) -> Result<usize> {
+    fn truncate(&mut self, len: u64, tx: &mut Transaction<D>) -> Result<()> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
             let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            tx.truncate_node(
-                self.node_ptr,
-                len as u64,
-                mtime.as_secs(),
-                mtime.subsec_nanos(),
-            )?;
-            Ok(0)
+            tx.truncate_node(self.node_ptr, len, mtime.as_secs(), mtime.subsec_nanos())?;
+            Ok(())
         } else {
             Err(Error::new(EBADF))
         }
     }
 
-    fn utimens(&mut self, times: &[TimeSpec], tx: &mut Transaction<D>) -> Result<usize> {
+    fn utimens(&mut self, times: &[TimeSpec], tx: &mut Transaction<D>) -> Result<()> {
         let mut node = tx.read_tree(self.node_ptr)?;
 
         if node.data().uid() == self.uid || self.uid == 0 {
@@ -612,10 +641,19 @@ impl<D: Disk> Resource<D> for FileResource {
                     tx.sync_tree(node)?;
                 }
             }
-            Ok(0)
+            Ok(())
         } else {
             Err(Error::new(EPERM))
         }
+    }
+
+    fn getdents<'buf>(
+        &mut self,
+        _buf: DirentBuf<&'buf mut [u8]>,
+        _opaque_offset: u64,
+        _tx: &mut Transaction<D>,
+    ) -> Result<DirentBuf<&'buf mut [u8]>> {
+        Err(Error::new(ENOTDIR))
     }
 }
 
