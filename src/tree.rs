@@ -191,6 +191,18 @@ impl<T> TreePtr<T> {
 
         (i3, i2, i1, i0)
     }
+
+    pub fn to_bytes(&self) -> [u8; 4] {
+        self.id.to_le_bytes()
+    }
+
+    pub fn from_bytes(bytes: [u8; 4]) -> Self {
+        let val = u32::from_le_bytes(bytes);
+        Self {
+            id: Le(val),
+            phantom: PhantomData,
+        }
+    }
 }
 
 impl<T> Clone for TreePtr<T> {
@@ -256,5 +268,13 @@ mod tests {
 
         tree_list.ptrs[3] = mock_block(123);
         assert!(!tree_list.tree_list_is_empty());
+    }
+
+    #[test]
+    fn tree_ptr_to_and_from_bytes() {
+        let ptr: TreePtr<BlockRaw> = TreePtr::new(123456);
+        let bytes = ptr.to_bytes();
+        let ptr2: TreePtr<BlockRaw> = TreePtr::from_bytes(bytes);
+        assert_eq!(ptr.id(), ptr2.id());
     }
 }
