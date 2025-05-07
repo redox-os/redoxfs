@@ -33,7 +33,7 @@ impl DirEntry {
             }
             len += 1;
         }
-        return len;
+        len
     }
 
     pub fn name(&self) -> Option<&str> {

@@ -281,7 +281,7 @@ pub fn add_dir_entry(
     dirent: DirEntry,
 ) -> Result<Option<(HTreeHash, DirList)>> {
     if let Some(name) = dirent.name() {
-        if let Some(_) = dir_list.find_entry(name) {
+        if dir_list.find_entry(name).is_some() {
             return Err(Error::new(EEXIST));
         }
     }
