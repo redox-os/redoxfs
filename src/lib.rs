@@ -49,6 +49,7 @@ mod dir;
 mod disk;
 mod filesystem;
 mod header;
+mod htree;
 mod key;
 #[cfg(all(feature = "std", not(fuzzing)))]
 mod mount;

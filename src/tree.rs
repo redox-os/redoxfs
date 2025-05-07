@@ -74,14 +74,14 @@ impl<T> TreeList<T> {
     pub fn branch_is_full(&self, index: usize) -> bool {
         assert!(index < TREE_LIST_ENTRIES);
         let shift = index % 128;
-        let full_flags_index = (index / 128) as usize;
-        return self.full_flags[full_flags_index] & (1 << shift) != 0;
+        let full_flags_index = index / 128;
+        self.full_flags[full_flags_index] & (1 << shift) != 0
     }
 
     pub fn set_branch_full(&mut self, index: usize, full: bool) {
         assert!(index < TREE_LIST_ENTRIES);
         let shift = index % 128;
-        let full_flags_index = (index / 128) as usize;
+        let full_flags_index = index / 128;
 
         if full {
             self.full_flags[full_flags_index] |= 1 << shift;
@@ -189,7 +189,7 @@ impl<T> TreePtr<T> {
         let i1 = ((id >> SHIFT) & MASK) as usize;
         let i0 = (id & MASK) as usize;
 
-        return (i3, i2, i1, i0);
+        (i3, i2, i1, i0)
     }
 }
 
@@ -210,30 +210,51 @@ impl<T> Default for TreePtr<T> {
     }
 }
 
-#[test]
-fn tree_list_size_test() {
-    assert_eq!(
-        mem::size_of::<TreeList<BlockRaw>>(),
-        crate::BLOCK_SIZE as usize
-    );
-}
+#[cfg(test)]
+mod tests {
+    use crate::{BlockAddr, BlockData};
 
-#[test]
-fn tree_list_is_full_test() {
-    let mut tree_list = TreeList::<BlockRaw>::empty(BlockLevel::default()).unwrap();
-    assert!(!tree_list.tree_list_is_full());
+    use super::*;
 
-    for i in 0..TREE_LIST_ENTRIES {
-        assert!(!tree_list.branch_is_full(i));
-        tree_list.set_branch_full(i, true);
-        assert!(tree_list.branch_is_full(i));
+    #[test]
+    fn tree_list_size_test() {
+        assert_eq!(
+            mem::size_of::<TreeList<BlockRaw>>(),
+            crate::BLOCK_SIZE as usize
+        );
     }
 
-    assert!(tree_list.tree_list_is_full());
+    #[test]
+    fn tree_list_is_full_test() {
+        let mut tree_list = TreeList::<BlockRaw>::empty(BlockLevel::default()).unwrap();
+        assert!(!tree_list.tree_list_is_full());
 
-    for i in 0..TREE_LIST_ENTRIES {
-        assert!(tree_list.branch_is_full(i));
-        tree_list.set_branch_full(i, false);
-        assert!(!tree_list.branch_is_full(i));
+        for i in 0..TREE_LIST_ENTRIES {
+            assert!(!tree_list.branch_is_full(i));
+            tree_list.set_branch_full(i, true);
+            assert!(tree_list.branch_is_full(i));
+        }
+
+        assert!(tree_list.tree_list_is_full());
+
+        for i in 0..TREE_LIST_ENTRIES {
+            assert!(tree_list.branch_is_full(i));
+            tree_list.set_branch_full(i, false);
+            assert!(!tree_list.branch_is_full(i));
+        }
+    }
+
+    fn mock_block(addr: u64) -> BlockPtr<BlockRaw> {
+        let block_addr = unsafe { BlockAddr::new(addr, BlockLevel::default()) };
+        BlockData::empty(block_addr).unwrap().create_ptr()
+    }
+
+    #[test]
+    fn tree_list_is_empty() {
+        let mut tree_list = TreeList::<BlockRaw>::empty(BlockLevel::default()).unwrap();
+        assert!(tree_list.tree_list_is_empty());
+
+        tree_list.ptrs[3] = mock_block(123);
+        assert!(!tree_list.tree_list_is_empty());
     }
 }
