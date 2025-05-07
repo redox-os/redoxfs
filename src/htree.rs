@@ -1,7 +1,8 @@
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::{fmt, mem, ops, slice};
 use endian_num::Le;
-use syscall::error::{Error, Result, EEXIST, EIO, ENOENT};
+use syscall::error::{Error, Result, EEXIST, EIO};
 
 use crate::{
     BlockLevel, BlockPtr, BlockRaw, BlockTrait, DirEntry, DirList, BLOCK_SIZE, RECORD_LEVEL,
@@ -59,6 +60,21 @@ impl HTreeHash {
             *self
         } else {
             other
+        }
+    }
+
+    pub fn find_max(dir_list: &DirList) -> Option<HTreeHash> {
+        let mut max_hash = HTreeHash::default();
+        dir_list.for_each_entry(|_ptr_bytes, name_bytes| {
+            let name = String::from_utf8_lossy(name_bytes);
+            let hash = HTreeHash::from_name(name.as_ref());
+            max_hash = max_hash.max_ignoring_default(hash);
+        });
+
+        if max_hash == HTreeHash::default() {
+            None
+        } else {
+            Some(max_hash)
         }
     }
 }
@@ -264,24 +280,25 @@ pub fn add_dir_entry(
     htree_hash: &mut HTreeHash,
     dirent: DirEntry,
 ) -> Result<Option<(HTreeHash, DirList)>> {
-    // Update the input htree parameters in place
-    for entry in dir_list.entries.iter_mut() {
-        if entry.node_ptr().is_null() {
-            let name = dirent.name().ok_or(Error::new(EIO))?;
-            *htree_hash = HTreeHash::from_name(name).max_ignoring_default(*htree_hash);
-            *entry = dirent;
-            return Ok(None);
-        } else if entry.name() == dirent.name() {
+    if let Some(name) = dirent.name() {
+        if let Some(_) = dir_list.find_entry(name) {
             return Err(Error::new(EEXIST));
         }
     }
 
+    // Update the input htree parameters in place
+    let name = dirent.name().ok_or(Error::new(EIO))?;
+    if dir_list.append(&dirent) {
+        *htree_hash = HTreeHash::from_name(name).max_ignoring_default(*htree_hash);
+        return Ok(None);
+    }
+
     // The dir_list is full. We need to split it into two dir_lists by half, ordered by the name hash.
-    let mut entries_with_name_hash = Vec::with_capacity(dir_list.entries.len() + 1);
-    for entry in dir_list.entries.iter() {
+    let mut entries_with_name_hash = Vec::with_capacity(dir_list.entry_count() + 1);
+    for entry in dir_list.entries() {
         entries_with_name_hash.push((
             HTreeHash::from_name(entry.name().ok_or(Error::new(EIO))?),
-            *entry,
+            entry,
         ));
     }
     entries_with_name_hash.push((HTreeHash::from_name(dirent.name().unwrap()), dirent));
@@ -321,45 +338,19 @@ pub fn add_dir_entry(
 
     // Update the existing dir_list with the first half of the entries
     let mut new_dir_list = DirList::empty(BlockLevel::default()).ok_or(Error::new(EIO))?;
-    new_dir_list.entries[..entries1.len()].copy_from_slice(entries1);
+    for entry in entries1.iter() {
+        new_dir_list.append(entry);
+    }
     let _ = mem::replace(dir_list, new_dir_list);
     *htree_hash = entries_with_name_hash[entries1.len() - 1].0;
 
     // Return the second half of the entries as a new dir_list
     let mut new_dir_list = DirList::empty(BlockLevel::default()).ok_or(Error::new(EIO))?;
-    new_dir_list.entries[..entries2.len()].copy_from_slice(entries2);
+    for entry in entries2.iter() {
+        new_dir_list.append(entry);
+    }
     let new_name_hash = entries_with_name_hash[entries_with_name_hash.len() - 1].0;
     Ok(Some((new_name_hash, new_dir_list)))
-}
-
-/// Mutably remove the entry with the given name from the dir_list. The new htree_hash is returned if
-/// there are still entries in the dir_list, otherwise None is returned.
-pub fn remove_dir_entry(dir_list: &mut DirList, name: &str) -> Result<Option<HTreeHash>> {
-    let mut result: Option<HTreeHash> = None;
-    let mut removed = false;
-    for entry in dir_list
-        .entries
-        .iter_mut()
-        .filter(|a| !a.node_ptr().is_null())
-    {
-        if entry.name() == Some(name) {
-            *entry = DirEntry::default();
-            removed = true;
-        } else {
-            let entry_name = entry.name().ok_or(Error::new(EIO))?;
-            let entry_hash = HTreeHash::from_name(entry_name);
-            if let Some(previous_hash) = result {
-                result = Some(previous_hash.max_ignoring_default(entry_hash));
-            } else {
-                result = Some(entry_hash);
-            }
-        }
-    }
-
-    if !removed {
-        return Err(Error::new(ENOENT));
-    }
-    Ok(result)
 }
 
 //
@@ -369,11 +360,10 @@ pub fn remove_dir_entry(dir_list: &mut DirList, name: &str) -> Result<Option<HTr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::format;
-    use alloc::string::String;
-    use alloc::vec;
     use crate::alloc::string::ToString;
     use crate::TreePtr;
+    use alloc::format;
+    use alloc::string::String;
 
     #[test]
     fn htree_ptr_size_test() {
@@ -501,7 +491,7 @@ mod tests {
         let new_sibling = add_dir_entry(&mut dir_list, &mut htree_hash, dirent).unwrap();
         assert!(new_sibling.is_none());
         assert_eq!(htree_hash, HTreeHash::from_name("test"));
-        assert_eq!(dir_list.entries[0].name(), Some("test"));
+        assert_eq!(dir_list.entries().next().unwrap().name(), Some("test"));
 
         // Add the same entry again, and it should fail with an appropriate IO error
         let dirent = DirEntry::new(TreePtr::new(123), "test");
@@ -514,11 +504,12 @@ mod tests {
     fn add_dir_entry_many_test() {
         let mut dir_list = DirList::empty(BlockLevel::default()).unwrap();
         let mut htree_hash = HTreeHash::default();
+        let total_count = 16;
 
         // Fill up the dir_list
-        for i in 0..dir_list.entries.len() {
+        for i in 0..total_count {
             let v: usize = i % 10;
-            let dirent = DirEntry::new(TreePtr::new(123), format!("test{v}_{i}").as_str());
+            let dirent = DirEntry::new(TreePtr::new(123), format!("test{v}_{i:0244}").as_str());
             let new_sibling = add_dir_entry(&mut dir_list, &mut htree_hash, dirent).unwrap();
             assert!(new_sibling.is_none());
         }
@@ -526,23 +517,19 @@ mod tests {
         // The maximum htree_hash should be retained
         let max_tree_hash =
             dir_list
-                .entries
-                .iter()
+                .entries()
                 .enumerate()
                 .fold(HTreeHash::default(), |max, (i, _)| {
                     let v = i % 10;
-                    let hash = HTreeHash::from_name(format!("test{v}_{i}").as_str());
+                    let hash = HTreeHash::from_name(format!("test{v}_{i:0244}").as_str());
                     max.max_ignoring_default(hash)
                 });
         assert_eq!(htree_hash, max_tree_hash);
 
         // Confirm all the entries exist. Note they happen to be in insert order
-        for i in 0..dir_list.entries.len() {
+        for (i, entry) in dir_list.entries().enumerate() {
             let v = i % 10;
-            assert_eq!(
-                dir_list.entries[i].name(),
-                Some(format!("test{v}_{i}").as_str())
-            );
+            assert_eq!(entry.name(), Some(format!("test{v}_{i:0244}").as_str()));
         }
 
         // Test a split by adding one more entry
@@ -555,8 +542,7 @@ mod tests {
 
         // The htree_hash should be less than the minimum htree_hash in new_sibling_dir_list
         let new_sibling_min_htree_hash = new_sibling_dir_list
-            .entries
-            .iter()
+            .entries()
             .filter(|entry| !entry.node_ptr().is_null())
             .fold(HTreeHash::default(), |min, entry| {
                 let hash = HTreeHash::from_name(entry.name().unwrap());
@@ -565,34 +551,24 @@ mod tests {
         assert!(htree_hash < new_sibling_min_htree_hash);
 
         // Confirm all the entries exist across both dir_lists
-        let mut expected_names: Vec<String> = DirList::empty(BlockLevel::default())
-            .unwrap()
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
+        let mut expected_names: Vec<String> = (0..total_count)
+            .map(|i| {
                 let v = i % 10;
-                format!("test{v}_{i}")
+                format!("test{v}_{i:0244}")
             })
             .collect();
         expected_names.push("test_split".to_string());
         expected_names.sort();
 
         let mut dir_list_entry_count = 0;
-        for entry in dir_list.entries.iter() {
-            if entry.node_ptr().is_null() {
-                break;
-            }
+        for entry in dir_list.entries() {
             dir_list_entry_count += 1;
             let name = entry.name().unwrap().to_string();
             let _ = expected_names.remove(expected_names.binary_search(&name).unwrap());
         }
 
         let mut new_sibling_entry_count = 0;
-        for entry in new_sibling_dir_list.entries.iter() {
-            if entry.node_ptr().is_null() {
-                break;
-            }
+        for entry in new_sibling_dir_list.entries() {
             new_sibling_entry_count += 1;
             let name = entry.name().unwrap().to_string();
             let _ = expected_names.remove(expected_names.binary_search(&name).unwrap());
@@ -656,7 +632,9 @@ mod tests {
             if ptr.is_null() {
                 break;
             }
-            let idx = expected_hashes.binary_search(&ptr.htree_hash.0.into()).unwrap();
+            let idx = expected_hashes
+                .binary_search(&ptr.htree_hash.0.into())
+                .unwrap();
             expected_hashes.remove(idx);
         }
         assert!(expected_hashes.is_empty());
@@ -683,7 +661,9 @@ mod tests {
                 break;
             }
             htree_node_entry_count += 1;
-            let idx  = expected_hashes.binary_search(&ptr.htree_hash.0.into()).unwrap();
+            let idx = expected_hashes
+                .binary_search(&ptr.htree_hash.0.into())
+                .unwrap();
             expected_hashes.remove(idx);
         }
 
@@ -693,7 +673,9 @@ mod tests {
                 break;
             }
             new_sibling_entry_count += 1;
-            let idx = expected_hashes.binary_search(&ptr.htree_hash.0.into()).unwrap();
+            let idx = expected_hashes
+                .binary_search(&ptr.htree_hash.0.into())
+                .unwrap();
             expected_hashes.remove(idx);
         }
         assert!(
@@ -705,66 +687,5 @@ mod tests {
 
         // Confirm that the split is in half
         assert!((htree_node_entry_count as i32 - new_sibling_entry_count).abs() <= 1);
-    }
-
-    #[test]
-    fn remove_dir_entry_test() {
-        let mut dir_list = DirList::empty(BlockLevel::default()).unwrap();
-        dir_list.entries[0] = DirEntry::new(TreePtr::new(123), "123");
-        dir_list.entries[1] = DirEntry::new(TreePtr::new(123), "asdf");
-        dir_list.entries[2] = DirEntry::new(TreePtr::new(123), "test3");
-
-        let returned_hash = remove_dir_entry(&mut dir_list, "does_not_exist");
-        assert_eq!(returned_hash.err().unwrap().errno, ENOENT);
-
-        let mut to_remove_list = vec!["asdf", "123", "test3"];
-        to_remove_list.sort_by(|a, b| HTreeHash::from_name(*b).cmp(&HTreeHash::from_name(*a)));
-        to_remove_list.reverse();
-
-        let to_remove = to_remove_list.pop().unwrap();
-        let returned_hash = remove_dir_entry(&mut dir_list, to_remove).unwrap();
-        assert_eq!(
-            returned_hash.unwrap(),
-            HTreeHash::from_name(to_remove_list.last().unwrap())
-        );
-        let remaining: Vec<&str> = dir_list
-            .entries
-            .iter()
-            .filter(|e| !e.node_ptr().is_null())
-            .map(|e| e.name().unwrap())
-            .rev()
-            .collect();
-        let mut remaining_clone = remaining.clone();
-        let mut to_remove_list_clone = to_remove_list.clone();
-        remaining_clone.sort();
-        to_remove_list_clone.sort();
-        assert_eq!(remaining_clone, to_remove_list_clone);
-
-        let to_remove = to_remove_list.pop().unwrap();
-        let returned_hash = remove_dir_entry(&mut dir_list, to_remove).unwrap();
-        assert_eq!(
-            returned_hash.unwrap(),
-            HTreeHash::from_name(to_remove_list.last().unwrap())
-        );
-        let remaining: Vec<&str> = dir_list
-            .entries
-            .iter()
-            .filter(|e| !e.node_ptr().is_null())
-            .map(|e| e.name().unwrap())
-            .rev()
-            .collect();
-        assert_eq!(remaining, to_remove_list);
-
-        let to_remove = to_remove_list.pop().unwrap();
-        let returned_hash = remove_dir_entry(&mut dir_list, to_remove).unwrap();
-        assert!(returned_hash.is_none());
-        let remaining: Vec<&str> = dir_list
-            .entries
-            .iter()
-            .filter(|e| !e.node_ptr().is_null())
-            .map(|e| e.name().unwrap())
-            .rev()
-            .collect();
-        assert!(remaining.is_empty());
     }
 }

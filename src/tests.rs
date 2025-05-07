@@ -3,7 +3,6 @@ use crate::{
     unmount_path, BlockAddr, BlockData, BlockLevel, BlockPtr, DirEntry, DirList, DiskMemory,
     DiskSparse, FileSystem, Node, TreePtr, ALLOC_GC_THRESHOLD, BLOCK_SIZE,
 };
-use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicUsize;
@@ -269,8 +268,15 @@ fn many_create_write_list_find_read_delete() {
 
     // Create a bunch of files
     for i in 0..total_count {
-        let result =
-            fs.tx(|tx| tx.create_node(tree_ptr, &format!("file{i}"), Node::MODE_FILE | 0644, 1, 0));
+        let result = fs.tx(|tx| {
+            tx.create_node(
+                tree_ptr,
+                &format!("file{i:05}"),
+                Node::MODE_FILE | 0644,
+                1,
+                0,
+            )
+        });
         if result.is_err() {
             println!("Failure on create iteration {i}");
         }
@@ -300,24 +306,22 @@ fn many_create_write_list_find_read_delete() {
             total_count,
             "The list of children should match the number of files created."
         );
-        let mut children: HashSet<String> = children
+        let mut children: Vec<String> = children
             .iter()
             .map(|entry| entry.name().unwrap_or_default().to_string())
             .collect();
+        children.sort();
 
         for i in 0..total_count {
-            let expected = format!("file{i}");
-            assert!(
-                children.remove(&expected),
-                "Children did not contain '{}'",
-                expected
-            );
+            let expected = format!("file{i:05}");
+            let idx = children.binary_search(&expected);
+            assert!(idx.is_ok(), "Children did not contain '{}'", expected);
         }
     }
 
     // Find and read the files
     for i in 0..total_count {
-        let result = fs.tx(|tx| tx.find_node(tree_ptr, &format!("file{i}")));
+        let result = fs.tx(|tx| tx.find_node(tree_ptr, &format!("file{i:05}")));
         if result.is_err() {
             println!("Failure on find node iteration {i}");
         }
@@ -344,7 +348,7 @@ fn many_create_write_list_find_read_delete() {
 
     // Delete all the files
     for i in 0..total_count {
-        let file_name = format!("file{i}");
+        let file_name = format!("file{i:05}");
         let result = fs.tx(|tx| tx.remove_node(tree_ptr, &file_name, Node::MODE_FILE));
         if result.is_err() {
             println!("Failure on delete iteration {i}");
@@ -422,7 +426,7 @@ fn create_minimal_l2_htree(
             let child1_htree_hash = HTreeHash::from_name(child1_name);
 
             let mut dir_list = BlockData::<DirList>::empty(BlockAddr::default()).unwrap();
-            dir_list.data_mut().entries[0] = child1_dir_entry;
+            dir_list.data_mut().append(&child1_dir_entry);
             let dir_ptr = tx.sync_block(dir_list).unwrap();
 
             let mut l1 = BlockData::<HTreeNode<DirList>>::empty(BlockAddr::default()).unwrap();
@@ -481,12 +485,10 @@ fn insert_dir_entry_without_hash_change() {
             let dir_list = tx.read_block(dir_list_ptr.ptr).unwrap();
             assert_eq!(dir_list_ptr.htree_hash, child1_htree_hash);
 
-            let mut entries: Vec<&str> = dir_list
+            let mut entries: Vec<String> = dir_list
                 .data()
-                .entries
-                .iter()
-                .filter(|e| !e.node_ptr().is_null())
-                .map(|e| e.name().unwrap())
+                .entries()
+                .map(|e| e.name().unwrap().to_string())
                 .collect();
             entries.sort();
 
@@ -531,12 +533,10 @@ fn insert_dir_entry_without_hash_change() {
             let dir_list = tx.read_block(dir_list_ptr.ptr).unwrap();
             assert_eq!(dir_list_ptr.htree_hash, child1_htree_hash);
 
-            let entries: Vec<&str> = dir_list
+            let entries: Vec<String> = dir_list
                 .data()
-                .entries
-                .iter()
-                .filter(|e| !e.node_ptr().is_null())
-                .map(|e| e.name().unwrap())
+                .entries()
+                .map(|e| e.name().unwrap().to_string())
                 .collect();
 
             assert_eq!(entries.len(), 1);
@@ -597,12 +597,10 @@ fn insert_dir_entry_with_hash_change() {
             let dir_list = tx.read_block(dir_list_ptr.ptr).unwrap();
             assert_eq!(dir_list_ptr.htree_hash, child2_htree_hash);
 
-            let mut entries: Vec<&str> = dir_list
+            let mut entries: Vec<String> = dir_list
                 .data()
-                .entries
-                .iter()
-                .filter(|e| !e.node_ptr().is_null())
-                .map(|e| e.name().unwrap())
+                .entries()
+                .map(|e| e.name().unwrap().to_string())
                 .collect();
             entries.sort();
 
@@ -648,12 +646,10 @@ fn insert_dir_entry_with_hash_change() {
             let dir_list = tx.read_block(dir_list_ptr.ptr).unwrap();
             assert_eq!(dir_list_ptr.htree_hash, child1_htree_hash);
 
-            let entries: Vec<&str> = dir_list
+            let entries: Vec<String> = dir_list
                 .data()
-                .entries
-                .iter()
-                .filter(|e| !e.node_ptr().is_null())
-                .map(|e| e.name().unwrap())
+                .entries()
+                .map(|e| e.name().unwrap().to_string())
                 .collect();
 
             assert_eq!(entries.len(), 1);
@@ -717,7 +713,7 @@ fn split_htree_level0_to_level1() {
         // GIVEN a full root DirList
         fs.tx(|tx| {
             for i in 0..16 {
-                let child_name = format!("child__{i}");
+                let child_name = format!("child__{i:0243}");
                 tx.create_node(parent_ptr, child_name.as_str(), Node::MODE_FILE, 1, 0)
                     .unwrap();
             }
@@ -730,8 +726,8 @@ fn split_htree_level0_to_level1() {
 
             let dir_ptr: BlockPtr<DirList> = unsafe { parent.data().level0[1].cast() };
             let dir_list = tx.read_block(dir_ptr).unwrap();
-            for (i, entry) in dir_list.data().entries.iter().enumerate() {
-                assert_eq!(entry.name().unwrap(), format!("child__{i}"));
+            for (i, entry) in dir_list.data().entries().enumerate() {
+                assert_eq!(entry.name().unwrap(), format!("child__{i:0243}"));
             }
 
             Ok(())
@@ -739,8 +735,16 @@ fn split_htree_level0_to_level1() {
         .unwrap();
 
         // WHEN one more entry is added
-        fs.tx(|tx| tx.create_node(parent_ptr, "child__16", Node::MODE_FILE, 1, 0))
-            .unwrap();
+        fs.tx(|tx| {
+            tx.create_node(
+                parent_ptr,
+                format!("child__{:0243}", 16).as_str(),
+                Node::MODE_FILE,
+                1,
+                0,
+            )
+        })
+        .unwrap();
 
         // THEN the level is increased and the DirList is split
         fs.tx(|tx| {
@@ -754,48 +758,29 @@ fn split_htree_level0_to_level1() {
             assert!(!htree_node.data().ptrs[0].is_null());
             assert_eq!(
                 htree_node.data().ptrs[0].htree_hash,
-                HTreeHash::from_name("child__7")
+                HTreeHash::from_name(format!("child__{:0243}", 7).as_str())
             );
             assert!(!htree_node.data().ptrs[1].is_null());
             assert_eq!(
                 htree_node.data().ptrs[1].htree_hash,
-                HTreeHash::from_name("child__16")
+                HTreeHash::from_name(format!("child__{:0243}", 16).as_str())
             );
 
             assert!(htree_node.data().ptrs[2].is_null());
 
             let dir_list1 = tx.read_block(htree_node.data().ptrs[0].ptr).unwrap();
-            let dir_list1_size = dir_list1
-                .data()
-                .entries
-                .iter()
-                .filter(|e| !e.node_ptr().is_null())
-                .count();
-
             let dir_list2 = tx.read_block(htree_node.data().ptrs[1].ptr).unwrap();
-            let dir_list2_size = dir_list2
-                .data()
-                .entries
-                .iter()
-                .filter(|e| !e.node_ptr().is_null())
-                .count();
 
-            assert_eq!(dir_list1_size, 8);
-            assert_eq!(dir_list2_size, 9);
+            assert_eq!(dir_list1.data().entry_count(), 8);
+            assert_eq!(dir_list2.data().entry_count(), 9);
 
-            for (i, entry) in dir_list1.data().entries.iter().enumerate() {
-                if entry.node_ptr().is_null() {
-                    continue;
-                }
-                assert_eq!(entry.name().unwrap(), format!("child__{i}"));
+            for (i, entry) in dir_list1.data().entries().enumerate() {
+                assert_eq!(entry.name().unwrap(), format!("child__{i:0243}"));
             }
 
-            for (i, entry) in dir_list2.data().entries.iter().enumerate() {
-                if entry.node_ptr().is_null() {
-                    continue;
-                }
-                let i = i + dir_list1_size;
-                assert_eq!(entry.name().unwrap(), format!("child__{i}"));
+            for (i, entry) in dir_list2.data().entries().enumerate() {
+                let i = i + dir_list1.data().entry_count();
+                assert_eq!(entry.name().unwrap(), format!("child__{i:0243}"));
             }
 
             Ok(())
@@ -805,8 +790,12 @@ fn split_htree_level0_to_level1() {
         // WHEN all entries in the first split are removed
         fs.tx(|tx| {
             for i in 0..8 {
-                tx.remove_node(parent_ptr, format!("child__{i}").as_str(), Node::MODE_FILE)
-                    .unwrap();
+                tx.remove_node(
+                    parent_ptr,
+                    format!("child__{i:0243}").as_str(),
+                    Node::MODE_FILE,
+                )
+                .unwrap();
             }
             Ok(())
         })
@@ -824,7 +813,7 @@ fn split_htree_level0_to_level1() {
             assert!(!htree_node.data().ptrs[0].is_null());
             assert_eq!(
                 htree_node.data().ptrs[0].htree_hash,
-                HTreeHash::from_name("child__16")
+                HTreeHash::from_name(format!("child__{:0243}", 16).as_str())
             );
             assert!(htree_node.data().ptrs[1].is_null());
 
@@ -835,7 +824,7 @@ fn split_htree_level0_to_level1() {
         // WHEN all entries in the second split are removed
         fs.tx(|tx| {
             for i in 8..17 {
-                let name = format!("child__{i}");
+                let name = format!("child__{i:0243}");
                 let result = tx.remove_node(parent_ptr, name.as_str(), Node::MODE_FILE);
                 if result.is_err() {
                     assert!(
@@ -865,13 +854,13 @@ fn split_htree_level0_to_level1() {
 fn split_htree_with_multiple_levels() {
     with_redoxfs(|fs| {
         let parent_ptr = TreePtr::<Node>::root();
-        let (mut fs, _) = create_minimal_l2_htree("child__1000", fs);
+        let (mut fs, _) = create_minimal_l2_htree(format!("child__{:0243}", 1000).as_str(), fs);
 
         // GIVEN a full root leaf node (DirList) with a full H-tree branch
         fs.tx(|tx| {
             for i in 1..16 {
                 let i = i + 1000;
-                let child_name = format!("child__{i}");
+                let child_name = format!("child__{i:0243}");
                 tx.create_node(parent_ptr, child_name.as_str(), Node::MODE_FILE, 1, 0)
                     .unwrap();
             }
@@ -914,8 +903,16 @@ fn split_htree_with_multiple_levels() {
         .unwrap();
 
         // WHEN another entry is added to the full DirList
-        fs.tx(|tx| tx.create_node(parent_ptr, "child__1", Node::MODE_FILE, 1, 0))
-            .unwrap();
+        fs.tx(|tx| {
+            tx.create_node(
+                parent_ptr,
+                format!("child__{:0243}", 1).as_str(),
+                Node::MODE_FILE,
+                1,
+                0,
+            )
+        })
+        .unwrap();
 
         // THEN the branch splits all the way to the root, increasing the level
         fs.tx(|tx| {
@@ -934,7 +931,7 @@ fn split_htree_with_multiple_levels() {
             assert!(!htree_node.data().ptrs[0].is_null());
             assert_eq!(
                 htree_node.data().ptrs[0].htree_hash,
-                HTreeHash::from_name("child__1015")
+                HTreeHash::from_name(format!("child__{:0243}", 1015).as_str())
             );
             assert!(!htree_node.data().ptrs[1].is_null());
             assert_eq!(htree_node.data().ptrs[1].htree_hash, HTreeHash::MAX);
@@ -944,11 +941,11 @@ fn split_htree_with_multiple_levels() {
             let l2_node = tx.read_block(l3_node.data().ptrs[0].ptr).unwrap();
             assert_eq!(
                 l2_node.data().ptrs[0].htree_hash,
-                HTreeHash::from_name("child__1006")
+                HTreeHash::from_name(format!("child__{:0243}", 1006).as_str())
             );
             assert_eq!(
                 l2_node.data().ptrs[1].htree_hash,
-                HTreeHash::from_name("child__1015")
+                HTreeHash::from_name(format!("child__{:0243}", 1015).as_str())
             );
             assert!(l2_node.data().ptrs[2].is_null());
 
@@ -957,8 +954,14 @@ fn split_htree_with_multiple_levels() {
         .unwrap();
 
         // WHEN the max HTreeHash is removed from the smaller sibling
-        fs.tx(|tx| tx.remove_node(parent_ptr, "child__1015", Node::MODE_FILE))
-            .unwrap();
+        fs.tx(|tx| {
+            tx.remove_node(
+                parent_ptr,
+                format!("child__{:0243}", 1015).as_str(),
+                Node::MODE_FILE,
+            )
+        })
+        .unwrap();
 
         // THEN the HTreeHash values for that branch are updated
         fs.tx(|tx| {
@@ -970,7 +973,7 @@ fn split_htree_with_multiple_levels() {
             assert!(!htree_node.data().ptrs[0].is_null());
             assert_eq!(
                 htree_node.data().ptrs[0].htree_hash,
-                HTreeHash::from_name("child__1014")
+                HTreeHash::from_name(format!("child__{:0243}", 1014).as_str())
             );
             assert!(!htree_node.data().ptrs[1].is_null());
             assert_eq!(htree_node.data().ptrs[1].htree_hash, HTreeHash::MAX);
@@ -980,11 +983,11 @@ fn split_htree_with_multiple_levels() {
             let l2_node = tx.read_block(l3_node.data().ptrs[0].ptr).unwrap();
             assert_eq!(
                 l2_node.data().ptrs[0].htree_hash,
-                HTreeHash::from_name("child__1006")
+                HTreeHash::from_name(format!("child__{:0243}", 1006).as_str())
             );
             assert_eq!(
                 l2_node.data().ptrs[1].htree_hash,
-                HTreeHash::from_name("child__1014")
+                HTreeHash::from_name(format!("child__{:0243}", 1014).as_str())
             );
             assert!(l2_node.data().ptrs[2].is_null());
 
@@ -996,8 +999,12 @@ fn split_htree_with_multiple_levels() {
         fs.tx(|tx| {
             for i in 7..15 {
                 let x = 1000 + i;
-                tx.remove_node(parent_ptr, format!("child__{x}").as_str(), Node::MODE_FILE)
-                    .unwrap();
+                tx.remove_node(
+                    parent_ptr,
+                    format!("child__{x:0243}").as_str(),
+                    Node::MODE_FILE,
+                )
+                .unwrap();
             }
             Ok(())
         })
@@ -1013,7 +1020,7 @@ fn split_htree_with_multiple_levels() {
             assert!(!htree_node.data().ptrs[0].is_null());
             assert_eq!(
                 htree_node.data().ptrs[0].htree_hash,
-                HTreeHash::from_name("child__1006")
+                HTreeHash::from_name(format!("child__{:0243}", 1006).as_str())
             );
             assert!(!htree_node.data().ptrs[1].is_null());
             assert_eq!(htree_node.data().ptrs[1].htree_hash, HTreeHash::MAX);
@@ -1023,7 +1030,7 @@ fn split_htree_with_multiple_levels() {
             let l2_node = tx.read_block(l3_node.data().ptrs[0].ptr).unwrap();
             assert_eq!(
                 l2_node.data().ptrs[0].htree_hash,
-                HTreeHash::from_name("child__1006")
+                HTreeHash::from_name(format!("child__{:0243}", 1006).as_str())
             );
             assert!(l2_node.data().ptrs[1].is_null());
             assert!(l2_node.data().ptrs[2].is_null());
@@ -1034,12 +1041,20 @@ fn split_htree_with_multiple_levels() {
 
         // WHEN removing the other small DirList
         fs.tx(|tx| {
-            tx.remove_node(parent_ptr, "child__1", Node::MODE_FILE)
-                .unwrap();
+            tx.remove_node(
+                parent_ptr,
+                format!("child__{:0243}", 1).as_str(),
+                Node::MODE_FILE,
+            )
+            .unwrap();
             for i in 0..7 {
                 let x = 1000 + i;
-                tx.remove_node(parent_ptr, format!("child__{x}").as_str(), Node::MODE_FILE)
-                    .unwrap();
+                tx.remove_node(
+                    parent_ptr,
+                    format!("child__{x:0243}").as_str(),
+                    Node::MODE_FILE,
+                )
+                .unwrap();
             }
             Ok(())
         })
@@ -1068,12 +1083,12 @@ fn split_htree_with_multiple_levels() {
 fn split_htree_with_multiple_levels_using_duplicates() {
     with_redoxfs(|fs| {
         let parent_ptr = TreePtr::<Node>::root();
-        let (mut fs, _) = create_minimal_l2_htree("child0000__0", fs);
+        let (mut fs, _) = create_minimal_l2_htree(format!("child{:0242}__0", 0).as_str(), fs);
 
         // GIVEN a full root leaf node (DirList) with a full H-tree branch
         fs.tx(|tx| {
             for i in 1..16 {
-                let child_name = format!("child{i:04}__0");
+                let child_name = format!("child{i:0242}__0");
                 tx.create_node(parent_ptr, child_name.as_str(), Node::MODE_FILE, 1, 0)
                     .unwrap();
             }
@@ -1163,7 +1178,7 @@ fn split_htree_with_multiple_levels_using_duplicates() {
         fs.tx(|tx| {
             tx.find_node(parent_ptr, "child__0").unwrap();
             for i in 0..16 {
-                let name = format!("child{i:04}__0");
+                let name = format!("child{i:0242}__0");
                 let result = tx.find_node(parent_ptr, name.as_str());
                 assert!(result.is_ok(), "Could not read {name}");
             }
@@ -1200,7 +1215,7 @@ fn split_htree_with_multiple_levels_using_duplicates() {
             assert!(l2_node.data().ptrs[2].is_null());
 
             let dir1 = tx.read_block(l2_node.data().ptrs[0].ptr).unwrap();
-            for (i, entry) in dir1.data().entries.iter().enumerate() {
+            for (i, entry) in dir1.data().entries().enumerate() {
                 if i == 0 {
                     assert!(
                         !entry.node_ptr().is_null(),
@@ -1221,7 +1236,7 @@ fn split_htree_with_multiple_levels_using_duplicates() {
             }
 
             let dir2 = tx.read_block(l2_node.data().ptrs[1].ptr).unwrap();
-            for (i, entry) in dir2.data().entries.iter().enumerate() {
+            for (i, entry) in dir2.data().entries().enumerate() {
                 assert!(
                     !entry.node_ptr().is_null(),
                     "Entry {i} in dir2 should not be null"

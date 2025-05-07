@@ -666,10 +666,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
             for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
                 let dir_ptr: BlockPtr<DirList> = unsafe { entry.ptr.cast() };
                 let dir = self.read_block(dir_ptr)?;
-                for entry in dir.data().entries.iter() {
-                    if !entry.node_ptr().is_null() {
-                        children.push(*entry);
-                    }
+                for entry in dir.data().entries() {
+                    children.push(entry);
                 }
             }
         } else {
@@ -728,25 +726,13 @@ impl<'a, D: Disk> Transaction<'a, D> {
         assert!(htree_levels > 0);
         if htree_levels == 1 {
             // If we are at the leaf level, search for the name
-            for (_, entry) in parent_htree_node.find_ptrs_for_read(name_hash) {
-                let dir_ptr: BlockPtr<DirList> = unsafe { entry.ptr.cast() };
+            for (_, htree_ptr) in parent_htree_node.find_ptrs_for_read(name_hash) {
+                let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
                 let dir = self.read_block(dir_ptr)?;
 
-                for entry in dir.data().entries.iter() {
+                if let Some(entry) = dir.data().find_entry(name) {
                     let node_ptr = entry.node_ptr();
-
-                    // Skip empty entries
-                    if node_ptr.is_null() {
-                        continue;
-                    }
-
-                    // Return node pointer if name matches
-                    if let Some(entry_name) = entry.name() {
-                        if entry_name == name {
-                            //TODO: Do not require read of node
-                            return Ok(Some(self.read_tree_and_addr(node_ptr)?));
-                        }
-                    }
+                    return Ok(Some(self.read_tree_and_addr(node_ptr)?));
                 }
             }
             return Ok(None);
@@ -1125,14 +1111,21 @@ impl<'a, D: Disk> Transaction<'a, D> {
             if htree_levels == 1 {
                 let dir_ptr: BlockPtr<DirList> = unsafe { entry_ptr.ptr.cast() };
                 let mut dir_list = self.read_block(dir_ptr)?;
-                let new_htree_hash = htree::remove_dir_entry(dir_list.data_mut(), dir_entry_name);
 
-                // If the new_htree_hash is ENOENT, iterate to look at the next relevant node
-                if new_htree_hash.is_err() && new_htree_hash.err().unwrap().errno == ENOENT {
+                // If we don't find the entry to remove, continue to the next relevant node
+                if !dir_list.data_mut().remove_entry(dir_entry_name) {
                     continue;
                 }
 
-                if let Some(new_tree_hash) = new_htree_hash? {
+                // Determine if the htree_hash needs to be updated
+                let new_htree_hash = if dir_entry_htree_hash == HTreeHash::from_name(dir_entry_name)
+                {
+                    HTreeHash::find_max(dir_list.data())
+                } else {
+                    Some(dir_entry_htree_hash)
+                };
+
+                if let Some(new_tree_hash) = new_htree_hash {
                     // The entry_ptr needs to be updated in the parent_htree_node
                     let dir_block_ptr = self.sync_block(dir_list)?;
                     let dir_record_ptr: BlockPtr<RecordRaw> = unsafe { dir_block_ptr.cast() };
