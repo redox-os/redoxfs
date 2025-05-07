@@ -7,6 +7,8 @@ pub use self::file::DiskFile;
 #[cfg(feature = "std")]
 pub use self::io::DiskIo;
 #[cfg(feature = "std")]
+pub use self::memory::DiskMemory;
+#[cfg(feature = "std")]
 pub use self::sparse::DiskSparse;
 
 #[cfg(feature = "std")]
@@ -15,6 +17,8 @@ mod cache;
 mod file;
 #[cfg(feature = "std")]
 mod io;
+#[cfg(feature = "std")]
+mod memory;
 #[cfg(feature = "std")]
 mod sparse;
 
