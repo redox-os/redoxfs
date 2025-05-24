@@ -89,10 +89,10 @@ type BlockListL4 = BlockList<BlockListL3>;
 #[repr(C, packed)]
 pub struct Node {
     /// This node's type & permissions.
-    /// - first four bits are the node's type
+    /// - four most significant bits are the node's type
     /// - next four bits are permissions for the file's user
     /// - next four bits are permissions for the file's group
-    /// - last four bits are permissions for everyone else
+    /// - four least significant bits are permissions for everyone else
     pub mode: Le<u16>,
 
     /// The uid that owns this file
@@ -223,10 +223,10 @@ impl Node {
     }
 
     /// This node's type & permissions.
-    /// - first four bits are the node's type
+    /// - four most significant bits are the node's type
     /// - next four bits are permissions for the file's user
     /// - next four bits are permissions for the file's group
-    /// - last four bits are permissions for everyone else
+    /// - four least significant bits are permissions for everyone else
     pub fn mode(&self) -> u16 {
         self.mode.to_ne()
     }
