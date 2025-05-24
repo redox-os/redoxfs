@@ -90,8 +90,8 @@ type BlockListL4 = BlockList<BlockListL3>;
 pub struct Node {
     /// This node's type & permissions.
     /// - four most significant bits are the node's type
-    /// - next four bits are permissions for the file's user
-    /// - next four bits are permissions for the file's group
+    /// - next four bits are permissions for the node's user
+    /// - next four bits are permissions for the node's group
     /// - four least significant bits are permissions for everyone else
     pub mode: Le<u16>,
 
@@ -224,8 +224,8 @@ impl Node {
 
     /// This node's type & permissions.
     /// - four most significant bits are the node's type
-    /// - next four bits are permissions for the file's user
-    /// - next four bits are permissions for the file's group
+    /// - next four bits are permissions for the node's user
+    /// - next four bits are permissions for the node's group
     /// - four least significant bits are permissions for everyone else
     pub fn mode(&self) -> u16 {
         self.mode.to_ne()
