@@ -89,7 +89,7 @@ type BlockListL4 = BlockList<BlockListL3>;
 #[repr(C, packed)]
 pub struct Node {
     /// This node's type & permissions.
-    /// - first four bits are permissions
+    /// - first four bits are the node's type
     /// - next four bits are permissions for the file's user
     /// - next four bits are permissions for the file's group
     /// - last four bits are permissions for everyone else
@@ -223,7 +223,7 @@ impl Node {
     }
 
     /// This node's type & permissions.
-    /// - first four bits are permissions
+    /// - first four bits are the node's type
     /// - next four bits are permissions for the file's user
     /// - next four bits are permissions for the file's group
     /// - last four bits are permissions for everyone else
