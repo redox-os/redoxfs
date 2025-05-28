@@ -3,6 +3,8 @@ use crate::{
     unmount_path, BlockAddr, BlockData, BlockLevel, BlockPtr, DirEntry, DirList, DiskMemory,
     DiskSparse, FileSystem, Node, TreePtr, ALLOC_GC_THRESHOLD, BLOCK_SIZE,
 };
+use core::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicUsize;
@@ -51,7 +53,8 @@ where
         let join_handle = crate::mount(fs, dbg!(mount_path), move |real_path| {
             let real_path = real_path.to_owned();
             thread::spawn(move || {
-                let res = callback(&real_path);
+                let res = catch_unwind(AssertUnwindSafe(|| callback(&real_path)));
+
                 let real_path = real_path.to_str().unwrap();
 
                 if cfg!(target_os = "redox") {
@@ -72,7 +75,7 @@ where
                     }
                 }
 
-                res
+                res.unwrap()
             })
         })
         .unwrap();
@@ -92,6 +95,107 @@ fn simple() {
     with_mounted(|path| {
         dbg!(fs::create_dir(&path.join("test"))).unwrap();
     })
+}
+
+#[test]
+fn create_and_remove_file() {
+    with_mounted(|path| {
+        let file_name = "test_file.txt";
+        let file_path = path.join(file_name);
+
+        // Create the file
+        fs::write(&file_path, "Hello, world!").unwrap();
+        assert!(fs::exists(&file_path).unwrap());
+
+        // Read the file
+        let contents = fs::read_to_string(&file_path).unwrap();
+        assert_eq!(contents, "Hello, world!");
+
+        // Remove the file
+        fs::remove_file(&file_path).unwrap();
+        assert!(!fs::exists(&file_path).unwrap());
+    });
+}
+
+#[test]
+fn create_and_remove_directory() {
+    with_mounted(|path| {
+        let dir_name = "test_dir";
+        let dir_path = path.join(dir_name);
+
+        // Create the directory
+        fs::create_dir(&dir_path).unwrap();
+        assert!(fs::exists(&dir_path).unwrap());
+
+        // Check that the directory is empty
+        let entries: Vec<_> = fs::read_dir(&dir_path)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(entries.is_empty());
+
+        // Add a file to the directory
+        let file_name = "test_file.txt";
+        let file_path = dir_path.join(file_name);
+        fs::write(&file_path, "Hello, world!").unwrap();
+
+        // Check that the dir cannot be removed when not empty
+        let error = fs::remove_dir(&dir_path);
+        assert!(error.is_err());
+        assert_eq!(
+            error.unwrap_err().kind(),
+            std::io::ErrorKind::DirectoryNotEmpty
+        );
+
+        // Remove the file
+        fs::remove_file(&file_path).unwrap();
+
+        // Remove the directory
+        fs::remove_dir(&dir_path).unwrap();
+        assert!(!fs::exists(&dir_path).unwrap());
+    });
+}
+
+#[test]
+fn create_and_remove_symlink() {
+    with_mounted(|path| {
+        let real_file = "real_file.txt";
+        let real_path = path.join(real_file);
+        let symlink_file = "symlink_to_real_file.txt";
+        let symlink_path = path.join(symlink_file);
+
+        // Create the real file
+        fs::write(&real_path, "Hello, world!").unwrap();
+
+        // Create the symmlink according to the platform
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_file, &symlink_path).unwrap();
+
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&real_file, &symlink_path).unwrap();
+
+        // Check that the symlink exists and points to the correct target
+        let exists = fs::exists(&symlink_path);
+        assert!(
+            exists.is_ok() && exists.unwrap(),
+            "Symlink should exist but was: {:?}",
+            fs::exists(&symlink_path)
+        );
+        let symlink_metadata = fs::symlink_metadata(&symlink_path).unwrap();
+        assert!(symlink_metadata.file_type().is_symlink());
+        let target = fs::read_link(&symlink_path).unwrap();
+        assert_eq!(target.to_str().unwrap(), real_file);
+        assert_eq!(fs::read(&symlink_path).unwrap(), b"Hello, world!");
+
+        // Confirm the symlink cannot be removed as a directory
+        let error = fs::remove_dir(&symlink_path);
+        assert!(error.is_err());
+        assert_eq!(error.unwrap_err().kind(), std::io::ErrorKind::NotADirectory);
+
+        // Remove the symlink
+        fs::remove_file(&symlink_path).unwrap();
+        assert!(!fs::exists(&symlink_path).unwrap());
+    });
 }
 
 #[cfg(target_os = "redox")]

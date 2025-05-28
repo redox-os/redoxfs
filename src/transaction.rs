@@ -735,6 +735,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     return Ok(Some(self.read_tree_and_addr(node_ptr)?));
                 }
             }
+            #[cfg(feature = "log")]
+            log::trace!("FIND_NODE: Node not found in leaf level 1");
             return Ok(None);
         }
 
@@ -749,6 +751,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
             }
         }
 
+        #[cfg(feature = "log")]
+        log::trace!(
+            "FIND_NODE: Node not found in higher level: {}",
+            htree_levels
+        );
         Ok(None)
     }
 
@@ -987,8 +994,18 @@ impl<'a, D: Disk> Transaction<'a, D> {
     }
 
     pub fn remove_node(&mut self, parent_ptr: TreePtr<Node>, name: &str, mode: u16) -> Result<()> {
+        #[cfg(feature = "log")]
+        log::debug!(
+            "REMOVE_NODE: name: {}, mode: {:x}, parent_ptr: {:?}",
+            name,
+            mode,
+            parent_ptr.indexes()
+        );
+
         let mut parent = self.read_tree(parent_ptr)?;
         if !parent.data().level0[0].is_marker() {
+            #[cfg(feature = "log")]
+            log::error!("REMOVE_NODE: Parent has no htree marker set (not a directory or empty)");
             return Err(Error::new(ENOENT));
         }
 
@@ -1017,17 +1034,21 @@ impl<'a, D: Disk> Transaction<'a, D> {
             .find_node_inner(htree_root.data(), name, name_hash, htree_levels.max(1))?
             .ok_or(Error::new(ENOENT))?;
 
-        if node.data().mode() & Node::MODE_TYPE == mode {
-            if node.data().is_dir() && node.data().size() > 0 && node.data().links() == 1 {
+        if mode & Node::MODE_TYPE == Node::MODE_DIR {
+            if !node.data().is_dir() {
+                // Found a file instead of a directory
+                return Err(Error::new(ENOTDIR));
+            } else if node.data().size() > 0 && node.data().links() == 1 {
                 // Tried to remove directory that still has entries
                 return Err(Error::new(ENOTEMPTY));
             }
-        } else if node.data().is_dir() {
-            // Found directory instead of requested type
-            return Err(Error::new(EISDIR));
+            // The directory will be removed.
         } else {
-            // Did not find directory when requested
-            return Err(Error::new(ENOTDIR));
+            if node.data().is_dir() {
+                // Found a directory instead of file
+                return Err(Error::new(EISDIR));
+            }
+            // The non-directory entry will be removed.
         }
 
         let links = node.data().links();
