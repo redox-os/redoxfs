@@ -414,9 +414,9 @@ checksum = "436d45c2b6a5b159d43da708e62b25be3a4a3d5550d654b72216ade4c4bfd717"
 
 [[package]]
 name = "redox-scheme"
-version = "0.2.4"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6143c4d307e1c99ac14f60b5b07b2dccaf9d17137f7cee4e4e29977dd8014a1b"
+checksum = "2c00025a04f76fdcf72c15f10c7a12d9f2fdde93e539be9a57d5d632c4158a9e"
 dependencies = [
  "libredox",
  "redox_syscall",
@@ -424,9 +424,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.5.12"
+version = "0.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "928fca9cf2aa042393a8325b9ead81d2f0df4cb12e1e24cef072922ccd99c5af"
+checksum = "0d04b7d0ee6b4a0207a0a7adb104d23ecb0b47d6beae7152d0fa34b692b29fd6"
 dependencies = [
  "bitflags",
 ]
