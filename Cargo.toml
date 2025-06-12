@@ -39,7 +39,7 @@ endian-num = "0.1"
 getrandom = { version = "0.2.5", optional = true }
 libc = "0.2"
 log = { version = "0.4.14", default-features = false, optional = true}
-redox_syscall = { version = "0.5.12" }
+redox_syscall = { version = "0.5.13" }
 range-tree = { version = "0.1", optional = true }
 seahash = { version = "4.1.0", default-features = false }
 termion = { version = "4", optional = true }
