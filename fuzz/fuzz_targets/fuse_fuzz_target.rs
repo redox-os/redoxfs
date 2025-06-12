@@ -315,7 +315,7 @@ fuzz_target!(|test_case: TestCase| -> Corpus {
 
     for mount_seq in test_case.mount_sequences.iter() {
         #[cfg(feature = "log")]
-        eprintln!("mount fs");
+        eprintln!("mount fs: path {:?}, size{}", temp_dir.path(), test_case.disk_size);
 
         let disk = create_disk(temp_dir.path(), test_case.disk_size);
         let operations = mount_seq.operations.clone();
