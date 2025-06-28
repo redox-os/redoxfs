@@ -373,9 +373,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
     fn openat(&mut self, dirfd: usize, path: &str, flags: usize, fcntl_flags: u32, ctx: &CallerCtx) -> Result<OpenResult> {
         if let Some(dir_resource) = self.files.get(&dirfd) {
-            // Prepend the directory's path to the given path
-            let mut full_path = dir_resource.path().to_string();
-            full_path.push_str(path.trim_start_matches('/'));
+            let full_path = format!("{}/{}", dir_resource.path(), path);
             self.open(&full_path, flags, ctx)
         } else {
             Err(Error::new(EBADF))
