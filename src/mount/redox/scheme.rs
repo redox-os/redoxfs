@@ -107,6 +107,7 @@ impl<D: Disk> FileScheme<D> {
     fn path_nodes(
         scheme_name: &str,
         tx: &mut Transaction<D>,
+        start_ptr: TreePtr<Node>,
         path: &str,
         uid: u32,
         gid: u32,
@@ -114,7 +115,7 @@ impl<D: Disk> FileScheme<D> {
     ) -> Result<Option<(TreeData<Node>, String)>> {
         let mut parts = path.split('/').filter(|part| !part.is_empty());
         let mut part_opt: Option<&str> = None;
-        let mut node_ptr = TreePtr::root();
+        let mut node_ptr = start_ptr;
         let mut node_name = String::new();
         loop {
             let node_res = match part_opt {
@@ -167,6 +168,512 @@ fn dirname(path: &str) -> Option<String> {
 
 impl<D: Disk> SchemeSync for FileScheme<D> {
     fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
+        self.open_internal(TreePtr::root(), url.trim_matches('/'), flags, ctx)
+    }
+
+    fn openat(&mut self, dirfd: usize, path: &str, flags: usize, _fcntl_flags: u32, ctx: &CallerCtx) -> Result<OpenResult> {
+        // If pathname is absolute, then dirfd is ignored. 
+        if path.starts_with('/') {
+            return self.open_internal(TreePtr::root(), path.trim_matches('/'), flags, ctx);
+        }
+        let dir_resource = self.files.get(&dirfd).ok_or(Error::new(EBADF))?;
+        // Only allow DirResource as base for openat
+        let dir_node_ptr = dir_resource.node_ptr();
+        self.open_internal(dir_node_ptr, path, flags, ctx)
+    }
+
+    fn rmdir(&mut self, url: &str, ctx: &CallerCtx) -> Result<()> {
+        let path = url.trim_matches('/');
+        let uid = ctx.uid;
+        let gid = ctx.gid;
+
+        // println!("Rmdir '{}'", path);
+
+        let scheme_name = &self.name;
+        self.fs.tx(|tx| {
+            let mut nodes = Vec::new();
+
+            let Some((child, child_name)) =
+                Self::path_nodes(scheme_name, tx, TreePtr::root(), path, uid, gid, &mut nodes)?
+            else {
+                return Err(Error::new(ENOENT));
+            };
+
+            let Some((parent, _parent_name)) = nodes.last() else {
+                return Err(Error::new(EPERM));
+            };
+
+            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
+            if child.data().is_dir() {
+                if !child.data().permission(uid, gid, Node::MODE_WRITE) {
+                    // println!("dir not writable {:o}", parent.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
+                tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
+                    .and(Ok(()))
+            } else {
+                Err(Error::new(ENOTDIR))
+            }
+        })
+    }
+
+    fn unlink(&mut self, url: &str, ctx: &CallerCtx) -> Result<()> {
+        let path = url.trim_matches('/');
+        let uid = ctx.uid;
+        let gid = ctx.gid;
+
+        // println!("Unlink '{}'", path);
+
+        let scheme_name = &self.name;
+        self.fs.tx(|tx| {
+            let mut nodes = Vec::new();
+
+            let Some((child, child_name)) =
+                Self::path_nodes(scheme_name, tx, TreePtr::root(), path, uid, gid, &mut nodes)?
+            else {
+                return Err(Error::new(ENOENT));
+            };
+
+            let Some((parent, _parent_name)) = nodes.last() else {
+                return Err(Error::new(EPERM));
+            };
+
+            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
+            if !child.data().is_dir() {
+                if child.data().uid() != uid && uid != 0 {
+                    // println!("file not owned by current user {}", parent.1.uid);
+                    return Err(Error::new(EACCES));
+                }
+
+                if child.data().is_symlink() {
+                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
+                        .and(Ok(()))
+                } else {
+                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
+                        .and(Ok(()))
+                }
+            } else {
+                Err(Error::new(EISDIR))
+            }
+        })
+    }
+
+    /* Resource operations */
+    fn read(
+        &mut self,
+        id: usize,
+        buf: &mut [u8],
+        offset: u64,
+        _fcntl_flags: u32,
+        _ctx: &CallerCtx,
+    ) -> Result<usize> {
+        // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        self.fs.tx(|tx| file.read(buf, offset, tx))
+    }
+
+    fn write(
+        &mut self,
+        id: usize,
+        buf: &[u8],
+        offset: u64,
+        _fcntl_flags: u32,
+        _ctx: &CallerCtx,
+    ) -> Result<usize> {
+        // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        self.fs.tx(|tx| file.write(buf, offset, tx))
+    }
+
+    fn fsize(&mut self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
+        // println!("Seek {}, {} {}", id, pos, whence);
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        self.fs.tx(|tx| file.fsize(tx))
+    }
+
+    fn fchmod(&mut self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
+        if let Some(file) = self.files.get_mut(&id) {
+            self.fs.tx(|tx| file.fchmod(mode, tx))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fchown(&mut self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
+        if let Some(file) = self.files.get_mut(&id) {
+            self.fs.tx(|tx| file.fchown(new_uid, new_gid, tx))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fcntl(&mut self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
+        if let Some(file) = self.files.get_mut(&id) {
+            file.fcntl(cmd, arg)
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fevent(&mut self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
+        if let Some(_file) = self.files.get(&id) {
+            // EPERM is returned for files that are always readable or writable
+            Err(Error::new(EPERM))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fpath(&mut self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
+        // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
+        if let Some(file) = self.files.get(&id) {
+            let name = self.name.as_bytes();
+
+            let mut i = 0;
+            while i < buf.len() && i < name.len() {
+                buf[i] = name[i];
+                i += 1;
+            }
+            if i < buf.len() {
+                buf[i] = b':';
+                i += 1;
+            }
+            if i < buf.len() {
+                buf[i] = b'/';
+                i += 1;
+            }
+
+            let path = file.path().as_bytes();
+            let mut j = 0;
+            while i < buf.len() && j < path.len() {
+                buf[i] = path[j];
+                i += 1;
+                j += 1;
+            }
+
+            Ok(i)
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    //TODO: this function has too much code, try to simplify it
+    fn flink(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
+        let new_path = url.trim_matches('/');
+        let uid = ctx.uid;
+        let gid = ctx.gid;
+
+        // println!("Flink {}, {} from {}, {}", id, new_path, uid, gid);
+
+        if let Some(file) = self.files.get_mut(&id) {
+            //TODO: Check for EINVAL
+            // The new pathname contained a path prefix of the old, or, more generally,
+            // an attempt was made to make a directory a subdirectory of itself.
+
+            let mut old_name = String::new();
+            for part in file.path().split('/') {
+                if !part.is_empty() {
+                    old_name = part.to_string();
+                }
+            }
+            if old_name.is_empty() {
+                return Err(Error::new(EPERM));
+            }
+
+            let mut new_name = String::new();
+            for part in new_path.split('/') {
+                if !part.is_empty() {
+                    new_name = part.to_string();
+                }
+            }
+            if new_name.is_empty() {
+                return Err(Error::new(EPERM));
+            }
+
+            let scheme_name = &self.name;
+            self.fs.tx(|tx| {
+                let orig_parent_ptr = match file.parent_ptr_opt() {
+                    Some(some) => some,
+                    None => {
+                        // println!("orig is root");
+                        return Err(Error::new(EBUSY));
+                    }
+                };
+
+                let orig_node = tx.read_tree(file.node_ptr())?;
+
+                if !orig_node.data().owner(uid) {
+                    // println!("orig_node not owned by caller {}", uid);
+                    return Err(Error::new(EACCES));
+                }
+
+                let mut new_nodes = Vec::new();
+                let new_node_opt =
+                    Self::path_nodes(scheme_name, tx, TreePtr::root(), new_path, uid, gid, &mut new_nodes)?;
+
+                if let Some((ref new_parent, _)) = new_nodes.last() {
+                    if !new_parent.data().owner(uid) {
+                        // println!("new_parent not owned by caller {}", uid);
+                        return Err(Error::new(EACCES));
+                    }
+
+                    if let Some((ref new_node, _)) = new_node_opt {
+                        if !new_node.data().owner(uid) {
+                            // println!("new dir not owned by caller {}", uid);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        if new_node.data().is_dir() {
+                            if !orig_node.data().is_dir() {
+                                // println!("orig_node is file, new is dir");
+                                return Err(Error::new(EACCES));
+                            }
+
+                            let mut children = Vec::new();
+                            tx.child_nodes(new_node.ptr(), &mut children)?;
+
+                            if !children.is_empty() {
+                                // println!("new dir not empty");
+                                return Err(Error::new(ENOTEMPTY));
+                            }
+                        } else {
+                            if orig_node.data().is_dir() {
+                                // println!("orig_node is dir, new is file");
+                                return Err(Error::new(ENOTDIR));
+                            }
+                        }
+                    }
+
+                    tx.link_node(new_parent.ptr(), &new_name, orig_node.ptr())?;
+
+                    file.set_path(new_path);
+                    Ok(0)
+                } else {
+                    Err(Error::new(EPERM))
+                }
+            })
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    //TODO: this function has too much code, try to simplify it
+    fn frename(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
+        let new_path = url.trim_matches('/');
+        let uid = ctx.uid;
+        let gid = ctx.gid;
+
+        // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
+
+        if let Some(file) = self.files.get_mut(&id) {
+            //TODO: Check for EINVAL
+            // The new pathname contained a path prefix of the old, or, more generally,
+            // an attempt was made to make a directory a subdirectory of itself.
+
+            let mut old_name = String::new();
+            for part in file.path().split('/') {
+                if !part.is_empty() {
+                    old_name = part.to_string();
+                }
+            }
+            if old_name.is_empty() {
+                return Err(Error::new(EPERM));
+            }
+
+            let mut new_name = String::new();
+            for part in new_path.split('/') {
+                if !part.is_empty() {
+                    new_name = part.to_string();
+                }
+            }
+            if new_name.is_empty() {
+                return Err(Error::new(EPERM));
+            }
+
+            let scheme_name = &self.name;
+            self.fs.tx(|tx| {
+                let orig_parent_ptr = match file.parent_ptr_opt() {
+                    Some(some) => some,
+                    None => {
+                        // println!("orig is root");
+                        return Err(Error::new(EBUSY));
+                    }
+                };
+
+                let orig_node = tx.read_tree(file.node_ptr())?;
+
+                if !orig_node.data().owner(uid) {
+                    // println!("orig_node not owned by caller {}", uid);
+                    return Err(Error::new(EACCES));
+                }
+
+                let mut new_nodes = Vec::new();
+                let new_node_opt =
+                    Self::path_nodes(scheme_name, tx, TreePtr::root(), new_path, uid, gid, &mut new_nodes)?;
+
+                if let Some((ref new_parent, _)) = new_nodes.last() {
+                    if !new_parent.data().owner(uid) {
+                        // println!("new_parent not owned by caller {}", uid);
+                        return Err(Error::new(EACCES));
+                    }
+
+                    if let Some((ref new_node, _)) = new_node_opt {
+                        if !new_node.data().owner(uid) {
+                            // println!("new dir not owned by caller {}", uid);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        if new_node.data().is_dir() {
+                            if !orig_node.data().is_dir() {
+                                // println!("orig_node is file, new is dir");
+                                return Err(Error::new(EACCES));
+                            }
+
+                            let mut children = Vec::new();
+                            tx.child_nodes(new_node.ptr(), &mut children)?;
+
+                            if !children.is_empty() {
+                                // println!("new dir not empty");
+                                return Err(Error::new(ENOTEMPTY));
+                            }
+                        } else {
+                            if orig_node.data().is_dir() {
+                                // println!("orig_node is dir, new is file");
+                                return Err(Error::new(ENOTDIR));
+                            }
+                        }
+                    }
+
+                    tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)?;
+
+                    file.set_path(new_path);
+                    Ok(0)
+                } else {
+                    Err(Error::new(EPERM))
+                }
+            })
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fstat(&mut self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
+        // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
+        if let Some(file) = self.files.get(&id) {
+            self.fs.tx(|tx| file.stat(stat, tx))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fstatvfs(&mut self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
+        if let Some(_file) = self.files.get(&id) {
+            stat.f_bsize = BLOCK_SIZE as u32;
+            stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
+            stat.f_bfree = self.fs.allocator().free();
+            stat.f_bavail = stat.f_bfree;
+
+            Ok(())
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn fsync(&mut self, id: usize, _ctx: &CallerCtx) -> Result<()> {
+        // println!("Fsync {}", id);
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let fmaps = &mut self.fmap;
+
+        self.fs.tx(|tx| file.sync(fmaps, tx))
+    }
+
+    fn ftruncate(&mut self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
+        // println!("Ftruncate {}, {}", id, len);
+        if let Some(file) = self.files.get_mut(&id) {
+            self.fs.tx(|tx| file.truncate(len, tx))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn futimens(&mut self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
+        // println!("Futimens {}, {}", id, times.len());
+        if let Some(file) = self.files.get_mut(&id) {
+            self.fs.tx(|tx| file.utimens(times, tx))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn getdents<'buf>(
+        &mut self,
+        id: usize,
+        buf: DirentBuf<&'buf mut [u8]>,
+        opaque_offset: u64,
+    ) -> Result<DirentBuf<&'buf mut [u8]>> {
+        if let Some(file) = self.files.get_mut(&id) {
+            self.fs.tx(|tx| file.getdents(buf, opaque_offset, tx))
+        } else {
+            Err(Error::new(EBADF))
+        }
+    }
+
+    fn mmap_prep(
+        &mut self,
+        id: usize,
+        offset: u64,
+        size: usize,
+        flags: MapFlags,
+        _ctx: &CallerCtx,
+    ) -> Result<usize> {
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let fmaps = &mut self.fmap;
+
+        self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
+    }
+    #[allow(unused_variables)]
+    fn munmap(
+        &mut self,
+        id: usize,
+        offset: u64,
+        size: usize,
+        flags: MunmapFlags,
+        _ctx: &CallerCtx,
+    ) -> Result<()> {
+        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let fmaps = &mut self.fmap;
+
+        self.fs.tx(|tx| file.funmap(fmaps, offset, size, tx))
+    }
+
+    fn on_close(&mut self, id: usize) {
+        // println!("Close {}", id);
+        let Some(file) = self.files.remove(&id) else {
+            return;
+        };
+        let Some(file_info) = self.fmap.get_mut(&file.node_ptr().id()) else {
+            return;
+        };
+
+        file_info.open_fds = file_info
+            .open_fds
+            .checked_sub(1)
+            .expect("open_fds not tracked correctly");
+
+        // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
+        // particular inode, remove that inode here.
+    }
+
+    fn open_internal(&mut self, start_ptr: TreePtr<Node>, path: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
         let CallerCtx { uid, gid, .. } = *ctx;
 
         let path = url.trim_matches('/');
@@ -178,7 +685,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
         let mut nodes = Vec::new();
         let node_opt = self
             .fs
-            .tx(|tx| Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes))?;
+            .tx(|tx| Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes))?;
         let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
         let resource: Box<dyn Resource<D>> = match node_opt {
             Some((node, _node_name)) => {
@@ -369,505 +876,6 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
             number: id,
             flags: NewFdFlags::POSITIONED,
         })
-    }
 
-    fn openat(&mut self, dirfd: usize, path: &str, flags: usize, fcntl_flags: u32, ctx: &CallerCtx) -> Result<OpenResult> {
-        if let Some(dir_resource) = self.files.get(&dirfd) {
-            let full_path = format!("{}/{}", dir_resource.path(), path);
-            self.open(&full_path, flags, ctx)
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn rmdir(&mut self, url: &str, ctx: &CallerCtx) -> Result<()> {
-        let path = url.trim_matches('/');
-        let uid = ctx.uid;
-        let gid = ctx.gid;
-
-        // println!("Rmdir '{}'", path);
-
-        let scheme_name = &self.name;
-        self.fs.tx(|tx| {
-            let mut nodes = Vec::new();
-
-            let Some((child, child_name)) =
-                Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes)?
-            else {
-                return Err(Error::new(ENOENT));
-            };
-
-            let Some((parent, _parent_name)) = nodes.last() else {
-                return Err(Error::new(EPERM));
-            };
-
-            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                // println!("dir not writable {:o}", parent.1.mode);
-                return Err(Error::new(EACCES));
-            }
-
-            if child.data().is_dir() {
-                if !child.data().permission(uid, gid, Node::MODE_WRITE) {
-                    // println!("dir not writable {:o}", parent.1.mode);
-                    return Err(Error::new(EACCES));
-                }
-
-                tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
-                    .and(Ok(()))
-            } else {
-                Err(Error::new(ENOTDIR))
-            }
-        })
-    }
-
-    fn unlink(&mut self, url: &str, ctx: &CallerCtx) -> Result<()> {
-        let path = url.trim_matches('/');
-        let uid = ctx.uid;
-        let gid = ctx.gid;
-
-        // println!("Unlink '{}'", path);
-
-        let scheme_name = &self.name;
-        self.fs.tx(|tx| {
-            let mut nodes = Vec::new();
-
-            let Some((child, child_name)) =
-                Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes)?
-            else {
-                return Err(Error::new(ENOENT));
-            };
-
-            let Some((parent, _parent_name)) = nodes.last() else {
-                return Err(Error::new(EPERM));
-            };
-
-            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                // println!("dir not writable {:o}", parent.1.mode);
-                return Err(Error::new(EACCES));
-            }
-
-            if !child.data().is_dir() {
-                if child.data().uid() != uid && uid != 0 {
-                    // println!("file not owned by current user {}", parent.1.uid);
-                    return Err(Error::new(EACCES));
-                }
-
-                if child.data().is_symlink() {
-                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
-                        .and(Ok(()))
-                } else {
-                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
-                        .and(Ok(()))
-                }
-            } else {
-                Err(Error::new(EISDIR))
-            }
-        })
-    }
-
-    /* Resource operations */
-    fn read(
-        &mut self,
-        id: usize,
-        buf: &mut [u8],
-        offset: u64,
-        _fcntl_flags: u32,
-        _ctx: &CallerCtx,
-    ) -> Result<usize> {
-        // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
-        self.fs.tx(|tx| file.read(buf, offset, tx))
-    }
-
-    fn write(
-        &mut self,
-        id: usize,
-        buf: &[u8],
-        offset: u64,
-        _fcntl_flags: u32,
-        _ctx: &CallerCtx,
-    ) -> Result<usize> {
-        // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
-        self.fs.tx(|tx| file.write(buf, offset, tx))
-    }
-
-    fn fsize(&mut self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
-        // println!("Seek {}, {} {}", id, pos, whence);
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
-        self.fs.tx(|tx| file.fsize(tx))
-    }
-
-    fn fchmod(&mut self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
-        if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.fchmod(mode, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn fchown(&mut self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
-        if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.fchown(new_uid, new_gid, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn fcntl(&mut self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
-        if let Some(file) = self.files.get_mut(&id) {
-            file.fcntl(cmd, arg)
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn fevent(&mut self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
-        if let Some(_file) = self.files.get(&id) {
-            // EPERM is returned for files that are always readable or writable
-            Err(Error::new(EPERM))
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn fpath(&mut self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
-        // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        if let Some(file) = self.files.get(&id) {
-            let name = self.name.as_bytes();
-
-            let mut i = 0;
-            while i < buf.len() && i < name.len() {
-                buf[i] = name[i];
-                i += 1;
-            }
-            if i < buf.len() {
-                buf[i] = b':';
-                i += 1;
-            }
-            if i < buf.len() {
-                buf[i] = b'/';
-                i += 1;
-            }
-
-            let path = file.path().as_bytes();
-            let mut j = 0;
-            while i < buf.len() && j < path.len() {
-                buf[i] = path[j];
-                i += 1;
-                j += 1;
-            }
-
-            Ok(i)
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    //TODO: this function has too much code, try to simplify it
-    fn flink(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
-        let new_path = url.trim_matches('/');
-        let uid = ctx.uid;
-        let gid = ctx.gid;
-
-        // println!("Flink {}, {} from {}, {}", id, new_path, uid, gid);
-
-        if let Some(file) = self.files.get_mut(&id) {
-            //TODO: Check for EINVAL
-            // The new pathname contained a path prefix of the old, or, more generally,
-            // an attempt was made to make a directory a subdirectory of itself.
-
-            let mut old_name = String::new();
-            for part in file.path().split('/') {
-                if !part.is_empty() {
-                    old_name = part.to_string();
-                }
-            }
-            if old_name.is_empty() {
-                return Err(Error::new(EPERM));
-            }
-
-            let mut new_name = String::new();
-            for part in new_path.split('/') {
-                if !part.is_empty() {
-                    new_name = part.to_string();
-                }
-            }
-            if new_name.is_empty() {
-                return Err(Error::new(EPERM));
-            }
-
-            let scheme_name = &self.name;
-            self.fs.tx(|tx| {
-                let orig_parent_ptr = match file.parent_ptr_opt() {
-                    Some(some) => some,
-                    None => {
-                        // println!("orig is root");
-                        return Err(Error::new(EBUSY));
-                    }
-                };
-
-                let orig_node = tx.read_tree(file.node_ptr())?;
-
-                if !orig_node.data().owner(uid) {
-                    // println!("orig_node not owned by caller {}", uid);
-                    return Err(Error::new(EACCES));
-                }
-
-                let mut new_nodes = Vec::new();
-                let new_node_opt =
-                    Self::path_nodes(scheme_name, tx, new_path, uid, gid, &mut new_nodes)?;
-
-                if let Some((ref new_parent, _)) = new_nodes.last() {
-                    if !new_parent.data().owner(uid) {
-                        // println!("new_parent not owned by caller {}", uid);
-                        return Err(Error::new(EACCES));
-                    }
-
-                    if let Some((ref new_node, _)) = new_node_opt {
-                        if !new_node.data().owner(uid) {
-                            // println!("new dir not owned by caller {}", uid);
-                            return Err(Error::new(EACCES));
-                        }
-
-                        if new_node.data().is_dir() {
-                            if !orig_node.data().is_dir() {
-                                // println!("orig_node is file, new is dir");
-                                return Err(Error::new(EACCES));
-                            }
-
-                            let mut children = Vec::new();
-                            tx.child_nodes(new_node.ptr(), &mut children)?;
-
-                            if !children.is_empty() {
-                                // println!("new dir not empty");
-                                return Err(Error::new(ENOTEMPTY));
-                            }
-                        } else {
-                            if orig_node.data().is_dir() {
-                                // println!("orig_node is dir, new is file");
-                                return Err(Error::new(ENOTDIR));
-                            }
-                        }
-                    }
-
-                    tx.link_node(new_parent.ptr(), &new_name, orig_node.ptr())?;
-
-                    file.set_path(new_path);
-                    Ok(0)
-                } else {
-                    Err(Error::new(EPERM))
-                }
-            })
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    //TODO: this function has too much code, try to simplify it
-    fn frename(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
-        let new_path = url.trim_matches('/');
-        let uid = ctx.uid;
-        let gid = ctx.gid;
-
-        // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
-
-        if let Some(file) = self.files.get_mut(&id) {
-            //TODO: Check for EINVAL
-            // The new pathname contained a path prefix of the old, or, more generally,
-            // an attempt was made to make a directory a subdirectory of itself.
-
-            let mut old_name = String::new();
-            for part in file.path().split('/') {
-                if !part.is_empty() {
-                    old_name = part.to_string();
-                }
-            }
-            if old_name.is_empty() {
-                return Err(Error::new(EPERM));
-            }
-
-            let mut new_name = String::new();
-            for part in new_path.split('/') {
-                if !part.is_empty() {
-                    new_name = part.to_string();
-                }
-            }
-            if new_name.is_empty() {
-                return Err(Error::new(EPERM));
-            }
-
-            let scheme_name = &self.name;
-            self.fs.tx(|tx| {
-                let orig_parent_ptr = match file.parent_ptr_opt() {
-                    Some(some) => some,
-                    None => {
-                        // println!("orig is root");
-                        return Err(Error::new(EBUSY));
-                    }
-                };
-
-                let orig_node = tx.read_tree(file.node_ptr())?;
-
-                if !orig_node.data().owner(uid) {
-                    // println!("orig_node not owned by caller {}", uid);
-                    return Err(Error::new(EACCES));
-                }
-
-                let mut new_nodes = Vec::new();
-                let new_node_opt =
-                    Self::path_nodes(scheme_name, tx, new_path, uid, gid, &mut new_nodes)?;
-
-                if let Some((ref new_parent, _)) = new_nodes.last() {
-                    if !new_parent.data().owner(uid) {
-                        // println!("new_parent not owned by caller {}", uid);
-                        return Err(Error::new(EACCES));
-                    }
-
-                    if let Some((ref new_node, _)) = new_node_opt {
-                        if !new_node.data().owner(uid) {
-                            // println!("new dir not owned by caller {}", uid);
-                            return Err(Error::new(EACCES));
-                        }
-
-                        if new_node.data().is_dir() {
-                            if !orig_node.data().is_dir() {
-                                // println!("orig_node is file, new is dir");
-                                return Err(Error::new(EACCES));
-                            }
-
-                            let mut children = Vec::new();
-                            tx.child_nodes(new_node.ptr(), &mut children)?;
-
-                            if !children.is_empty() {
-                                // println!("new dir not empty");
-                                return Err(Error::new(ENOTEMPTY));
-                            }
-                        } else {
-                            if orig_node.data().is_dir() {
-                                // println!("orig_node is dir, new is file");
-                                return Err(Error::new(ENOTDIR));
-                            }
-                        }
-                    }
-
-                    tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)?;
-
-                    file.set_path(new_path);
-                    Ok(0)
-                } else {
-                    Err(Error::new(EPERM))
-                }
-            })
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn fstat(&mut self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
-        // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
-        if let Some(file) = self.files.get(&id) {
-            self.fs.tx(|tx| file.stat(stat, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn fstatvfs(&mut self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
-        if let Some(_file) = self.files.get(&id) {
-            stat.f_bsize = BLOCK_SIZE as u32;
-            stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
-            stat.f_bfree = self.fs.allocator().free();
-            stat.f_bavail = stat.f_bfree;
-
-            Ok(())
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn fsync(&mut self, id: usize, _ctx: &CallerCtx) -> Result<()> {
-        // println!("Fsync {}", id);
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
-        let fmaps = &mut self.fmap;
-
-        self.fs.tx(|tx| file.sync(fmaps, tx))
-    }
-
-    fn ftruncate(&mut self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
-        // println!("Ftruncate {}, {}", id, len);
-        if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.truncate(len, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn futimens(&mut self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
-        // println!("Futimens {}, {}", id, times.len());
-        if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.utimens(times, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn getdents<'buf>(
-        &mut self,
-        id: usize,
-        buf: DirentBuf<&'buf mut [u8]>,
-        opaque_offset: u64,
-    ) -> Result<DirentBuf<&'buf mut [u8]>> {
-        if let Some(file) = self.files.get_mut(&id) {
-            self.fs.tx(|tx| file.getdents(buf, opaque_offset, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
-    }
-
-    fn mmap_prep(
-        &mut self,
-        id: usize,
-        offset: u64,
-        size: usize,
-        flags: MapFlags,
-        _ctx: &CallerCtx,
-    ) -> Result<usize> {
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
-        let fmaps = &mut self.fmap;
-
-        self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
-    }
-    #[allow(unused_variables)]
-    fn munmap(
-        &mut self,
-        id: usize,
-        offset: u64,
-        size: usize,
-        flags: MunmapFlags,
-        _ctx: &CallerCtx,
-    ) -> Result<()> {
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
-        let fmaps = &mut self.fmap;
-
-        self.fs.tx(|tx| file.funmap(fmaps, offset, size, tx))
-    }
-
-    fn on_close(&mut self, id: usize) {
-        // println!("Close {}", id);
-        let Some(file) = self.files.remove(&id) else {
-            return;
-        };
-        let Some(file_info) = self.fmap.get_mut(&file.node_ptr().id()) else {
-            return;
-        };
-
-        file_info.open_fds = file_info
-            .open_fds
-            .checked_sub(1)
-            .expect("open_fds not tracked correctly");
-
-        // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
-        // particular inode, remove that inode here.
     }
 }
