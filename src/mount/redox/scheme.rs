@@ -374,13 +374,13 @@ fn dirname(path: &str) -> Option<String> {
 
 impl<D: Disk> SchemeSync for FileScheme<D> {
     fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
-        self.open_internal(TreePtr::root(), url.trim_matches('/'), flags, ctx)
+        self.open_internal(TreePtr::root(), url, flags, ctx)
     }
 
     fn openat(&mut self, dirfd: usize, path: &str, flags: usize, _fcntl_flags: u32, ctx: &CallerCtx) -> Result<OpenResult> {
         // If pathname is absolute, then dirfd is ignored. 
         if path.starts_with('/') {
-            return self.open_internal(TreePtr::root(), path.trim_matches('/'), flags, ctx);
+            return self.open_internal(TreePtr::root(), path, flags, ctx);
         }
         let dir_resource = self.files.get(&dirfd).ok_or(Error::new(EBADF))?;
         // Only allow DirResource as base for openat
