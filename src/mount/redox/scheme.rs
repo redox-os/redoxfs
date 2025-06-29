@@ -89,7 +89,7 @@ impl<D: Disk> FileScheme<D> {
 
             nodes.clear();
             if let Some((next_node, next_node_name)) =
-                Self::path_nodes(scheme_name, tx, &target_reference, uid, gid, nodes)?
+                Self::path_nodes(scheme_name, tx, TreePtr::root(), &target_reference, uid, gid, nodes)?
             {
                 if !next_node.data().is_symlink() {
                     nodes.push((next_node, next_node_name));
@@ -102,6 +102,212 @@ impl<D: Disk> FileScheme<D> {
             }
         }
         Err(Error::new(ELOOP))
+    }
+
+    fn open_internal(&mut self, start_ptr: TreePtr<Node>, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
+        let CallerCtx { uid, gid, .. } = *ctx;
+
+        let path = url.trim_matches('/');
+
+        // println!("Open '{}' {:X}", &path, flags);
+
+        //TODO: try to move things into one transaction
+        let scheme_name = &self.name;
+        let mut nodes = Vec::new();
+        let node_opt = self
+            .fs
+            .tx(|tx| Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes))?;
+        let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
+        let resource: Box<dyn Resource<D>> = match node_opt {
+            Some((node, _node_name)) => {
+                if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
+                    return Err(Error::new(EEXIST));
+                } else if node.data().is_dir() {
+                    if flags & O_ACCMODE == O_RDONLY {
+                        if !node.data().permission(uid, gid, Node::MODE_READ) {
+                            // println!("dir not readable {:o}", node.data().mode);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        let mut children = Vec::new();
+                        self.fs.tx(|tx| tx.child_nodes(node.ptr(), &mut children))?;
+
+                        let mut data = Vec::new();
+                        for child in children.iter() {
+                            if let Some(child_name) = child.name() {
+                                data.push(Entry {
+                                    node_ptr: child.node_ptr(),
+                                    name: child_name.to_string(),
+                                });
+                            }
+                        }
+
+                        Box::new(DirResource::new(
+                            path.to_string(),
+                            parent_ptr_opt,
+                            node.ptr(),
+                            Some(data),
+                            uid,
+                        ))
+                    } else if flags & O_WRONLY == O_WRONLY {
+                        // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
+                        return Err(Error::new(EISDIR));
+                    } else {
+                        Box::new(DirResource::new(
+                            path.to_string(),
+                            parent_ptr_opt,
+                            node.ptr(),
+                            None,
+                            uid,
+                        ))
+                    }
+                } else if node.data().is_symlink()
+                    && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW)
+                    && flags & O_SYMLINK != O_SYMLINK
+                {
+                    let mut resolve_nodes = Vec::new();
+                    let full_path =
+                        canonicalize_using_scheme(scheme_name, url).ok_or(Error::new(EINVAL))?;
+                    let resolved = self.fs.tx(|tx| {
+                        Self::resolve_symlink(
+                            scheme_name,
+                            tx,
+                            uid,
+                            gid,
+                            &full_path,
+                            node,
+                            &mut resolve_nodes,
+                        )
+                    })?;
+                    return self.open(&resolved, flags, ctx);
+                } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
+                    return Err(Error::new(EINVAL));
+                } else {
+                    let node_ptr = node.ptr();
+
+                    if flags & O_DIRECTORY == O_DIRECTORY {
+                        // println!("{:X} & {:X}: ENOTDIR {}", flags, O_DIRECTORY, path);
+                        return Err(Error::new(ENOTDIR));
+                    }
+
+                    if (flags & O_ACCMODE == O_RDONLY || flags & O_ACCMODE == O_RDWR)
+                        && !node.data().permission(uid, gid, Node::MODE_READ)
+                    {
+                        // println!("file not readable {:o}", node.data().mode);
+                        return Err(Error::new(EACCES));
+                    }
+
+                    if (flags & O_ACCMODE == O_WRONLY || flags & O_ACCMODE == O_RDWR)
+                        && !node.data().permission(uid, gid, Node::MODE_WRITE)
+                    {
+                        // println!("file not writable {:o}", node.data().mode);
+                        return Err(Error::new(EACCES));
+                    }
+
+                    if flags & O_TRUNC == O_TRUNC {
+                        if !node.data().permission(uid, gid, Node::MODE_WRITE) {
+                            // println!("file not writable {:o}", node.data().mode);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                        self.fs.tx(|tx| {
+                            tx.truncate_node(node_ptr, 0, mtime.as_secs(), mtime.subsec_nanos())
+                        })?;
+                    }
+
+                    Box::new(FileResource::new(
+                        path.to_string(),
+                        parent_ptr_opt,
+                        node_ptr,
+                        flags,
+                        uid,
+                    ))
+                }
+            }
+            None => {
+                if flags & O_CREAT == O_CREAT {
+                    let mut last_part = String::new();
+                    for part in path.split('/') {
+                        if !part.is_empty() {
+                            last_part = part.to_string();
+                        }
+                    }
+                    if !last_part.is_empty() {
+                        if let Some((parent, _parent_name)) = nodes.last() {
+                            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                                // println!("dir not writable {:o}", parent.1.mode);
+                                return Err(Error::new(EACCES));
+                            }
+
+                            let dir = flags & O_DIRECTORY == O_DIRECTORY;
+                            let mode_type = if dir {
+                                Node::MODE_DIR
+                            } else if flags & O_SYMLINK == O_SYMLINK {
+                                Node::MODE_SYMLINK
+                            } else {
+                                Node::MODE_FILE
+                            };
+
+                            let node_ptr = self.fs.tx(|tx| {
+                                let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                                let mut node = tx.create_node(
+                                    parent.ptr(),
+                                    &last_part,
+                                    mode_type | (flags as u16 & Node::MODE_PERM),
+                                    ctime.as_secs(),
+                                    ctime.subsec_nanos(),
+                                )?;
+                                let node_ptr = node.ptr();
+                                if node.data().uid() != uid || node.data().gid() != gid {
+                                    node.data_mut().set_uid(uid);
+                                    node.data_mut().set_gid(gid);
+                                    tx.sync_tree(node)?;
+                                }
+                                Ok(node_ptr)
+                            })?;
+
+                            if dir {
+                                Box::new(DirResource::new(
+                                    path.to_string(),
+                                    parent_ptr_opt,
+                                    node_ptr,
+                                    None,
+                                    uid,
+                                ))
+                            } else {
+                                Box::new(FileResource::new(
+                                    path.to_string(),
+                                    parent_ptr_opt,
+                                    node_ptr,
+                                    flags,
+                                    uid,
+                                ))
+                            }
+                        } else {
+                            return Err(Error::new(EPERM));
+                        }
+                    } else {
+                        return Err(Error::new(EPERM));
+                    }
+                } else {
+                    return Err(Error::new(ENOENT));
+                }
+            }
+        };
+        self.fmap
+            .entry(resource.node_ptr().id())
+            .or_insert_with(Default::default)
+            .open_fds += 1;
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.files.insert(id, resource);
+
+        Ok(OpenResult::ThisScheme {
+            number: id,
+            flags: NewFdFlags::POSITIONED,
+        })
+
     }
 
     fn path_nodes(
@@ -671,211 +877,5 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
         // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
         // particular inode, remove that inode here.
-    }
-
-    fn open_internal(&mut self, start_ptr: TreePtr<Node>, path: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
-        let CallerCtx { uid, gid, .. } = *ctx;
-
-        let path = url.trim_matches('/');
-
-        // println!("Open '{}' {:X}", path, flags);
-
-        //TODO: try to move things into one transaction
-        let scheme_name = &self.name;
-        let mut nodes = Vec::new();
-        let node_opt = self
-            .fs
-            .tx(|tx| Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes))?;
-        let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
-        let resource: Box<dyn Resource<D>> = match node_opt {
-            Some((node, _node_name)) => {
-                if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
-                    return Err(Error::new(EEXIST));
-                } else if node.data().is_dir() {
-                    if flags & O_ACCMODE == O_RDONLY {
-                        if !node.data().permission(uid, gid, Node::MODE_READ) {
-                            // println!("dir not readable {:o}", node.data().mode);
-                            return Err(Error::new(EACCES));
-                        }
-
-                        let mut children = Vec::new();
-                        self.fs.tx(|tx| tx.child_nodes(node.ptr(), &mut children))?;
-
-                        let mut data = Vec::new();
-                        for child in children.iter() {
-                            if let Some(child_name) = child.name() {
-                                data.push(Entry {
-                                    node_ptr: child.node_ptr(),
-                                    name: child_name.to_string(),
-                                });
-                            }
-                        }
-
-                        Box::new(DirResource::new(
-                            path.to_string(),
-                            parent_ptr_opt,
-                            node.ptr(),
-                            Some(data),
-                            uid,
-                        ))
-                    } else if flags & O_WRONLY == O_WRONLY {
-                        // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
-                        return Err(Error::new(EISDIR));
-                    } else {
-                        Box::new(DirResource::new(
-                            path.to_string(),
-                            parent_ptr_opt,
-                            node.ptr(),
-                            None,
-                            uid,
-                        ))
-                    }
-                } else if node.data().is_symlink()
-                    && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW)
-                    && flags & O_SYMLINK != O_SYMLINK
-                {
-                    let mut resolve_nodes = Vec::new();
-                    let full_path =
-                        canonicalize_using_scheme(scheme_name, url).ok_or(Error::new(EINVAL))?;
-                    let resolved = self.fs.tx(|tx| {
-                        Self::resolve_symlink(
-                            scheme_name,
-                            tx,
-                            uid,
-                            gid,
-                            &full_path,
-                            node,
-                            &mut resolve_nodes,
-                        )
-                    })?;
-                    return self.open(&resolved, flags, ctx);
-                } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
-                    return Err(Error::new(EINVAL));
-                } else {
-                    let node_ptr = node.ptr();
-
-                    if flags & O_DIRECTORY == O_DIRECTORY {
-                        // println!("{:X} & {:X}: ENOTDIR {}", flags, O_DIRECTORY, path);
-                        return Err(Error::new(ENOTDIR));
-                    }
-
-                    if (flags & O_ACCMODE == O_RDONLY || flags & O_ACCMODE == O_RDWR)
-                        && !node.data().permission(uid, gid, Node::MODE_READ)
-                    {
-                        // println!("file not readable {:o}", node.data().mode);
-                        return Err(Error::new(EACCES));
-                    }
-
-                    if (flags & O_ACCMODE == O_WRONLY || flags & O_ACCMODE == O_RDWR)
-                        && !node.data().permission(uid, gid, Node::MODE_WRITE)
-                    {
-                        // println!("file not writable {:o}", node.data().mode);
-                        return Err(Error::new(EACCES));
-                    }
-
-                    if flags & O_TRUNC == O_TRUNC {
-                        if !node.data().permission(uid, gid, Node::MODE_WRITE) {
-                            // println!("file not writable {:o}", node.data().mode);
-                            return Err(Error::new(EACCES));
-                        }
-
-                        let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                        self.fs.tx(|tx| {
-                            tx.truncate_node(node_ptr, 0, mtime.as_secs(), mtime.subsec_nanos())
-                        })?;
-                    }
-
-                    Box::new(FileResource::new(
-                        path.to_string(),
-                        parent_ptr_opt,
-                        node_ptr,
-                        flags,
-                        uid,
-                    ))
-                }
-            }
-            None => {
-                if flags & O_CREAT == O_CREAT {
-                    let mut last_part = String::new();
-                    for part in path.split('/') {
-                        if !part.is_empty() {
-                            last_part = part.to_string();
-                        }
-                    }
-                    if !last_part.is_empty() {
-                        if let Some((parent, _parent_name)) = nodes.last() {
-                            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                                // println!("dir not writable {:o}", parent.1.mode);
-                                return Err(Error::new(EACCES));
-                            }
-
-                            let dir = flags & O_DIRECTORY == O_DIRECTORY;
-                            let mode_type = if dir {
-                                Node::MODE_DIR
-                            } else if flags & O_SYMLINK == O_SYMLINK {
-                                Node::MODE_SYMLINK
-                            } else {
-                                Node::MODE_FILE
-                            };
-
-                            let node_ptr = self.fs.tx(|tx| {
-                                let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                                let mut node = tx.create_node(
-                                    parent.ptr(),
-                                    &last_part,
-                                    mode_type | (flags as u16 & Node::MODE_PERM),
-                                    ctime.as_secs(),
-                                    ctime.subsec_nanos(),
-                                )?;
-                                let node_ptr = node.ptr();
-                                if node.data().uid() != uid || node.data().gid() != gid {
-                                    node.data_mut().set_uid(uid);
-                                    node.data_mut().set_gid(gid);
-                                    tx.sync_tree(node)?;
-                                }
-                                Ok(node_ptr)
-                            })?;
-
-                            if dir {
-                                Box::new(DirResource::new(
-                                    path.to_string(),
-                                    parent_ptr_opt,
-                                    node_ptr,
-                                    None,
-                                    uid,
-                                ))
-                            } else {
-                                Box::new(FileResource::new(
-                                    path.to_string(),
-                                    parent_ptr_opt,
-                                    node_ptr,
-                                    flags,
-                                    uid,
-                                ))
-                            }
-                        } else {
-                            return Err(Error::new(EPERM));
-                        }
-                    } else {
-                        return Err(Error::new(EPERM));
-                    }
-                } else {
-                    return Err(Error::new(ENOENT));
-                }
-            }
-        };
-        self.fmap
-            .entry(resource.node_ptr().id())
-            .or_insert_with(Default::default)
-            .open_fds += 1;
-
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.files.insert(id, resource);
-
-        Ok(OpenResult::ThisScheme {
-            number: id,
-            flags: NewFdFlags::POSITIONED,
-        })
-
     }
 }
