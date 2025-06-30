@@ -171,7 +171,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
         let path = url.trim_matches('/');
 
-        // println!("Open '{}' {:X}", path, flags);
+        println!("Open '{}' {:X}", path, flags);
 
         //TODO: try to move things into one transaction
         let scheme_name = &self.name;
