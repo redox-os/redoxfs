@@ -140,7 +140,7 @@ fn filesystem_by_path(
     path: &str,
     block_opt: Option<u64>,
 ) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
-    println!("redoxfs: opening {}", path);
+    println!("Ibuki! redoxfs: opening {}", path);
     let attempts = 10;
     for attempt in 0..=attempts {
         let password_opt = if attempt > 0 {
@@ -225,7 +225,7 @@ fn filesystem_by_uuid(
                             .unwrap_or(RedoxPath::from_absolute("/")?)
                             .is_scheme_category("disk")
                         {
-                            println!("redoxfs: found scheme {}", disk);
+                            println!("Ibuki! redoxfs: found scheme {}", disk);
                             match fs::read_dir(disk) {
                                 Ok(entries) => {
                                     for entry_res in entries {
@@ -233,7 +233,7 @@ fn filesystem_by_uuid(
                                             if let Ok(path) =
                                                 entry.path().into_os_string().into_string()
                                             {
-                                                println!("redoxfs: found path {}", path);
+                                                println!("Ibuki! redoxfs: found path {}", path);
                                                 if let Some((path, filesystem)) =
                                                     filesystem_by_path(&path, block_opt)
                                                 {
