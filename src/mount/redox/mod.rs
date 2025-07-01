@@ -1,4 +1,4 @@
-use redox_scheme::{RequestKind, SignalBehavior, Socket};
+use redox_scheme::{scheme::SchemeSync, RequestKind, Response, SignalBehavior, Socket};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::Ordering;
