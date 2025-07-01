@@ -861,4 +861,9 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
         // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
         // particular inode, remove that inode here.
     }
+
+    fn on_sendfd(&mut self, sendfd_request: &SendFdRequest) -> Result<usize> {
+        println!("Hello from FileScheme::on_sendfd");
+        Err(Error::new(ENOSYS))
+    }
 }
