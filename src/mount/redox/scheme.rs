@@ -89,7 +89,7 @@ impl<D: Disk> FileScheme<D> {
 
             nodes.clear();
             if let Some((next_node, next_node_name)) =
-                Self::path_nodes(scheme_name, tx, &target_reference, uid, gid, nodes)?
+                Self::path_nodes(scheme_name, tx, TreePtr::root(), &target_reference, uid, gid, nodes)?
             {
                 if !next_node.data().is_symlink() {
                     nodes.push((next_node, next_node_name));
@@ -104,81 +104,19 @@ impl<D: Disk> FileScheme<D> {
         Err(Error::new(ELOOP))
     }
 
-    fn path_nodes(
-        scheme_name: &str,
-        tx: &mut Transaction<D>,
-        path: &str,
-        uid: u32,
-        gid: u32,
-        nodes: &mut Vec<(TreeData<Node>, String)>,
-    ) -> Result<Option<(TreeData<Node>, String)>> {
-        let mut parts = path.split('/').filter(|part| !part.is_empty());
-        let mut part_opt: Option<&str> = None;
-        let mut node_ptr = TreePtr::root();
-        let mut node_name = String::new();
-        loop {
-            let node_res = match part_opt {
-                None => tx.read_tree(node_ptr),
-                Some(part) => {
-                    node_name = part.to_string();
-                    tx.find_node(node_ptr, part)
-                }
-            };
-
-            part_opt = parts.next();
-            if let Some(part) = part_opt {
-                let node = node_res?;
-                if !node.data().permission(uid, gid, Node::MODE_EXEC) {
-                    return Err(Error::new(EACCES));
-                }
-                if node.data().is_symlink() {
-                    let mut url = String::new();
-                    url.push_str(scheme_name);
-                    url.push(':');
-                    for (_parent, parent_name) in nodes.iter() {
-                        url.push('/');
-                        url.push_str(&parent_name);
-                    }
-                    Self::resolve_symlink(scheme_name, tx, uid, gid, &url, node, nodes)?;
-                    node_ptr = nodes.last().unwrap().0.ptr();
-                } else if !node.data().is_dir() {
-                    return Err(Error::new(ENOTDIR));
-                } else {
-                    node_ptr = node.ptr();
-                    nodes.push((node, part.to_string()));
-                }
-            } else {
-                match node_res {
-                    Ok(node) => return Ok(Some((node, node_name))),
-                    Err(err) => match err.errno {
-                        ENOENT => return Ok(None),
-                        _ => return Err(err),
-                    },
-                }
-            }
-        }
-    }
-}
-
-/// given a path with a scheme, return the containing directory (or scheme)
-fn dirname(path: &str) -> Option<String> {
-    canonicalize_using_cwd(Some(path), "..")
-}
-
-impl<D: Disk> SchemeSync for FileScheme<D> {
-    fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
+    fn open_internal(&mut self, start_ptr: TreePtr<Node>, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
         let CallerCtx { uid, gid, .. } = *ctx;
 
         let path = url.trim_matches('/');
 
-        // println!("Open '{}' {:X}", path, flags);
+        // println!("Open '{}' {:X}", &path, flags);
 
         //TODO: try to move things into one transaction
         let scheme_name = &self.name;
         let mut nodes = Vec::new();
         let node_opt = self
             .fs
-            .tx(|tx| Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes))?;
+            .tx(|tx| Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes))?;
         let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
         let resource: Box<dyn Resource<D>> = match node_opt {
             Some((node, _node_name)) => {
@@ -369,6 +307,85 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
             number: id,
             flags: NewFdFlags::POSITIONED,
         })
+
+    }
+
+    fn path_nodes(
+        scheme_name: &str,
+        tx: &mut Transaction<D>,
+        start_ptr: TreePtr<Node>,
+        path: &str,
+        uid: u32,
+        gid: u32,
+        nodes: &mut Vec<(TreeData<Node>, String)>,
+    ) -> Result<Option<(TreeData<Node>, String)>> {
+        let mut parts = path.split('/').filter(|part| !part.is_empty());
+        let mut part_opt: Option<&str> = None;
+        let mut node_ptr = start_ptr;
+        let mut node_name = String::new();
+        loop {
+            let node_res = match part_opt {
+                None => tx.read_tree(node_ptr),
+                Some(part) => {
+                    node_name = part.to_string();
+                    tx.find_node(node_ptr, part)
+                }
+            };
+
+            part_opt = parts.next();
+            if let Some(part) = part_opt {
+                let node = node_res?;
+                if !node.data().permission(uid, gid, Node::MODE_EXEC) {
+                    return Err(Error::new(EACCES));
+                }
+                if node.data().is_symlink() {
+                    let mut url = String::new();
+                    url.push_str(scheme_name);
+                    url.push(':');
+                    for (_parent, parent_name) in nodes.iter() {
+                        url.push('/');
+                        url.push_str(&parent_name);
+                    }
+                    Self::resolve_symlink(scheme_name, tx, uid, gid, &url, node, nodes)?;
+                    node_ptr = nodes.last().unwrap().0.ptr();
+                } else if !node.data().is_dir() {
+                    return Err(Error::new(ENOTDIR));
+                } else {
+                    node_ptr = node.ptr();
+                    nodes.push((node, part.to_string()));
+                }
+            } else {
+                match node_res {
+                    Ok(node) => return Ok(Some((node, node_name))),
+                    Err(err) => match err.errno {
+                        ENOENT => return Ok(None),
+                        _ => return Err(err),
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// given a path with a scheme, return the containing directory (or scheme)
+fn dirname(path: &str) -> Option<String> {
+    canonicalize_using_cwd(Some(path), "..")
+}
+
+impl<D: Disk> SchemeSync for FileScheme<D> {
+    fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
+        self.open_internal(TreePtr::root(), url, flags, ctx)
+    }
+
+    fn openat(&mut self, dirfd: usize, path: &str, flags: usize, _fcntl_flags: u32, ctx: &CallerCtx) -> Result<OpenResult> {
+        // If pathname is absolute, then dirfd is ignored. 
+        if path.starts_with('/') {
+            return self.open_internal(TreePtr::root(), path, flags, ctx);
+        }
+        let dir_resource = self.files.get(&dirfd).ok_or(Error::new(EBADF))?;
+        // Only allow DirResource as base for openat
+        let dir_node_ptr = dir_resource.node_ptr();
+        self.open_internal(dir_node_ptr, path, flags, ctx)
     }
 
     fn rmdir(&mut self, url: &str, ctx: &CallerCtx) -> Result<()> {
@@ -383,7 +400,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
             let mut nodes = Vec::new();
 
             let Some((child, child_name)) =
-                Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes)?
+                Self::path_nodes(scheme_name, tx, TreePtr::root(), path, uid, gid, &mut nodes)?
             else {
                 return Err(Error::new(ENOENT));
             };
@@ -423,7 +440,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
             let mut nodes = Vec::new();
 
             let Some((child, child_name)) =
-                Self::path_nodes(scheme_name, tx, path, uid, gid, &mut nodes)?
+                Self::path_nodes(scheme_name, tx, TreePtr::root(), path, uid, gid, &mut nodes)?
             else {
                 return Err(Error::new(ENOENT));
             };
@@ -607,7 +624,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
                 let mut new_nodes = Vec::new();
                 let new_node_opt =
-                    Self::path_nodes(scheme_name, tx, new_path, uid, gid, &mut new_nodes)?;
+                    Self::path_nodes(scheme_name, tx, TreePtr::root(), new_path, uid, gid, &mut new_nodes)?;
 
                 if let Some((ref new_parent, _)) = new_nodes.last() {
                     if !new_parent.data().owner(uid) {
@@ -707,7 +724,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
                 let mut new_nodes = Vec::new();
                 let new_node_opt =
-                    Self::path_nodes(scheme_name, tx, new_path, uid, gid, &mut new_nodes)?;
+                    Self::path_nodes(scheme_name, tx, TreePtr::root(), new_path, uid, gid, &mut new_nodes)?;
 
                 if let Some((ref new_parent, _)) = new_nodes.last() {
                     if !new_parent.data().owner(uid) {
