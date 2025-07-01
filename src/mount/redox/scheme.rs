@@ -3,7 +3,7 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult};
+use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult, SendFdRequest};
 use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::dirent::DirentBuf;
 use syscall::error::{
@@ -864,6 +864,6 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
     fn on_sendfd(&mut self, sendfd_request: &SendFdRequest) -> Result<usize> {
         println!("Hello from FileScheme::on_sendfd");
-        Err(Error::new(ENOSYS))
+        Err(Error::new(syscall::error::ENOSYS))
     }
 }
