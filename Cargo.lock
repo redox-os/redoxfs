@@ -414,9 +414,8 @@ checksum = "436d45c2b6a5b159d43da708e62b25be3a4a3d5550d654b72216ade4c4bfd717"
 
 [[package]]
 name = "redox-scheme"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c00025a04f76fdcf72c15f10c7a12d9f2fdde93e539be9a57d5d632c4158a9e"
+version = "0.6.3"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-scheme.git?branch=open-o-nonblock#bff09f902f5912006c27afc0a6784009f56fde2c"
 dependencies = [
  "libredox",
  "redox_syscall",
