@@ -30,7 +30,7 @@ where
                 match req.kind() {
                     RequestKind::Call(r) => r,
                     RequestKind::SendFd(sendfd_request) => {
-                        let result = scheme.on_sendfd(sendfd_request);
+                        let result = scheme.on_sendfd(&sendfd_request);
                         let response = Response::new(result, sendfd_request);
 
                         if !socket.write_response(response, SignalBehavior::Restart)? {
