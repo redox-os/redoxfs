@@ -27,12 +27,22 @@ where
         let req = match socket.next_request(SignalBehavior::Restart)? {
             None => break,
             Some(req) => {
-                if let RequestKind::Call(r) = req.kind() {
-                    r
-                } else {
-                    // TODO: Redoxfs does not yet support asynchronous file IO. It might still make
-                    // sense to implement cancellation for huge buffers, e.g. dd bs=1G
-                    continue;
+                match req.kind() {
+                    RequestKind::Call(r) => r,
+                    RequestKind::SendFd(sendfd_request) => {
+                        let result = scheme.on_sendfd(sendfd_request);
+                        let response = Response::new(result, sendfd_request);
+
+                        if !socket.write_response(response, SignalBehavior::Restart)? {
+                            break;
+                        }
+                        continue;
+                    }
+                    _ => {
+                        // TODO: Redoxfs does not yet support asynchronous file IO. It might still make
+                        // sense to implement cancellation for huge buffers, e.g. dd bs=1G
+                        continue;
+                    }
                 }
             }
         };
