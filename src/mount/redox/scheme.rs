@@ -16,6 +16,7 @@ use syscall::flag::{
     O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
+use syscall::FobtainFdFlags;
 use syscall::MunmapFlags;
 
 use redox_path::{
@@ -178,11 +179,11 @@ impl<D: Disk, 'sock> FileScheme<D, 'sock> {
             return Err(Error::new(EINVAL));
         };
         match verb {
-            FsCall::Connect => self.handle_bind(id, &payload),
+            FsCall::Connect => self.handle_connect(id, &payload),
         }
     }
 
-    fn handle_connect(&mut self, id: usize, &payload: &[u8]) -> Result<usize> {
+    fn handle_connect(&mut self, id: usize, payload: &[u8]) -> Result<usize> {
         Ok(0)
     }
 }
@@ -910,8 +911,8 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
         }
 
         let mut url_buf = [0; 256];
-        let url_len = syscall::fpath(new_fd, &mut path_buf)?;
-        let url = str::from_utf8(&path_buf[..path_len]).map_err(|_| Error::new(EINVAL))?;
+        let url_len = syscall::fpath(new_fd, &mut url_buf)?;
+        let url = str::from_utf8(&url_buf[..url_len]).map_err(|_| Error::new(EINVAL))?;
         let path = url.trim_matches('/');
 
         let mut last_part = String::new();
@@ -930,12 +931,12 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
             let mut stat = Stat::default();
             syscall::fstat(new_fd, &mut stat)?;
-            let mode_type = stat.mode;
+            let mode_type = stat.st_mode;
 
             let node_ptr = self.fs.tx(|tx| {
                 let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
                 let mut node = tx.create_node(
-                    parent.ptr(),
+                    parent.0.ptr(),
                     &last_part,
                     mode_type | (flags as u16 & Node::MODE_PERM),
                     ctime.as_secs(),
@@ -952,7 +953,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
             Box::new(FileResource::new(
                 path.to_string(),
-                parent_ptr_opt,
+                Some(parent.0.ptr()),
                 node_ptr,
                 flags,
                 uid,
@@ -969,7 +970,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.files.insert(id, resource);
         self.other_scheme_fd_map.insert(id, new_fd);
-        Ok(new_id)
+        Ok(new_fd)
     }
 
     fn call(
