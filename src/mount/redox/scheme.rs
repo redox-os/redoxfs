@@ -32,6 +32,9 @@ pub struct FileScheme<D: Disk> {
     next_id: AtomicUsize,
     files: BTreeMap<usize, Box<dyn Resource<D>>>,
     fmap: super::resource::Fmaps,
+
+    // Map of file id to other scheme's file descriptor.
+    other_scheme_fd_map: BTreeMap<usize, usize>,
 }
 
 impl<D: Disk> FileScheme<D> {
@@ -157,6 +160,26 @@ impl<D: Disk> FileScheme<D> {
                 }
             }
         }
+    }
+
+    fn call_inner(
+        &mut self,
+        id: usize,
+        payload: &mut [u8],
+        metadata: &[u64],
+        ctx: &CallerCtx,
+    ) -> Result<usize> {
+        let Some(verb) = FsCall::try_from_raw(metadata[0] as usize) else {
+            log::error!("call_inner: Invalid verb in metadata: {:?}", metadata);
+            return Err(Error::new(EINVAL));
+        };
+        match verb {
+            FsCall::Connect => self.handle_bind(id, &payload),
+        }
+    }
+
+    fn handle_connect(&mut self, id: usize, &payload: &[u8]) -> Result<usize> {
+        Ok(0)
     }
 }
 
@@ -864,6 +887,94 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
     fn on_sendfd(&mut self, sendfd_request: &SendFdRequest) -> Result<usize> {
         println!("Hello from FileScheme::on_sendfd");
-        Err(Error::new(syscall::error::ENOSYS))
+
+        let ctx = sendfd_request.caller();
+        let uid = ctx.uid;
+        let gid = ctx.gid;
+
+        let parent = self
+            .files
+            .get(&sendfd_request.id())
+            .ok_or(Error::new(EBADF))?;
+
+        let mut new_fd = usize::MAX;
+        if let Err(e) =
+            sendfd_request.obtain_fd(&self.socket, FobtainFdFlags::empty(), Err(&mut new_fd))
+        {
+            log::error!("sendfd_inner: obtain_fd failed with error: {:?}", e);
+            return Err(e);
+        }
+
+        let mut url_buf = [0; 256];
+        let url_len = syscall::fpath(new_fd, &mut path_buf)?;
+        let url = str::from_utf8(&path_buf[..path_len]).map_err(|_| Error::new(EINVAL))?;
+        let path = url.trim_matches('/');
+
+        let mut last_part = String::new();
+        for part in path.split('/') {
+            if !part.is_empty() {
+                last_part = part.to_string();
+            }
+        }
+        let resource: Box<dyn Resource<D>> = if !last_part.is_empty() {
+            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
+            let flags = 0o777;
+
+            let mut stat = Stat::default();
+            syscall::fstat(new_fd, &mut stat)?;
+            let mode_type = stat.mode;
+
+            let node_ptr = self.fs.tx(|tx| {
+                let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                let mut node = tx.create_node(
+                    parent.ptr(),
+                    &last_part,
+                    mode_type | (flags as u16 & Node::MODE_PERM),
+                    ctime.as_secs(),
+                    ctime.subsec_nanos(),
+                )?;
+                let node_ptr = node.ptr();
+                if node.data().uid() != uid || node.data().gid() != gid {
+                    node.data_mut().set_uid(uid);
+                    node.data_mut().set_gid(gid);
+                    tx.sync_tree(node)?;
+                }
+                Ok(node_ptr)
+            })?;
+
+            Box::new(FileResource::new(
+                path.to_string(),
+                parent_ptr_opt,
+                node_ptr,
+                flags,
+                uid,
+            ))
+        } else {
+            return Err(Error::new(EINVAL));
+        };
+
+        self.fmap
+            .entry(resource.node_ptr().id())
+            .or_insert_with(Default::default)
+            .open_fds += 1;
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.files.insert(id, resource);
+        self.other_scheme_fd_map.insert(id, new_fd);
+        Ok(new_id)
+    }
+
+    fn call(
+        &mut self,
+        id: usize,
+        payload: &mut [u8],
+        metadata: &[u64],
+        ctx: &CallerCtx,
+    ) -> Result<usize> {
+        self.call_inner(id, payload, metadata, ctx)
     }
 }
