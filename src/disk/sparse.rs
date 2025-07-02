@@ -1,7 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::u64;
 use syscall::error::{Error, Result, EIO};
 
 use crate::disk::Disk;
