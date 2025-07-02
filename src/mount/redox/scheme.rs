@@ -3,7 +3,8 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult, SendFdRequest};
+use redox_rt::protocol::FsCall;
+use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult, SendFdRequest, Socket};
 use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::dirent::DirentBuf;
 use syscall::error::{
@@ -26,9 +27,10 @@ use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
 use super::resource::{DirResource, Entry, FileResource, Resource};
 
-pub struct FileScheme<D: Disk> {
+pub struct FileScheme<D: Disk, 'sock> {
     name: String,
     pub(crate) fs: FileSystem<D>,
+    socket: &'sock Socket,
     next_id: AtomicUsize,
     files: BTreeMap<usize, Box<dyn Resource<D>>>,
     fmap: super::resource::Fmaps,
@@ -37,14 +39,16 @@ pub struct FileScheme<D: Disk> {
     other_scheme_fd_map: BTreeMap<usize, usize>,
 }
 
-impl<D: Disk> FileScheme<D> {
-    pub fn new(name: String, fs: FileSystem<D>) -> FileScheme<D> {
+impl<D: Disk, 'sock> FileScheme<D, 'sock> {
+    pub fn new(name: String, fs: FileSystem<D>, socket: &'sock Socket) -> FileScheme<D> {
         FileScheme {
             name,
             fs,
+            socket,
             next_id: AtomicUsize::new(1),
             files: BTreeMap::new(),
             fmap: BTreeMap::new(),
+            other_scheme_fd_map: BTreeMap::new(),
         }
     }
 

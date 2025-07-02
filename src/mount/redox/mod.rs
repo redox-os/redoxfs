@@ -22,7 +22,7 @@ where
     let mounted_path = format!("/scheme/{}", mountpoint.display());
     let res = callback(Path::new(&mounted_path));
 
-    let mut scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem);
+    let mut scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem, &socket);
     while IS_UMT.load(Ordering::SeqCst) == 0 {
         let req = match socket.next_request(SignalBehavior::Restart)? {
             None => break,
