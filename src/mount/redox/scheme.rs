@@ -901,10 +901,12 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             .files
             .get(&sendfd_request.id())
             .ok_or(Error::new(EBADF))?;
+        let parent_resource_ptr = parent_resource.node_ptr();
 
-        if !parent_resource.is_dir() {
+        if !parent_resource_ptr.0.is_dir() {
             return Err(Error::new(ENOTDIR));
         }
+        let parent_path = parent_resource.path();
 
         let mut new_fd = usize::MAX;
         if let Err(e) =
@@ -921,26 +923,24 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let (_, path) = redox_path.as_parts().ok_or(Error::new(EINVAL))?;
 
         let mut last_part = String::new();
-        for part in path.split('/') {
+        for part in path.as_ref().split('/') {
             if !part.is_empty() {
                 last_part = part.to_string();
             }
         }
-        let parent_resource_ptr = paarent_resource.node_ptr();
 
         let resource: Box<dyn Resource<D>> = if !last_part.is_empty() {
-            if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
-                // If the file already exists, we cannot create it again
-                return Err(Error::new(EEXIST));
-            }
-
-            let flags = 0o777;
-
             let mut stat = Stat::default();
             syscall::fstat(new_fd, &mut stat)?;
             let mode_type = stat.st_mode & Node::MODE_TYPE;
 
+            let flags = 0o777;
             let node_ptr = self.fs.tx(|tx| {
+                if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
+                    // If the file already exists, we cannot create it again
+                    return Err(Error::new(EEXIST));
+                }
+
                 let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
                 let mut node = tx.create_node(
                     parent_resource_ptr,
@@ -958,8 +958,11 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 Ok(node_ptr)
             })?;
 
+            let file_path = format!("{parent_path}/{last_part}");
+            println!("Creating file at path: {}", file_path);
+
             Box::new(FileResource::new(
-                path.to_string(),
+                file_path,
                 Some(parent_resource_ptr),
                 node_ptr,
                 flags,
