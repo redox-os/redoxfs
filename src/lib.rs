@@ -16,7 +16,7 @@ pub const BLOCK_SIZE: u64 = 4096;
 pub const RECORD_LEVEL: usize = 5;
 pub const RECORD_SIZE: u64 = BLOCK_SIZE << RECORD_LEVEL;
 pub const SIGNATURE: &[u8; 8] = b"RedoxFS\0";
-pub const VERSION: u64 = 6;
+pub const VERSION: u64 = 7;
 pub const DIR_ENTRY_MAX_LENGTH: usize = 252;
 
 pub static IS_UMT: AtomicUsize = AtomicUsize::new(0);
@@ -49,6 +49,7 @@ mod dir;
 mod disk;
 mod filesystem;
 mod header;
+mod htree;
 mod key;
 #[cfg(all(feature = "std", not(fuzzing)))]
 mod mount;
