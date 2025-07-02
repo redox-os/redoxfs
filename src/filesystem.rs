@@ -1,6 +1,7 @@
-use aes::{Aes128, BlockDecrypt, BlockEncrypt};
-use alloc::{collections::VecDeque, vec::Vec};
+use aes::Aes128;
+use alloc::collections::VecDeque;
 use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
+use xts_mode::{get_tweak_default, Xts128};
 
 #[cfg(feature = "std")]
 use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt, TreeList};
@@ -15,8 +16,7 @@ pub struct FileSystem<D: Disk> {
     //TODO: make private
     pub header: Header,
     pub(crate) allocator: Allocator,
-    pub(crate) aes_opt: Option<Aes128>,
-    aes_blocks: Vec<aes::Block>,
+    pub(crate) cipher_opt: Option<Xts128<Aes128>>,
 }
 
 impl<D: Disk> FileSystem<D> {
@@ -52,14 +52,14 @@ impl<D: Disk> FileSystem<D> {
                 }
             }
 
-            let aes_opt = match password_opt {
+            let cipher_opt = match password_opt {
                 Some(password) => {
                     if !header.encrypted() {
                         // Header not encrypted but password provided
                         return Err(Error::new(EKEYREJECTED));
                     }
-                    match header.aes(password) {
-                        Some(aes) => Some(aes),
+                    match header.cipher(password) {
+                        Some(cipher) => Some(cipher),
                         None => {
                             // Header encrypted with a different password
                             return Err(Error::new(ENOKEY));
@@ -80,8 +80,7 @@ impl<D: Disk> FileSystem<D> {
                 block,
                 header,
                 allocator: Allocator::default(),
-                aes_opt,
-                aes_blocks: Vec::with_capacity(BLOCK_SIZE as usize / aes::BLOCK_SIZE),
+                cipher_opt,
             };
 
             unsafe { fs.reset_allocator()? };
@@ -141,12 +140,16 @@ impl<D: Disk> FileSystem<D> {
 
         let mut header = Header::new(size);
 
-        let aes_opt = match password_opt {
+        let cipher_opt = match password_opt {
             Some(password) => {
                 //TODO: handle errors
-                header.key_slots[0] =
-                    KeySlot::new(password, Salt::new().unwrap(), Key::new().unwrap()).unwrap();
-                Some(header.key_slots[0].key(password).unwrap().into_aes())
+                header.key_slots[0] = KeySlot::new(
+                    password,
+                    Salt::new().unwrap(),
+                    (Key::new().unwrap(), Key::new().unwrap()),
+                )
+                .unwrap();
+                Some(header.key_slots[0].cipher(password).unwrap())
             }
             None => None,
         };
@@ -156,8 +159,7 @@ impl<D: Disk> FileSystem<D> {
             block: block_offset,
             header,
             allocator: Allocator::default(),
-            aes_opt,
-            aes_blocks: Vec::with_capacity(BLOCK_SIZE as usize / aes::BLOCK_SIZE),
+            cipher_opt,
         };
 
         // Write header generation zero
@@ -267,59 +269,33 @@ impl<D: Disk> FileSystem<D> {
         Ok(())
     }
 
-    pub(crate) fn decrypt(&mut self, data: &mut [u8]) -> bool {
-        let aes = if let Some(ref aes) = self.aes_opt {
-            aes
+    pub(crate) fn decrypt(&mut self, data: &mut [u8], addr: BlockAddr) -> bool {
+        if let Some(ref cipher) = self.cipher_opt {
+            cipher.decrypt_area(
+                data,
+                BLOCK_SIZE as usize,
+                addr.index().into(),
+                get_tweak_default,
+            );
+            true
         } else {
             // Do nothing if encryption is disabled
-            return false;
-        };
-
-        assert_eq!(data.len() % aes::BLOCK_SIZE, 0);
-
-        self.aes_blocks.clear();
-        for i in 0..data.len() / aes::BLOCK_SIZE {
-            self.aes_blocks.push(aes::Block::clone_from_slice(
-                &data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE],
-            ));
+            false
         }
-
-        aes.decrypt_blocks(&mut self.aes_blocks);
-
-        for i in 0..data.len() / aes::BLOCK_SIZE {
-            data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE]
-                .copy_from_slice(&self.aes_blocks[i]);
-        }
-        self.aes_blocks.clear();
-
-        true
     }
 
-    pub(crate) fn encrypt(&mut self, data: &mut [u8]) -> bool {
-        let aes = if let Some(ref aes) = self.aes_opt {
-            aes
+    pub(crate) fn encrypt(&mut self, data: &mut [u8], addr: BlockAddr) -> bool {
+        if let Some(ref cipher) = self.cipher_opt {
+            cipher.encrypt_area(
+                data,
+                BLOCK_SIZE as usize,
+                addr.index().into(),
+                get_tweak_default,
+            );
+            true
         } else {
             // Do nothing if encryption is disabled
-            return false;
-        };
-
-        assert_eq!(data.len() % aes::BLOCK_SIZE, 0);
-
-        self.aes_blocks.clear();
-        for i in 0..data.len() / aes::BLOCK_SIZE {
-            self.aes_blocks.push(aes::Block::clone_from_slice(
-                &data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE],
-            ));
+            false
         }
-
-        aes.encrypt_blocks(&mut self.aes_blocks);
-
-        for i in 0..data.len() / aes::BLOCK_SIZE {
-            data[i * aes::BLOCK_SIZE..(i + 1) * aes::BLOCK_SIZE]
-                .copy_from_slice(&self.aes_blocks[i]);
-        }
-        self.aes_blocks.clear();
-
-        true
     }
 }

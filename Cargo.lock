@@ -459,6 +459,7 @@ dependencies = [
  "termion",
  "time",
  "uuid",
+ "xts-mode",
 ]
 
 [[package]]
@@ -720,6 +721,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f42320e61fe2cfd34354ecb597f86f413484a798ba44a8ca1165c58d42da6c1"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "xts-mode"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75a099a2f21d48275314733f85bc43b6c6213b66394233aaea573fc7a520dcd9"
+dependencies = [
+ "byteorder",
+ "cipher",
 ]
 
 [[package]]

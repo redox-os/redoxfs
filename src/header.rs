@@ -2,7 +2,8 @@ use core::ops::{Deref, DerefMut};
 use core::{fmt, mem, slice};
 use endian_num::Le;
 
-use aes::{Aes128, BlockDecrypt, BlockEncrypt};
+use aes::Aes128;
+use xts_mode::{get_tweak_default, Xts128};
 
 use crate::{AllocList, BlockPtr, KeySlot, Tree, BLOCK_SIZE, SIGNATURE, VERSION};
 
@@ -29,7 +30,7 @@ pub struct Header {
     /// Key slots
     pub key_slots: [KeySlot; 64],
     /// Padding
-    pub padding: [u8; BLOCK_SIZE as usize - 2152],
+    pub padding: [u8; BLOCK_SIZE as usize - 3176],
     /// encrypted hash of header data without hash, set to hash and padded if disk is not encrypted
     pub encrypted_hash: [u8; 16],
     /// hash of header data without hash
@@ -91,14 +92,14 @@ impl Header {
         seahash::hash(&self[..end])
     }
 
-    fn create_encrypted_hash(&self, aes_opt: Option<&Aes128>) -> [u8; 16] {
+    fn create_encrypted_hash(&self, cipher_opt: Option<&Xts128<Aes128>>) -> [u8; 16] {
         let mut encrypted_hash = [0; 16];
         for (i, b) in self.hash.to_le_bytes().iter().enumerate() {
             encrypted_hash[i] = *b;
         }
-        if let Some(aes) = aes_opt {
+        if let Some(cipher) = cipher_opt {
             let mut block = aes::Block::from(encrypted_hash);
-            aes.encrypt_block(&mut block);
+            cipher.encrypt_area(&mut block, BLOCK_SIZE as usize, self.generation().into(), get_tweak_default);
             encrypted_hash = block.into();
         }
         encrypted_hash
@@ -108,30 +109,31 @@ impl Header {
         (self.encrypted_hash) != self.create_encrypted_hash(None)
     }
 
-    pub fn aes(&self, password: &[u8]) -> Option<Aes128> {
+    pub fn cipher(&self, password: &[u8]) -> Option<Xts128<Aes128>> {
         let hash = self.create_encrypted_hash(None);
         for slot in self.key_slots.iter() {
             //TODO: handle errors
-            let aes = slot.key(password).unwrap().into_aes();
+            let cipher = slot.cipher(password).unwrap();
             let mut block = aes::Block::from(self.encrypted_hash);
-            aes.decrypt_block(&mut block);
+            cipher.decrypt_area(&mut block, BLOCK_SIZE as usize, self.generation().into(), get_tweak_default);
             if block == aes::Block::from(hash) {
-                return Some(aes);
+                return Some(cipher);
             }
         }
         None
     }
-    fn update_hash(&mut self, aes_opt: Option<&Aes128>) {
+
+    fn update_hash(&mut self, cipher_opt: Option<&Xts128<Aes128>>) {
         self.hash = self.create_hash().into();
         // Make sure to do this second, it relies on the hash being up to date
-        self.encrypted_hash = self.create_encrypted_hash(aes_opt);
+        self.encrypted_hash = self.create_encrypted_hash(cipher_opt);
     }
 
-    pub fn update(&mut self, aes_opt: Option<&Aes128>) -> u64 {
+    pub fn update(&mut self, cipher_opt: Option<&Xts128<Aes128>>) -> u64 {
         let mut generation = self.generation();
         generation += 1;
         self.generation = generation.into();
-        self.update_hash(aes_opt);
+        self.update_hash(cipher_opt);
         generation
     }
 }
@@ -147,7 +149,7 @@ impl Default for Header {
             tree: BlockPtr::<Tree>::default(),
             alloc: BlockPtr::<AllocList>::default(),
             key_slots: [KeySlot::default(); 64],
-            padding: [0; BLOCK_SIZE as usize - 2152],
+            padding: [0; BLOCK_SIZE as usize - 3176],
             encrypted_hash: [0; 16],
             hash: 0.into(),
         }

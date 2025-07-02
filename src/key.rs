@@ -1,4 +1,5 @@
 use aes::{Aes128, BlockDecrypt, BlockEncrypt, NewBlockCipher};
+use xts_mode::Xts128;
 
 // The raw key, keep secret!
 #[repr(transparent)]
@@ -13,6 +14,12 @@ impl Key {
         Ok(Self(bytes))
     }
 
+    pub fn encrypt(&self, password_aes: &Aes128) -> EncryptedKey {
+        let mut block = aes::Block::from(self.0);
+        password_aes.encrypt_block(&mut block);
+        EncryptedKey(block.into())
+    }
+
     pub fn into_aes(self) -> Aes128 {
         Aes128::new(&aes::Block::from(self.0))
     }
@@ -22,6 +29,14 @@ impl Key {
 #[derive(Clone, Copy, Default)]
 #[repr(transparent)]
 pub struct EncryptedKey([u8; 16]);
+
+impl EncryptedKey {
+    pub fn decrypt(&self, password_aes: &Aes128) -> Key {
+        let mut block = aes::Block::from(self.0);
+        password_aes.decrypt_block(&mut block);
+        Key(block.into())
+    }
+}
 
 /// Salt used to prevent rainbow table attacks on the encryption password
 #[derive(Clone, Copy, Default)]
@@ -43,7 +58,8 @@ impl Salt {
 #[repr(C, packed)]
 pub struct KeySlot {
     salt: Salt,
-    encrypted_key: EncryptedKey,
+    // Two keys for AES XTS 128
+    encrypted_keys: (EncryptedKey, EncryptedKey),
 }
 
 impl KeySlot {
@@ -66,27 +82,20 @@ impl KeySlot {
     }
 
     /// Create a new key slot from a password, salt, and encryption key
-    pub fn new(password: &[u8], salt: Salt, key: Key) -> Result<Self, argon2::Error> {
+    pub fn new(password: &[u8], salt: Salt, keys: (Key, Key)) -> Result<Self, argon2::Error> {
         let password_aes = Self::password_aes(password, &salt)?;
-
-        // Encrypt the real AES key
-        let mut block = aes::Block::from(key.0);
-        password_aes.encrypt_block(&mut block);
-
         Ok(Self {
             salt,
-            encrypted_key: EncryptedKey(block.into()),
+            encrypted_keys: (keys.0.encrypt(&password_aes), keys.1.encrypt(&password_aes)),
         })
     }
 
-    /// Get the encryption key from this key slot
-    pub fn key(&self, password: &[u8]) -> Result<Key, argon2::Error> {
+    /// Get the encryption cipher from this key slot
+    pub fn cipher(&self, password: &[u8]) -> Result<Xts128<Aes128>, argon2::Error> {
         let password_aes = Self::password_aes(password, &self.salt)?;
-
-        // Decrypt the real AES key
-        let mut block = aes::Block::from(self.encrypted_key.0);
-        password_aes.decrypt_block(&mut block);
-
-        Ok(Key(block.into()))
+        Ok(Xts128::new(
+            self.encrypted_keys.0.decrypt(&password_aes).into_aes(),
+            self.encrypted_keys.1.decrypt(&password_aes).into_aes(),
+        ))
     }
 }

@@ -220,7 +220,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             // if we have any blocks to write
             assert!(self.header_changed);
 
-            self.fs.encrypt(raw);
+            self.fs.encrypt(raw, *addr);
             let count = unsafe { self.fs.disk.write_at(self.fs.block + addr.index(), raw)? };
             if count != raw.len() {
                 // Read wrong number of bytes
@@ -240,7 +240,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         // Update header to next generation
-        let gen = self.header.update(self.fs.aes_opt.as_ref());
+        let gen = self.header.update(self.fs.cipher_opt.as_ref());
         let gen_block = gen % HEADER_RING;
 
         // Write header
@@ -293,7 +293,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 log::error!("READ_BLOCK: WRONG NUMBER OF BYTES");
                 return Err(Error::new(EIO));
             }
-            self.fs.decrypt(&mut data);
+            self.fs.decrypt(&mut data, ptr.addr());
         }
 
         let block = BlockData::new(ptr.addr(), data);

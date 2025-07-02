@@ -88,9 +88,15 @@ impl<D: Disk> FileScheme<D> {
             let target_reference = reference.to_string();
 
             nodes.clear();
-            if let Some((next_node, next_node_name)) =
-                Self::path_nodes(scheme_name, tx, TreePtr::root(), &target_reference, uid, gid, nodes)?
-            {
+            if let Some((next_node, next_node_name)) = Self::path_nodes(
+                scheme_name,
+                tx,
+                TreePtr::root(),
+                &target_reference,
+                uid,
+                gid,
+                nodes,
+            )? {
                 if !next_node.data().is_symlink() {
                     nodes.push((next_node, next_node_name));
                     return Ok(target_reference);
@@ -104,7 +110,13 @@ impl<D: Disk> FileScheme<D> {
         Err(Error::new(ELOOP))
     }
 
-    fn open_internal(&mut self, start_ptr: TreePtr<Node>, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
+    fn open_internal(
+        &mut self,
+        start_ptr: TreePtr<Node>,
+        url: &str,
+        flags: usize,
+        ctx: &CallerCtx,
+    ) -> Result<OpenResult> {
         let CallerCtx { uid, gid, .. } = *ctx;
 
         let path = url.trim_matches('/');
@@ -307,7 +319,6 @@ impl<D: Disk> FileScheme<D> {
             number: id,
             flags: NewFdFlags::POSITIONED,
         })
-
     }
 
     fn path_nodes(
@@ -377,8 +388,15 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
         self.open_internal(TreePtr::root(), url, flags, ctx)
     }
 
-    fn openat(&mut self, dirfd: usize, path: &str, flags: usize, _fcntl_flags: u32, ctx: &CallerCtx) -> Result<OpenResult> {
-        // If pathname is absolute, then dirfd is ignored. 
+    fn openat(
+        &mut self,
+        dirfd: usize,
+        path: &str,
+        flags: usize,
+        _fcntl_flags: u32,
+        ctx: &CallerCtx,
+    ) -> Result<OpenResult> {
+        // If pathname is absolute, then dirfd is ignored.
         if path.starts_with('/') {
             return self.open_internal(TreePtr::root(), path, flags, ctx);
         }
@@ -623,8 +641,15 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
                 }
 
                 let mut new_nodes = Vec::new();
-                let new_node_opt =
-                    Self::path_nodes(scheme_name, tx, TreePtr::root(), new_path, uid, gid, &mut new_nodes)?;
+                let new_node_opt = Self::path_nodes(
+                    scheme_name,
+                    tx,
+                    TreePtr::root(),
+                    new_path,
+                    uid,
+                    gid,
+                    &mut new_nodes,
+                )?;
 
                 if let Some((ref new_parent, _)) = new_nodes.last() {
                     if !new_parent.data().owner(uid) {
@@ -723,8 +748,15 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
                 }
 
                 let mut new_nodes = Vec::new();
-                let new_node_opt =
-                    Self::path_nodes(scheme_name, tx, TreePtr::root(), new_path, uid, gid, &mut new_nodes)?;
+                let new_node_opt = Self::path_nodes(
+                    scheme_name,
+                    tx,
+                    TreePtr::root(),
+                    new_path,
+                    uid,
+                    gid,
+                    &mut new_nodes,
+                )?;
 
                 if let Some((ref new_parent, _)) = new_nodes.last() {
                     if !new_parent.data().owner(uid) {
