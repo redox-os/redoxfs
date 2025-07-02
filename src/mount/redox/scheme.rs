@@ -28,7 +28,7 @@ use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
 use super::resource::{DirResource, Entry, FileResource, Resource};
 
-pub struct FileScheme<D: Disk, 'sock> {
+pub struct FileScheme<'sock, D: Disk> {
     name: String,
     pub(crate) fs: FileSystem<D>,
     socket: &'sock Socket,
@@ -40,8 +40,8 @@ pub struct FileScheme<D: Disk, 'sock> {
     other_scheme_fd_map: BTreeMap<usize, usize>,
 }
 
-impl<D: Disk, 'sock> FileScheme<D, 'sock> {
-    pub fn new(name: String, fs: FileSystem<D>, socket: &'sock Socket) -> FileScheme<D> {
+impl<'sock, D: Disk> FileScheme<'sock, D> {
+    pub fn new(name: String, fs: FileSystem<D>, socket: &'sock Socket) -> FileScheme<'sock, D> {
         FileScheme {
             name,
             fs,
@@ -193,7 +193,7 @@ fn dirname(path: &str) -> Option<String> {
     canonicalize_using_cwd(Some(path), "..")
 }
 
-impl<D: Disk> SchemeSync for FileScheme<D> {
+impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
         let CallerCtx { uid, gid, .. } = *ctx;
 
@@ -897,10 +897,14 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
         let uid = ctx.uid;
         let gid = ctx.gid;
 
-        let parent = self
+        let parent_resource = self
             .files
             .get(&sendfd_request.id())
             .ok_or(Error::new(EBADF))?;
+
+        if !parent_resource.is_dir() {
+            return Err(Error::new(ENOTDIR));
+        }
 
         let mut new_fd = usize::MAX;
         if let Err(e) =
@@ -912,8 +916,9 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
         let mut url_buf = [0; 256];
         let url_len = syscall::fpath(new_fd, &mut url_buf)?;
-        let url = str::from_utf8(&url_buf[..url_len]).map_err(|_| Error::new(EINVAL))?;
-        let path = url.trim_matches('/');
+        let url_str = str::from_utf8(&url_buf[..url_len]).map_err(|_| Error::new(EINVAL))?;
+        let redox_path = RedoxPath::from_absolute(url_str).ok_or(Error::new(EINVAL))?;
+        let (_, path) = redox_path.as_parts().ok_or(Error::new(EINVAL))?;
 
         let mut last_part = String::new();
         for part in path.split('/') {
@@ -921,22 +926,24 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
                 last_part = part.to_string();
             }
         }
+        let parent_resource_ptr = paarent_resource.node_ptr();
+
         let resource: Box<dyn Resource<D>> = if !last_part.is_empty() {
-            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                println!("dir not writable {:o}", parent.1.mode);
-                return Err(Error::new(EACCES));
+            if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
+                // If the file already exists, we cannot create it again
+                return Err(Error::new(EEXIST));
             }
 
             let flags = 0o777;
 
             let mut stat = Stat::default();
             syscall::fstat(new_fd, &mut stat)?;
-            let mode_type = stat.st_mode;
+            let mode_type = stat.st_mode & Node::MODE_TYPE;
 
             let node_ptr = self.fs.tx(|tx| {
                 let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
                 let mut node = tx.create_node(
-                    parent.0.ptr(),
+                    parent_resource_ptr,
                     &last_part,
                     mode_type | (flags as u16 & Node::MODE_PERM),
                     ctime.as_secs(),
@@ -953,7 +960,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
             Box::new(FileResource::new(
                 path.to_string(),
-                Some(parent.0.ptr()),
+                Some(parent_resource_ptr),
                 node_ptr,
                 flags,
                 uid,
