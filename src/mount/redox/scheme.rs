@@ -901,12 +901,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             .files
             .get(&sendfd_request.id())
             .ok_or(Error::new(EBADF))?;
-        let parent_resource_ptr = parent_resource.node_ptr();
-
-        if !parent_resource_ptr.0.is_dir() {
-            return Err(Error::new(ENOTDIR));
-        }
-        let parent_path = parent_resource.path();
 
         let mut new_fd = usize::MAX;
         if let Err(e) =
@@ -915,6 +909,21 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             log::error!("sendfd_inner: obtain_fd failed with error: {:?}", e);
             return Err(e);
         }
+
+        let parent_resource_ptr = parent_resource.node_ptr();
+
+        let parent_node = self.fs.tx(|tx| tx.read_tree(parent_resource.node_ptr()))?;
+        if !parent_node.is_dir() {
+            return Err(Error::new(ENOTDIR));
+        }
+        if !parent_node
+            .data()
+            .permission(caller_ctx.uid, caller_ctx.gid, Node::MODE_WRITE)
+        {
+            return Err(Error::new(EACCES));
+        }
+        let parent_node_ptr = parent_resource.node_ptr();
+        let parent_path = parent_resource.path();
 
         let mut url_buf = [0; 256];
         let url_len = syscall::fpath(new_fd, &mut url_buf)?;
