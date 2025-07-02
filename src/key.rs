@@ -1,4 +1,7 @@
-use aes::{Aes128, BlockDecrypt, BlockEncrypt, NewBlockCipher};
+use aes::{
+    cipher::{BlockDecrypt, BlockEncrypt, KeyInit},
+    Aes128,
+};
 use xts_mode::Xts128;
 
 // The raw key, keep secret!

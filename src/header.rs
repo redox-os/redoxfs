@@ -99,7 +99,12 @@ impl Header {
         }
         if let Some(cipher) = cipher_opt {
             let mut block = aes::Block::from(encrypted_hash);
-            cipher.encrypt_area(&mut block, BLOCK_SIZE as usize, self.generation().into(), get_tweak_default);
+            cipher.encrypt_area(
+                &mut block,
+                BLOCK_SIZE as usize,
+                self.generation().into(),
+                get_tweak_default,
+            );
             encrypted_hash = block.into();
         }
         encrypted_hash
@@ -115,7 +120,12 @@ impl Header {
             //TODO: handle errors
             let cipher = slot.cipher(password).unwrap();
             let mut block = aes::Block::from(self.encrypted_hash);
-            cipher.decrypt_area(&mut block, BLOCK_SIZE as usize, self.generation().into(), get_tweak_default);
+            cipher.decrypt_area(
+                &mut block,
+                BLOCK_SIZE as usize,
+                self.generation().into(),
+                get_tweak_default,
+            );
             if block == aes::Block::from(hash) {
                 return Some(cipher);
             }

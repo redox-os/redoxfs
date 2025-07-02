@@ -31,7 +31,7 @@ doc = false
 required-features = ["std"]
 
 [dependencies]
-aes = { version = "=0.7.5", default-features = false }
+aes = { version = "0.8", default-features = false }
 argon2 = { version = "0.4", default-features = false, features = ["alloc"] }
 base64ct = { version = "1", default-features = false }
 endian-num = "0.1"
@@ -47,13 +47,10 @@ redox_syscall = { version = "0.5.13" }
 seahash = { version = "4.1.0", default-features = false }
 termion = { version = "4", optional = true }
 uuid = { version = "1.4", default-features = false }
-xts-mode = { version = "=0.4.1", default-features = false }
+xts-mode = { version = "0.5", default-features = false }
 
 [features]
 default = ["std", "log"]
-force-soft = [
-    "aes/force-soft"
-]
 std = [
     "env_logger",
     "fuser",
