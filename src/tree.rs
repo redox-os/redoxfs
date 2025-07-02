@@ -5,7 +5,7 @@ use crate::{BlockLevel, BlockPtr, BlockRaw, BlockTrait};
 
 // 1 << 8 = 256, this is the number of entries in a TreeList
 const TREE_LIST_SHIFT: u32 = 8;
-const TREE_LIST_ENTRIES: usize = 1 << TREE_LIST_SHIFT;
+const TREE_LIST_ENTRIES: usize = (1 << TREE_LIST_SHIFT) - 2;
 
 /// A tree with 4 levels
 pub type Tree = TreeList<TreeList<TreeList<TreeList<BlockRaw>>>>;
@@ -54,6 +54,41 @@ impl<T> TreeData<T> {
 #[repr(C, packed)]
 pub struct TreeList<T> {
     pub ptrs: [BlockPtr<T>; TREE_LIST_ENTRIES],
+    pub full_flags: [u128; 2],
+}
+
+impl<T> TreeList<T> {
+    pub fn tree_list_is_full(&self) -> bool {
+        self.full_flags[1] == u128::MAX & !(3 << 126) && self.full_flags[0] == u128::MAX
+    }
+
+    pub fn tree_list_is_empty(&self) -> bool {
+        for ptr in self.ptrs.iter() {
+            if !ptr.is_null() {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn branch_is_full(&self, index: usize) -> bool {
+        assert!(index < TREE_LIST_ENTRIES);
+        let shift = index % 128;
+        let full_flags_index = index / 128;
+        self.full_flags[full_flags_index] & (1 << shift) != 0
+    }
+
+    pub fn set_branch_full(&mut self, index: usize, full: bool) {
+        assert!(index < TREE_LIST_ENTRIES);
+        let shift = index % 128;
+        let full_flags_index = index / 128;
+
+        if full {
+            self.full_flags[full_flags_index] |= 1 << shift;
+        } else {
+            self.full_flags[full_flags_index] &= !(1 << shift);
+        }
+    }
 }
 
 unsafe impl<T> BlockTrait for TreeList<T> {
@@ -61,6 +96,7 @@ unsafe impl<T> BlockTrait for TreeList<T> {
         if level.0 == 0 {
             Some(Self {
                 ptrs: [BlockPtr::default(); TREE_LIST_ENTRIES],
+                full_flags: [0; 2],
             })
         } else {
             None
@@ -153,7 +189,19 @@ impl<T> TreePtr<T> {
         let i1 = ((id >> SHIFT) & MASK) as usize;
         let i0 = (id & MASK) as usize;
 
-        return (i3, i2, i1, i0);
+        (i3, i2, i1, i0)
+    }
+
+    pub fn to_bytes(&self) -> [u8; 4] {
+        self.id.to_le_bytes()
+    }
+
+    pub fn from_bytes(bytes: [u8; 4]) -> Self {
+        let val = u32::from_le_bytes(bytes);
+        Self {
+            id: Le(val),
+            phantom: PhantomData,
+        }
     }
 }
 
@@ -174,10 +222,59 @@ impl<T> Default for TreePtr<T> {
     }
 }
 
-#[test]
-fn tree_list_size_test() {
-    assert_eq!(
-        mem::size_of::<TreeList<BlockRaw>>(),
-        crate::BLOCK_SIZE as usize
-    );
+#[cfg(test)]
+mod tests {
+    use crate::{BlockAddr, BlockData};
+
+    use super::*;
+
+    #[test]
+    fn tree_list_size_test() {
+        assert_eq!(
+            mem::size_of::<TreeList<BlockRaw>>(),
+            crate::BLOCK_SIZE as usize
+        );
+    }
+
+    #[test]
+    fn tree_list_is_full_test() {
+        let mut tree_list = TreeList::<BlockRaw>::empty(BlockLevel::default()).unwrap();
+        assert!(!tree_list.tree_list_is_full());
+
+        for i in 0..TREE_LIST_ENTRIES {
+            assert!(!tree_list.branch_is_full(i));
+            tree_list.set_branch_full(i, true);
+            assert!(tree_list.branch_is_full(i));
+        }
+
+        assert!(tree_list.tree_list_is_full());
+
+        for i in 0..TREE_LIST_ENTRIES {
+            assert!(tree_list.branch_is_full(i));
+            tree_list.set_branch_full(i, false);
+            assert!(!tree_list.branch_is_full(i));
+        }
+    }
+
+    fn mock_block(addr: u64) -> BlockPtr<BlockRaw> {
+        let block_addr = unsafe { BlockAddr::new(addr, BlockLevel::default()) };
+        BlockData::empty(block_addr).unwrap().create_ptr()
+    }
+
+    #[test]
+    fn tree_list_is_empty() {
+        let mut tree_list = TreeList::<BlockRaw>::empty(BlockLevel::default()).unwrap();
+        assert!(tree_list.tree_list_is_empty());
+
+        tree_list.ptrs[3] = mock_block(123);
+        assert!(!tree_list.tree_list_is_empty());
+    }
+
+    #[test]
+    fn tree_ptr_to_and_from_bytes() {
+        let ptr: TreePtr<BlockRaw> = TreePtr::new(123456);
+        let bytes = ptr.to_bytes();
+        let ptr2: TreePtr<BlockRaw> = TreePtr::from_bytes(bytes);
+        assert_eq!(ptr.id(), ptr2.id());
+    }
 }

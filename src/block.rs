@@ -231,6 +231,19 @@ impl<T> BlockPtr<T> {
         self.addr().is_null()
     }
 
+    pub fn marker(level: u8) -> Self {
+        assert!(level <= 0xF);
+        Self {
+            addr: (0xFFFF_FFFF_FFFF_FFF0 | (level as u64)).into(),
+            hash: u64::MAX.into(),
+            phantom: PhantomData,
+        }
+    }
+
+    pub fn is_marker(&self) -> bool {
+        (self.addr.to_ne() | 0xF) == u64::MAX && self.hash.to_ne() == u64::MAX
+    }
+
     /// Cast BlockPtr to another type
     ///
     /// # Safety
@@ -315,4 +328,15 @@ fn block_list_size_test() {
 #[test]
 fn block_raw_size_test() {
     assert_eq!(mem::size_of::<BlockRaw>(), BLOCK_SIZE as usize);
+}
+
+#[test]
+fn block_ptr_marker_test() {
+    let ptr = BlockPtr::<BlockRaw>::marker(0);
+    assert_eq!(ptr.addr().level().0, 0);
+    assert!(ptr.is_marker());
+
+    let ptr = BlockPtr::<BlockRaw>::marker(2);
+    assert_eq!(ptr.addr().level().0, 2);
+    assert!(ptr.is_marker());
 }

@@ -77,7 +77,7 @@ fn node_attr(node: &TreeData<Node>) -> FileAttr {
         ino: node.id() as u64,
         size: node.data().size(),
         // Blocks is in 512 byte blocks, not in our block size
-        blocks: (node.data().size() + BLOCK_SIZE - 1) / BLOCK_SIZE * (BLOCK_SIZE / 512),
+        blocks: node.data().size().div_ceil(BLOCK_SIZE) * (BLOCK_SIZE / 512),
         blksize: 512,
         atime: SystemTime::UNIX_EPOCH + Duration::new(node.data().atime().0, node.data().atime().1),
         mtime: SystemTime::UNIX_EPOCH + Duration::new(node.data().mtime().0, node.data().mtime().1),
@@ -99,7 +99,7 @@ fn node_attr(node: &TreeData<Node>) -> FileAttr {
     }
 }
 
-impl<'f, D: Disk> Filesystem for Fuse<'f, D> {
+impl<D: Disk> Filesystem for Fuse<'_, D> {
     fn lookup(&mut self, _req: &Request, parent_id: u64, name: &OsStr, reply: ReplyEntry) {
         let parent_ptr = TreePtr::new(parent_id as u32);
         match self
