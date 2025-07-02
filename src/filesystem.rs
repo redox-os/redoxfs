@@ -118,7 +118,7 @@ impl<D: Disk> FileSystem<D> {
         ctime_nsec: u32,
     ) -> Result<Self> {
         let size = disk.size()?;
-        let block_offset = (reserved.len() as u64 + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let block_offset = (reserved.len() as u64).div_ceil(BLOCK_SIZE);
 
         if size < (block_offset + HEADER_RING + 4) * BLOCK_SIZE {
             return Err(Error::new(syscall::error::ENOSPC));

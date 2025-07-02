@@ -47,7 +47,7 @@ impl<T: Disk> Disk for DiskCache<T> {
 
         let mut read = 0;
         let mut failed = false;
-        for i in 0..(buffer.len() + BLOCK_SIZE as usize - 1) / (BLOCK_SIZE as usize) {
+        for i in 0..buffer.len().div_ceil(BLOCK_SIZE as usize) {
             let block_i = block + i as u64;
 
             let buffer_i = i * BLOCK_SIZE as usize;
@@ -66,7 +66,7 @@ impl<T: Disk> Disk for DiskCache<T> {
             self.inner.read_at(block, buffer)?;
 
             read = 0;
-            for i in 0..(buffer.len() + BLOCK_SIZE as usize - 1) / (BLOCK_SIZE as usize) {
+            for i in 0..buffer.len().div_ceil(BLOCK_SIZE as usize) {
                 let block_i = block + i as u64;
 
                 let buffer_i = i * BLOCK_SIZE as usize;
@@ -89,7 +89,7 @@ impl<T: Disk> Disk for DiskCache<T> {
         self.inner.write_at(block, buffer)?;
 
         let mut written = 0;
-        for i in 0..(buffer.len() + BLOCK_SIZE as usize - 1) / (BLOCK_SIZE as usize) {
+        for i in 0..buffer.len().div_ceil(BLOCK_SIZE as usize) {
             let block_i = block + i as u64;
 
             let buffer_i = i * BLOCK_SIZE as usize;

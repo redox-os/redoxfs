@@ -13,6 +13,7 @@ use syscall::error::{
 };
 
 use crate::{
+    htree::{self, HTreeHash, HTreeNode, HTreePtr},
     AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait,
     DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr,
     ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
@@ -59,7 +60,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     /// Allocate a new block of size `level`, returning its address.
     /// - returns `Err(ENOSPC)` if a block of this size could not be alloated.
     /// - unsafe because order must be done carefully and changes must be flushed to disk
-    unsafe fn allocate(&mut self, level: BlockLevel) -> Result<BlockAddr> {
+    pub(crate) unsafe fn allocate(&mut self, level: BlockLevel) -> Result<BlockAddr> {
         match self.allocator.allocate(level) {
             Some(addr) => {
                 self.allocator_log.push_back(AllocEntry::allocate(addr));
@@ -71,7 +72,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
     /// Deallocate the given block.
     /// - unsafe because order must be done carefully and changes must be flushed to disk
-    unsafe fn deallocate(&mut self, addr: BlockAddr) {
+    pub(crate) unsafe fn deallocate(&mut self, addr: BlockAddr) {
         //TODO: should we use some sort of not-null abstraction?
         assert!(!addr.is_null());
 
@@ -456,39 +457,53 @@ impl<'a, D: Disk> Transaction<'a, D> {
         &mut self,
         block_ptr: BlockPtr<T>,
     ) -> Result<TreePtr<T>> {
-        // TODO: improve performance, reduce writes
-
         // Remember that if there is a free block at any level it will always sync when it
         // allocates at the lowest level, so we can save a write by not writing each level as it
         // is allocated.
         unsafe {
             let mut l3 = self.read_block(self.header.tree)?;
             for i3 in 0..l3.data().ptrs.len() {
+                if l3.data().branch_is_full(i3) {
+                    continue;
+                }
                 let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
                 for i2 in 0..l2.data().ptrs.len() {
+                    if l2.data().branch_is_full(i2) {
+                        continue;
+                    }
                     let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     for i1 in 0..l1.data().ptrs.len() {
+                        if l1.data().branch_is_full(i1) {
+                            continue;
+                        }
                         let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
                         for i0 in 0..l0.data().ptrs.len() {
-                            let pn = l0.data().ptrs[i0];
-
-                            // Skip if already in use
-                            if !pn.is_null() {
+                            if l0.data().branch_is_full(i0) {
                                 continue;
                             }
+
+                            let pn = l0.data().ptrs[i0];
+                            assert!(pn.is_null());
 
                             let tree_ptr = TreePtr::from_indexes((i3, i2, i1, i0));
 
                             // Skip if this is a reserved node (null)
                             if tree_ptr.is_null() {
+                                l0.data_mut().set_branch_full(i0, true);
                                 continue;
                             }
 
-                            // TODO: do we need to write all of these?
                             // Write updates to newly allocated blocks
+                            l0.data_mut().set_branch_full(i0, true);
                             l0.data_mut().ptrs[i0] = block_ptr.cast();
+                            l1.data_mut()
+                                .set_branch_full(i1, l0.data().tree_list_is_full());
                             l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
+                            l2.data_mut()
+                                .set_branch_full(i2, l1.data().tree_list_is_full());
                             l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
+                            l3.data_mut()
+                                .set_branch_full(i3, l2.data().tree_list_is_full());
                             l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
                             self.header.tree = self.sync_block(l3)?;
                             self.header_changed = true;
@@ -522,13 +537,45 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let mut l1 = self.read_block(l2.data().ptrs[i2])?;
         let mut l0 = self.read_block(l1.data().ptrs[i1])?;
 
-        // Clear the value in the tree, but do not deallocate the block, as that should already
-        // have been done at the node level.
+        // Clear the value in the tree, but do not deallocate the node block, as that should already
+        // have been done at the node level. The inner tree nodes can be deallocated if they are empty.
+        l0.data_mut().set_branch_full(i0, false);
         l0.data_mut().ptrs[i0] = BlockPtr::default();
-        l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
-        l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
-        l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
-        self.header.tree = self.sync_block(l3)?;
+        let l0_ptr = if l0.data().tree_list_is_empty() {
+            unsafe { self.deallocate(l0.addr()) };
+            BlockPtr::default()
+        } else {
+            self.sync_block(l0)?
+        };
+
+        l1.data_mut().set_branch_full(i1, false);
+        l1.data_mut().ptrs[i1] = l0_ptr;
+        let l1_ptr = if l1.data().tree_list_is_empty() {
+            unsafe { self.deallocate(l1.addr()) };
+            BlockPtr::default()
+        } else {
+            self.sync_block(l1)?
+        };
+
+        l2.data_mut().set_branch_full(i2, false);
+        l2.data_mut().ptrs[i2] = l1_ptr;
+        let l2_ptr = if l2.data().tree_list_is_empty() {
+            unsafe { self.deallocate(l2.addr()) };
+            BlockPtr::default()
+        } else {
+            self.sync_block(l2)?
+        };
+
+        l3.data_mut().set_branch_full(i3, false);
+        l3.data_mut().ptrs[i3] = l2_ptr;
+        let l3_ptr = if l3.data().tree_list_is_empty() {
+            unsafe { self.deallocate(l3.addr()) };
+            BlockPtr::default()
+        } else {
+            self.sync_block(l3)?
+        };
+
+        self.header.tree = l3_ptr;
         self.header_changed = true;
         Ok(())
     }
@@ -580,7 +627,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
     // MARK: node operations
     //
 
-    // TODO: use more efficient methods for reading directories
     /// Write all children of `parent_ptr` to `children`.
     /// `parent_ptr` must point to a directory node.
     pub fn child_nodes(
@@ -589,60 +635,130 @@ impl<'a, D: Disk> Transaction<'a, D> {
         children: &mut Vec<DirEntry>,
     ) -> Result<()> {
         let parent = self.read_tree(parent_ptr)?;
-        let record_level = parent.data().record_level();
-        for record_offset in 0..(parent.data().size() / record_level.bytes()) {
-            let block_ptr = self.node_record_ptr(&parent, record_offset)?;
-            // TODO: is this safe? what if child_nodes is called on
-            // a node that isn't a directory?
-            let dir_ptr: BlockPtr<DirList> = unsafe { block_ptr.cast() };
-            let dir = self.read_block(dir_ptr)?;
-            for entry in dir.data().entries.iter() {
-                let node_ptr = entry.node_ptr();
+        if parent.data().level0[0].is_marker() {
+            let htree_levels = parent.data().level0[0].addr().level().0;
+            let htree_root = if htree_levels == 0 {
+                // Create a fake root to satisfy the recursive child_nodes_inner function signature
+                let mut fake_htree_node =
+                    BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
+                let dir_ptr = parent.data().level0[1];
+                let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
+                fake_htree_node.data_mut().ptrs[0] = htree_ptr;
+                fake_htree_node
+            } else {
+                let htree_record_ptr = parent.data().level0[1];
+                let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { htree_record_ptr.cast() };
+                self.read_block(htree_ptr)?
+            };
+            self.child_nodes_inner(htree_root.data(), children, htree_levels.max(1))?;
+        }
+        Ok(())
+    }
 
-                // Skip empty entries
-                if node_ptr.is_null() {
-                    continue;
+    fn child_nodes_inner(
+        &mut self,
+        htree_node: &HTreeNode<RecordRaw>,
+        children: &mut Vec<DirEntry>,
+        htree_levels: usize,
+    ) -> Result<()> {
+        assert!(htree_levels > 0);
+        if htree_levels == 1 {
+            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
+                let dir_ptr: BlockPtr<DirList> = unsafe { entry.ptr.cast() };
+                let dir = self.read_block(dir_ptr)?;
+                for entry in dir.data().entries() {
+                    children.push(entry);
                 }
-
-                children.push(*entry);
+            }
+        } else {
+            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
+                let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
+                let htree_node = self.read_block(htree_ptr)?;
+                self.child_nodes_inner(htree_node.data(), children, htree_levels - 1)?;
             }
         }
 
         Ok(())
     }
 
-    //TODO: improve performance (h-tree?)
     /// Find a node that is a child of the `parent_ptr` and is named `name`.
     /// Returns ENOENT if this node is not found.
     pub fn find_node(&mut self, parent_ptr: TreePtr<Node>, name: &str) -> Result<TreeData<Node>> {
         let parent = self.read_tree(parent_ptr)?;
-        let record_level = parent.data().record_level();
-        for block_offset in 0..(parent.data().size() / record_level.bytes()) {
-            let block_ptr = self.node_record_ptr(&parent, block_offset)?;
-            let dir_ptr: BlockPtr<DirList> = unsafe { block_ptr.cast() };
-            let dir = self.read_block(dir_ptr)?;
-            for entry in dir.data().entries.iter() {
-                let node_ptr = entry.node_ptr();
+        if !parent.data().level0[0].is_marker() {
+            return Err(Error::new(ENOENT));
+        }
 
-                // Skip empty entries
-                if node_ptr.is_null() {
-                    continue;
-                }
+        let htree_levels = parent.data().level0[0].addr().level().0;
 
-                // Return node pointer if name matches
-                if let Some(entry_name) = entry.name() {
-                    if entry_name == name {
-                        //TODO: Do not require read of node
-                        return self.read_tree(node_ptr);
-                    }
+        let root_htree_node = if htree_levels == 0 {
+            // Create a fake root to satisfy the recursive inner_find_node function signature
+            let mut fake_htree_node =
+                BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
+            let dir_ptr = parent.data().level0[1];
+            let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
+            fake_htree_node.data_mut().ptrs[0] = htree_ptr;
+            fake_htree_node
+        } else {
+            let root_htree_ptr: BlockPtr<HTreeNode<RecordRaw>> =
+                unsafe { parent.data().level0[1].cast() };
+            self.read_block(root_htree_ptr)?
+        };
+
+        let result = self.find_node_inner(
+            root_htree_node.data(),
+            name,
+            HTreeHash::from_name(name),
+            htree_levels.max(1),
+        )?;
+        result
+            .map(|(tree_node, _address)| tree_node)
+            .ok_or(Error::new(ENOENT))
+    }
+
+    fn find_node_inner(
+        &mut self,
+        parent_htree_node: &HTreeNode<RecordRaw>,
+        name: &str,
+        name_hash: HTreeHash,
+        htree_levels: usize,
+    ) -> Result<Option<(TreeData<Node>, BlockAddr)>> {
+        assert!(htree_levels > 0);
+        if htree_levels == 1 {
+            // If we are at the leaf level, search for the name
+            for (_, htree_ptr) in parent_htree_node.find_ptrs_for_read(name_hash) {
+                let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
+                let dir = self.read_block(dir_ptr)?;
+
+                if let Some(entry) = dir.data().find_entry(name) {
+                    let node_ptr = entry.node_ptr();
+                    return Ok(Some(self.read_tree_and_addr(node_ptr)?));
                 }
+            }
+            #[cfg(feature = "log")]
+            log::trace!("FIND_NODE: Node not found in leaf level 1");
+            return Ok(None);
+        }
+
+        // Otherwise, search the next level of the H-tree
+        for (_, entry) in parent_htree_node.find_ptrs_for_read(name_hash) {
+            let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
+            let htree_node = self.read_block(htree_ptr)?;
+            let result =
+                self.find_node_inner(htree_node.data(), name, name_hash, htree_levels - 1)?;
+            if let Some(node) = result {
+                return Ok(Some(node));
             }
         }
 
-        Err(Error::new(ENOENT))
+        #[cfg(feature = "log")]
+        log::trace!(
+            "FIND_NODE: Node not found in higher level: {}",
+            htree_levels
+        );
+        Ok(None)
     }
 
-    // TODO: improve performance (h-tree?)
     /// Create a new node in the tree with the given parameters.
     pub fn create_node(
         &mut self,
@@ -682,8 +798,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         node_ptr: TreePtr<Node>,
     ) -> Result<()> {
-        self.check_name(&parent_ptr, name)?;
-
         let mut parent = self.read_tree(parent_ptr)?;
         let mut node = self.read_tree(node_ptr)?;
 
@@ -691,153 +805,403 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let links = node.data().links();
         node.data_mut().set_links(links + 1);
 
-        let entry = DirEntry::new(node_ptr, name);
+        let dir_entry = DirEntry::new(node_ptr, name);
+        let dir_entry_htree_hash = HTreeHash::from_name(name);
+        let record_byte_size = parent.data().record_level().bytes();
 
-        let record_level = parent.data().record_level();
-        let record_end = parent.data().size() / record_level.bytes();
-        for record_offset in 0..record_end {
-            let mut dir_record_ptr = self.node_record_ptr(&parent, record_offset)?;
-            let mut dir_ptr: BlockPtr<DirList> = unsafe { dir_record_ptr.cast() };
-            let mut dir = self.read_block(dir_ptr)?;
+        // If this is a brand new directory, create the first DirList block
+        if !parent.data().level0[0].is_marker() {
+            let marker: BlockPtr<RecordRaw> = BlockPtr::marker(0);
+            assert!(marker.is_marker());
 
-            for old_entry in dir.data_mut().entries.iter_mut() {
-                if !old_entry.node_ptr().is_null() {
-                    continue;
-                }
+            parent.data_mut().level0[0] = BlockPtr::marker(0);
+            assert!(parent.data().level0[0].is_marker());
 
-                // Write our new entry into the first
-                // free slot in this directory
-                *old_entry = entry;
+            // Create the first DirList block
+            let dir = BlockData::<DirList>::empty(BlockAddr::default()).unwrap();
+            let dir_ptr = self.sync_block(dir)?;
 
-                // Write updated blocks
-                dir_ptr = self.sync_block(dir)?;
-                dir_record_ptr = unsafe { dir_ptr.cast() };
-                self.sync_node_record_ptr(&mut parent, record_offset, dir_record_ptr)?;
-                self.sync_trees(&[parent, node])?;
+            // Add the DirList directly to the parent directory
+            parent.data_mut().level0[1] = unsafe { dir_ptr.cast() };
+            let size = parent.data().size() + record_byte_size;
+            parent.data_mut().set_size(size);
+        }
 
-                return Ok(());
+        let mut htree_levels = parent.data().level0[0].addr().level().0;
+
+        let mut htree_root = if htree_levels == 0 {
+            // If we have no H-tree root, create a fake one to satisfy the recurisve inner_link_node function
+            let mut fake_htree_node =
+                BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
+            let dir_ptr = parent.data().level0[1];
+            let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
+            fake_htree_node.data_mut().ptrs[0] = htree_ptr;
+            fake_htree_node
+        } else {
+            // Otherwise get the real H-tree root
+            let htree_root_ptr: BlockPtr<HTreeNode<RecordRaw>> =
+                unsafe { parent.data().level0[1].cast() };
+            self.read_block(htree_root_ptr)?
+        };
+
+        let new_sibling = self.link_node_inner(
+            &mut parent,
+            htree_root.data_mut(),
+            dir_entry,
+            dir_entry_htree_hash,
+            htree_levels.max(1),
+        )?;
+
+        // If we used a fake root, and we grew beyond a single DirList block, we need to create a real root
+        if htree_levels == 0 && !htree_root.data().ptrs[1].is_null() {
+            htree_levels = 1;
+            parent.data_mut().level0[0] = BlockPtr::marker(1);
+            let size = parent.data().size() + record_byte_size;
+            parent.data_mut().set_size(size);
+        }
+
+        // If the H-tree root was split, create a new root to hold the old root as a sibling along with the new sibling
+        if let Some((sibling_htree_hash, unallocated_sibling)) = new_sibling {
+            assert!(htree_levels > 0);
+
+            // Prep the new sibling H-tree block to be added to the new root
+            let mut sibling =
+                BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
+            let _ = mem::replace(sibling.data_mut(), unallocated_sibling);
+            let sibling_block_ptr = self.sync_block(sibling)?;
+            let sibling_htree_ptr = HTreePtr::new(sibling_htree_hash, sibling_block_ptr);
+            let sibling_record_ptr: HTreePtr<RecordRaw> = unsafe { sibling_htree_ptr.cast() };
+
+            // Prep the existing H-tree root to become a sibling
+            let root_htree_hash = htree_root
+                .data()
+                .find_max_htree_hash()
+                .ok_or(Error::new(EIO))?;
+            let root_block_ptr = self.sync_block(htree_root)?;
+            let root_htree_ptr = HTreePtr::new(root_htree_hash, root_block_ptr);
+            let root_record_ptr: HTreePtr<RecordRaw> = unsafe { root_htree_ptr.cast() };
+
+            // Create the new root H-tree block
+            let mut new_root =
+                BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
+            new_root.data_mut().ptrs[0] = sibling_record_ptr;
+            let unexpected_sibling = htree::add_inner_node(new_root.data_mut(), root_record_ptr)?;
+            assert!(unexpected_sibling.is_none());
+            let new_root_ptr = self.sync_block(new_root)?;
+
+            // Add the parent node pointer, increase the level, and increase one block size per allocated block
+            parent.data_mut().level0[0] = BlockPtr::marker(htree_levels as u8 + 1);
+            parent.data_mut().level0[1] = unsafe { new_root_ptr.cast() };
+            let size = parent.data().size() + 2 * record_byte_size;
+            parent.data_mut().set_size(size);
+        } else if htree_levels > 0 {
+            // Update the parent node with the new root pointer
+            let root_block_ptr = self.sync_block(htree_root)?;
+            parent.data_mut().level0[1] = unsafe { root_block_ptr.cast() };
+        } else {
+            // Update the parent with the DirList block, ignoring the fake htree_root
+            parent.data_mut().level0[1] = htree_root.data().ptrs[0].ptr;
+        }
+        self.sync_trees(&[parent, node])?;
+        Ok(())
+    }
+
+    fn link_node_inner(
+        &mut self,
+        parent_dir_node: &mut TreeData<Node>,
+        parent_htree_node: &mut HTreeNode<RecordRaw>,
+        dir_entry: DirEntry,
+        dir_entry_htree_hash: HTreeHash,
+        htree_levels: usize,
+    ) -> Result<Option<(HTreeHash, HTreeNode<RecordRaw>)>> {
+        let record_byte_size = parent_dir_node.data().record_level().bytes();
+
+        // Find the entry to update
+        let mut htree_ptr = parent_htree_node.ptrs[0];
+        let mut htree_ptr_idx = 0;
+        for (idx, entry) in parent_htree_node.ptrs.iter().enumerate() {
+            if entry.is_null() {
+                break;
+            }
+            htree_ptr = *entry;
+            htree_ptr_idx = idx;
+            if htree_ptr.htree_hash >= dir_entry_htree_hash {
+                break;
             }
         }
 
-        // We couldn't find a free direntry slot, this directory is full.
-        // We now need to add a new dirlist block to the parent node,
-        // with `entry` as its first member.
+        // The recursion terminates by processing the last inner node
+        assert!(htree_levels > 0);
+        if htree_levels == 1 {
+            // Add the entry to the DirList block
+            let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
+            let mut dir = self.read_block(dir_ptr)?;
+            let unallocated_sibling =
+                htree::add_dir_entry(dir.data_mut(), &mut htree_ptr.htree_hash, dir_entry)?;
+            let dir_record_ptr = unsafe { self.sync_block(dir)?.cast() };
+            parent_htree_node.ptrs[htree_ptr_idx] =
+                HTreePtr::new(htree_ptr.htree_hash, dir_record_ptr);
 
-        let mut dir =
-            BlockData::<DirList>::empty(unsafe { self.allocate(BlockLevel::default())? }).unwrap();
-        dir.data_mut().entries[0] = entry;
-        let dir_ptr = unsafe { self.write_block(dir)? };
-        let dir_record_ptr = unsafe { dir_ptr.cast() };
+            if let Some((new_hash, new_unallocated_dir)) = unallocated_sibling {
+                // The DirList block was split, so we need to add it to the h-tree
+                let mut dir = BlockData::<DirList>::empty(BlockAddr::default()).unwrap();
+                let _ = mem::replace(dir.data_mut(), new_unallocated_dir);
+                let dir_ptr = self.sync_block(dir)?;
+                let dir_htree_ptr = HTreePtr::new(new_hash, dir_ptr);
+                let dir_record_ptr: HTreePtr<RecordRaw> = unsafe { dir_htree_ptr.cast() };
+                let size = parent_dir_node.data().size() + record_byte_size;
+                parent_dir_node.data_mut().set_size(size);
 
-        self.sync_node_record_ptr(&mut parent, record_end, dir_record_ptr)?;
-        parent
+                // We mutate the parent, but let the caller write the parent to disk
+                return htree::add_inner_node(parent_htree_node, dir_record_ptr);
+            }
+            return Ok(None);
+        }
+
+        // Recursively insert the entry into the next H-tree level
+        let htree_block_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { htree_ptr.ptr.cast() };
+        let mut htree_block = self.read_block(htree_block_ptr)?;
+        let unallocated_sibling = self.link_node_inner(
+            parent_dir_node,
+            htree_block.data_mut(),
+            dir_entry,
+            dir_entry_htree_hash,
+            htree_levels - 1,
+        )?;
+
+        // Write the muteated H-tree block back to disk and update the parent node's pointer
+        let htree_hash = htree_block.data().find_max_htree_hash().unwrap();
+        let htree_block_ptr = self.sync_block(htree_block)?;
+        let htree_record_ptr: BlockPtr<RecordRaw> = unsafe { htree_block_ptr.cast() };
+        parent_htree_node.ptrs[htree_ptr_idx] = HTreePtr::new(htree_hash, htree_record_ptr);
+
+        // If the inner insert function returns a new H-tree sibling block, write it and add it to the parent H-tree node
+        if let Some((new_hash, new_unallocated_sibling)) = unallocated_sibling {
+            let mut sibling =
+                BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
+            let _ = mem::replace(sibling.data_mut(), new_unallocated_sibling);
+            let sibling_ptr = self.sync_block(sibling)?;
+            let sibling_htree_ptr = HTreePtr::new(new_hash, sibling_ptr);
+            let sibling_record_ptr: HTreePtr<RecordRaw> = unsafe { sibling_htree_ptr.cast() };
+            let size = parent_dir_node.data().size() + record_byte_size;
+            parent_dir_node.data_mut().set_size(size);
+
+            // We mutate the parent, but let the caller write the parent to disk
+            return htree::add_inner_node(parent_htree_node, sibling_record_ptr);
+        }
+
+        Ok(None)
+    }
+
+    pub fn remove_node(&mut self, parent_ptr: TreePtr<Node>, name: &str, mode: u16) -> Result<()> {
+        #[cfg(feature = "log")]
+        log::debug!(
+            "REMOVE_NODE: name: {}, mode: {:x}, parent_ptr: {:?}",
+            name,
+            mode,
+            parent_ptr.indexes()
+        );
+
+        let mut parent = self.read_tree(parent_ptr)?;
+        if !parent.data().level0[0].is_marker() {
+            #[cfg(feature = "log")]
+            log::error!("REMOVE_NODE: Parent has no htree marker set (not a directory or empty)");
+            return Err(Error::new(ENOENT));
+        }
+
+        let htree_levels = parent.data().level0[0].addr().level().0;
+        let name_hash = HTreeHash::from_name(name);
+
+        let mut htree_root = if htree_levels == 0 {
+            // If we have no H-tree root, create a fake one to satisfy the recurisve inner_link_node function
+            let mut fake_htree_node =
+                BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
+            let dir_ptr = parent.data().level0[1];
+            let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
+            fake_htree_node.data_mut().ptrs[0] = htree_ptr;
+            fake_htree_node
+        } else {
+            // Otherwise get the real H-tree root
+            let htree_root_record_ptr = parent.data().level0[1];
+            let htree_root_ptr: BlockPtr<HTreeNode<RecordRaw>> =
+                unsafe { htree_root_record_ptr.cast() };
+            self.read_block(htree_root_ptr)?
+        };
+
+        // Read node and test type against requested type
+        // TODO: Do this check as part of the removal tree processing, and get rid of this extra find
+        let (mut node, node_addr) = self
+            .find_node_inner(htree_root.data(), name, name_hash, htree_levels.max(1))?
+            .ok_or(Error::new(ENOENT))?;
+
+        if mode & Node::MODE_TYPE == Node::MODE_DIR {
+            if !node.data().is_dir() {
+                // Found a file instead of a directory
+                return Err(Error::new(ENOTDIR));
+            } else if node.data().size() > 0 && node.data().links() == 1 {
+                // Tried to remove directory that still has entries
+                return Err(Error::new(ENOTEMPTY));
+            }
+            // The directory will be removed.
+        } else {
+            if node.data().is_dir() {
+                // Found a directory instead of file
+                return Err(Error::new(EISDIR));
+            }
+            // The non-directory entry will be removed.
+        }
+
+        let links = node.data().links();
+        let remove_node = if links > 1 {
+            node.data_mut().set_links(links - 1);
+            false
+        } else {
+            node.data_mut().set_links(0);
+            self.truncate_node_inner(&mut node, 0)?;
+            true
+        };
+
+        // Recursively remove the node from the H-tree, removing empty H-tree nodes
+        self.remove_node_inner(
+            &mut parent,
+            htree_root.data_mut(),
+            name,
+            name_hash,
+            htree_levels.max(1),
+        )?;
+
+        htree_root
             .data_mut()
-            .set_size((record_end + 1) * record_level.bytes());
-        self.sync_trees(&[parent, node])?;
+            .ptrs
+            .sort_by(|a, b| a.htree_hash.cmp(&b.htree_hash));
+        if htree_root.data().ptrs[0].is_null() {
+            // Dealocate the htree_root only if it was a real root node in the H-tree
+            if htree_levels > 0 {
+                unsafe {
+                    self.deallocate(htree_root.addr());
+                }
+                let record_byte_size = parent.data().record_level().bytes();
+                let size = parent.data().size() - record_byte_size;
+                parent.data_mut().set_size(size);
+            }
+            parent.data_mut().level0[0] = BlockPtr::default();
+            parent.data_mut().level0[1] = BlockPtr::default();
+        } else if htree_levels > 0 {
+            // Update the real htree_root and update the ptr in the parent
+            let htree_root_block_ptr = self.sync_block(htree_root)?;
+            parent.data_mut().level0[1] = unsafe { htree_root_block_ptr.cast() };
+        } else {
+            // The htree_root is fake, so update the parent with the ptr to the one and only directory list
+            let dir_list_block_ptr = htree_root.data().ptrs[0].ptr;
+            parent.data_mut().level0[1] = unsafe { dir_list_block_ptr.cast() };
+        }
+
+        if remove_node {
+            self.sync_tree(parent)?;
+            self.remove_tree(node.ptr())?;
+            unsafe {
+                self.deallocate(node_addr);
+            }
+        } else {
+            // Sync both parent and node at the same time
+            self.sync_trees(&[parent, node])?;
+        }
 
         Ok(())
     }
 
-    pub fn remove_node(&mut self, parent_ptr: TreePtr<Node>, name: &str, mode: u16) -> Result<()> {
-        let mut parent = self.read_tree(parent_ptr)?;
-        let record_level = parent.data().record_level();
-        let records = parent.data().size() / record_level.bytes();
-        for record_offset in 0..records {
-            let mut dir_record_ptr = self.node_record_ptr(&parent, record_offset)?;
-            let mut dir_ptr: BlockPtr<DirList> = unsafe { dir_record_ptr.cast() };
-            let mut dir = self.read_block(dir_ptr)?;
-            let mut node_opt = None;
-            for entry in dir.data_mut().entries.iter_mut() {
-                let node_ptr = entry.node_ptr();
+    fn remove_node_inner(
+        &mut self,
+        parent_dir_node: &mut TreeData<Node>,
+        parent_htree_node: &mut HTreeNode<RecordRaw>,
+        dir_entry_name: &str,
+        dir_entry_htree_hash: HTreeHash,
+        htree_levels: usize,
+    ) -> Result<()> {
+        let record_byte_size = parent_dir_node.data().record_level().bytes();
 
-                // Skip empty entries
-                if node_ptr.is_null() {
+        // Process every node that could hold the entry
+        assert!(htree_levels > 0);
+        let relevant_entry_indexes: Vec<usize> = parent_htree_node
+            .find_ptrs_for_read(dir_entry_htree_hash)
+            .map(|x| x.0)
+            .collect();
+
+        for entry_idx in relevant_entry_indexes {
+            let entry_ptr = parent_htree_node.ptrs[entry_idx];
+            if htree_levels == 1 {
+                let dir_ptr: BlockPtr<DirList> = unsafe { entry_ptr.ptr.cast() };
+                let mut dir_list = self.read_block(dir_ptr)?;
+
+                // If we don't find the entry to remove, continue to the next relevant node
+                if !dir_list.data_mut().remove_entry(dir_entry_name) {
                     continue;
                 }
 
-                // Check if name matches
-                if let Some(entry_name) = entry.name() {
-                    if entry_name == name {
-                        // Read node and test type against requested type
-                        let (node, addr) = self.read_tree_and_addr(node_ptr)?;
-                        if node.data().mode() & Node::MODE_TYPE == mode {
-                            if node.data().is_dir()
-                                && node.data().size() > 0
-                                && node.data().links() == 1
-                            {
-                                // Tried to remove directory that still has entries
-                                return Err(Error::new(ENOTEMPTY));
-                            }
-
-                            // Save node and clear entry
-                            node_opt = Some((entry.node_ptr(), node, addr));
-                            *entry = DirEntry::default();
-                            break;
-                        } else if node.data().is_dir() {
-                            // Found directory instead of requested type
-                            return Err(Error::new(EISDIR));
-                        } else {
-                            // Did not find directory when requested
-                            return Err(Error::new(ENOTDIR));
-                        }
-                    }
-                }
-            }
-
-            if let Some((node_tree_ptr, mut node, addr)) = node_opt {
-                let links = node.data().links();
-                let remove_node = if links > 1 {
-                    node.data_mut().set_links(links - 1);
-                    false
+                // Determine if the htree_hash needs to be updated
+                let new_htree_hash = if dir_entry_htree_hash == HTreeHash::from_name(dir_entry_name)
+                {
+                    HTreeHash::find_max(dir_list.data())
                 } else {
-                    node.data_mut().set_links(0);
-                    self.truncate_node_inner(&mut node, 0)?;
-                    true
+                    Some(dir_entry_htree_hash)
                 };
 
-                if record_offset == records - 1 && dir.data().is_empty() {
-                    let mut remove_record = record_offset;
-                    loop {
-                        // Remove empty parent record, if it is at the end
-                        self.remove_node_record_ptr(&mut parent, remove_record)?;
-                        parent
-                            .data_mut()
-                            .set_size(remove_record * record_level.bytes());
-
-                        // Keep going for any other empty records
-                        if remove_record > 0 {
-                            remove_record -= 1;
-                            dir_record_ptr = self.node_record_ptr(&parent, remove_record)?;
-                            dir_ptr = unsafe { dir_record_ptr.cast() };
-                            dir = self.read_block(dir_ptr)?;
-                            if dir.data().is_empty() {
-                                continue;
-                            }
-                        }
-                        break;
-                    }
+                if let Some(new_tree_hash) = new_htree_hash {
+                    // The entry_ptr needs to be updated in the parent_htree_node
+                    let dir_block_ptr = self.sync_block(dir_list)?;
+                    let dir_record_ptr: BlockPtr<RecordRaw> = unsafe { dir_block_ptr.cast() };
+                    parent_htree_node.ptrs[entry_idx] =
+                        HTreePtr::new(new_tree_hash, dir_record_ptr);
                 } else {
-                    // Save new parent record
-                    dir_ptr = self.sync_block(dir)?;
-                    dir_record_ptr = unsafe { dir_ptr.cast() };
-                    self.sync_node_record_ptr(&mut parent, record_offset, dir_record_ptr)?;
+                    // The entry needs to be removed from the parent_htree_noce
+                    parent_htree_node.ptrs[entry_idx] = HTreePtr::default();
+                    unsafe { self.deallocate(dir_list.addr()) };
+                    let size = parent_dir_node.data().size() - record_byte_size;
+                    parent_dir_node.data_mut().set_size(size);
+                }
+                return Ok(());
+            } else {
+                let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry_ptr.ptr.cast() };
+                let mut htree_node = self.read_block(htree_ptr)?;
+
+                let result = self.remove_node_inner(
+                    parent_dir_node,
+                    htree_node.data_mut(),
+                    dir_entry_name,
+                    dir_entry_htree_hash,
+                    htree_levels - 1,
+                );
+
+                // If the removal attempt resulted in ENOENT, iterate to look at the next relevant node
+                if result.is_err() && result.err().unwrap().errno == ENOENT {
+                    continue;
                 }
 
-                if remove_node {
-                    self.sync_tree(parent)?;
-                    self.remove_tree(node_tree_ptr)?;
-                    unsafe {
-                        self.deallocate(addr);
-                    }
-                } else {
-                    // Sync both parent and node at the same time
-                    self.sync_trees(&[parent, node])?;
-                }
+                // In case it is some other err
+                result?;
 
+                // Sort entries, moving them to the start of the ptrs array in H-tree hash order
+                htree_node
+                    .data_mut()
+                    .ptrs
+                    .sort_by(|a, b| a.htree_hash.cmp(&b.htree_hash));
+
+                if let Some(new_htree_hash) = htree_node.data().find_max_htree_hash() {
+                    // The entry_ptr needs to be updated in the parent_htree_node
+                    let htree_block_ptr = self.sync_block(htree_node)?;
+                    let htree_record_ptr: BlockPtr<RecordRaw> = unsafe { htree_block_ptr.cast() };
+                    parent_htree_node.ptrs[entry_idx] =
+                        HTreePtr::new(new_htree_hash, htree_record_ptr);
+                } else {
+                    // The htree_node is now empty, so remove it
+                    parent_htree_node.ptrs[entry_idx] = HTreePtr::default();
+                    unsafe { self.deallocate(htree_node.addr()) };
+                    let size = parent_dir_node.data().size() - record_byte_size;
+                    parent_dir_node.data_mut().set_size(size);
+                }
                 return Ok(());
             }
         }
-
         Err(Error::new(ENOENT))
     }
 
@@ -867,6 +1231,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         // Link original file to new name
+        self.check_name(&new_parent_ptr, new_name)?;
         self.link_node(new_parent_ptr, new_name, orig.ptr())?;
 
         // Remove original file
@@ -888,7 +1253,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
             return Err(Error::new(EINVAL));
         }
 
-        if self.find_node(parent_ptr.clone(), name).is_ok() {
+        // TODO: Can this be removed if link_node satisfies this check itself?
+        if self.find_node(*parent_ptr, name).is_ok() {
             return Err(Error::new(EEXIST));
         }
 
@@ -1175,9 +1541,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
             assert_eq!(offset, size);
         } else {
             // Deallocate records
-            for record in ((size + record_level.bytes() - 1) / record_level.bytes()
-                ..old_size / record_level.bytes())
-                .rev()
+            for record in
+                (size.div_ceil(record_level.bytes())..old_size / record_level.bytes()).rev()
             {
                 self.remove_node_record_ptr(node, record)?;
             }
@@ -1222,7 +1587,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let mut node_changed = false;
 
         let record_level = node.data().record_level();
-        let node_records = (node.data().size() + record_level.bytes() - 1) / record_level.bytes();
+        let node_records = node.data().size().div_ceil(record_level.bytes());
 
         let mut i = 0;
         while i < buf.len() {
