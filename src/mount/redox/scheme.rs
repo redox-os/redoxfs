@@ -191,6 +191,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         println!("FileScheme::handle_connect: id {}", id);
         let target_fd = self.other_scheme_fd_map.get(&id).ok_or(Error::new(EBADF))?;
         let mut buffer = [0u8; 100];
+        println!("fpath: target_fd {}", target_fd);
         let len = syscall::fpath(*target_fd, &mut buffer)?;
         let path = str::from_utf8(&buffer[..len]).map_err(|_| Error::new(EINVAL))?;
         println!(
