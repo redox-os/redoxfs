@@ -971,7 +971,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             let mode_type = stat.st_mode & Node::MODE_TYPE;
 
             let flags = 0o777;
-            let (node_ptr, node_id) = self.fs.tx(|tx| {
+            let (node_ptr) = self.fs.tx(|tx| {
                 if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
                     // If the file already exists, we cannot create it again
                     return Err(Error::new(EEXIST));
@@ -992,11 +992,12 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                     node.data_mut().set_gid(gid);
                     tx.sync_tree(node)?;
                 }
-                Ok(node_ptr, node_id)
+                Ok(node_ptr)
             })?;
 
             let file_path = format!("{parent_path}/{last_part}");
             println!("Creating file at path: {}", file_path);
+            let node_id = node_ptr.id();
 
             (
                 Box::new(FileResource::new(
