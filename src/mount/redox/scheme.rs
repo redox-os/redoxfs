@@ -172,7 +172,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         id: usize,
         payload: &mut [u8],
         metadata: &[u64],
-        ctx: &CallerCtx,
+        _ctx: &CallerCtx,
     ) -> Result<usize> {
         let Some(verb) = FsCall::try_from_raw(metadata[0] as usize) else {
             log::error!("call_inner: Invalid verb in metadata: {:?}", metadata);
@@ -1009,6 +1009,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         metadata: &[u64],
         ctx: &CallerCtx,
     ) -> Result<usize> {
+        println!("FileScheme::call: id {}, metadata {:?}", id, metadata);
         self.call_inner(id, payload, metadata, ctx)
     }
 }
