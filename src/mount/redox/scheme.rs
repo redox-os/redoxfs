@@ -484,6 +484,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 if child.data().is_symlink() {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
                         .and(Ok(()))
+                } else if child.data().is_sock() {
+                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_SOCK)
+                        .and(Ok(()))
                 } else {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
                         .and(Ok(()))
