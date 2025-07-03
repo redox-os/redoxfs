@@ -188,7 +188,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     }
 
     fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
-        println!("FileScheme::handle_connect: id {}", id);
+        println!("FileScheme::handle_connect: handle id {}", id);
         let target_fd = self.other_scheme_fd_map.get(&id).ok_or(Error::new(EBADF))?;
         let mut buffer = [0u8; 100];
         println!("fpath: target_fd {}", target_fd);
