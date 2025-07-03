@@ -190,6 +190,13 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
         println!("FileScheme::handle_connect: id {}", id);
         let target_fd = self.other_scheme_fd_map.get(&id).ok_or(Error::new(EBADF))?;
+        let buffer = [0u8; 100];
+        let len = syscall::fpath(*target_fd, &mut buffer)?;
+        let path = str::from_utf8(&buffer[..len]).map_err(|_| Error::new(EINVAL))?;
+        println!(
+            "FileScheme::handle_connect: target_fd {} path: {}",
+            target_fd, path
+        );
         let len = libredox::call::get_ott_to_socket(*target_fd, payload)?;
         println!(
             "FileScheme::handle_connect: fd {} -> {}, len {}",
