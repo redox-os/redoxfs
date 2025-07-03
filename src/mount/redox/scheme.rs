@@ -971,7 +971,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             let mode_type = stat.st_mode & Node::MODE_TYPE;
 
             let flags = 0o777;
-            let (node_ptr) = self.fs.tx(|tx| {
+            let node_ptr = self.fs.tx(|tx| {
                 if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
                     // If the file already exists, we cannot create it again
                     return Err(Error::new(EEXIST));
@@ -985,7 +985,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                     ctime.as_secs(),
                     ctime.subsec_nanos(),
                 )?;
-                let node_id = node.id();
                 let node_ptr = node.ptr();
                 if node.data().uid() != uid || node.data().gid() != gid {
                     node.data_mut().set_uid(uid);
