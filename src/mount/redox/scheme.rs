@@ -9,7 +9,7 @@ use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::dirent::DirentBuf;
 use syscall::error::{
     Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
-    EPERM, EXDEV,
+    EOPNOTSUP, EPERM, EXDEV,
 };
 use syscall::flag::{
     EventFlags, MapFlags, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
@@ -180,6 +180,10 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         };
         match verb {
             FsCall::Connect => self.handle_connect(id, &payload),
+            _ => {
+                log::error!("call_inner: Unsupported verb: {:?}", verb);
+                return Err(Error::new(EOPNOTSUPP));
+            }
         }
     }
 

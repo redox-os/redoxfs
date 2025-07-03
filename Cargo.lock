@@ -236,7 +236,7 @@ dependencies = [
 [[package]]
 name = "generic-rt"
 version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs#720e19bdfca2554c21bfd8e66f810ab669c4d879"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs#a19730161eafbf276167f0c105ee74b9d3f4456e"
 
 [[package]]
 name = "getrandom"
@@ -437,7 +437,7 @@ checksum = "436d45c2b6a5b159d43da708e62b25be3a4a3d5550d654b72216ade4c4bfd717"
 [[package]]
 name = "redox-rt"
 version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs#720e19bdfca2554c21bfd8e66f810ab669c4d879"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs#a19730161eafbf276167f0c105ee74b9d3f4456e"
 dependencies = [
  "bitflags",
  "generic-rt",
