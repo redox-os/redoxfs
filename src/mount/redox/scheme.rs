@@ -932,6 +932,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             log::error!("sendfd_inner: obtain_fd failed with error: {:?}", e);
             return Err(e);
         }
+        println!("Obtained new_fd: {}", new_fd);
 
         let parent_resource_ptr = parent_resource.node_ptr();
 
@@ -1008,6 +1009,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.files.insert(id, resource);
+        println!("FileScheme::on_sendfd: mapping {} to fd {}", id, new_fd);
         self.other_scheme_fd_map.insert(id, new_fd);
         Ok(new_fd)
     }
