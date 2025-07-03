@@ -189,7 +189,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
 
     fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
         let target_fd = self.other_scheme_fd_map.get(&id).ok_or(Error::new(EBADF))?;
-        let len = libredox::call::get_ott_to_socket(target_fd, payload)?;
+        let len = libredox::call::get_ott_to_socket(*target_fd, payload)?;
         println!(
             "FileScheme::handle_connect: fd {} -> {}, len {}",
             id, target_fd, len
