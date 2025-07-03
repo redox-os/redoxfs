@@ -175,25 +175,27 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<usize> {
         let Some(verb) = FsCall::try_from_raw(metadata[0] as usize) else {
-            log::error!("call_inner: Invalid verb in metadata: {:?}", metadata);
+            println!("call_inner: Invalid verb in metadata: {:?}", metadata);
             return Err(Error::new(EINVAL));
         };
         match verb {
             FsCall::Connect => self.handle_connect(id, payload),
             _ => {
-                log::error!("call_inner: Unsupported verb: {:?}", verb);
+                println!("call_inner: Unsupported verb: {:?}", verb);
                 return Err(Error::new(EOPNOTSUPP));
             }
         }
     }
 
     fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
+        println!("FileScheme::handle_connect: id {}", id);
         let target_fd = self.other_scheme_fd_map.get(&id).ok_or(Error::new(EBADF))?;
         let len = libredox::call::get_ott_to_socket(*target_fd, payload)?;
         println!(
             "FileScheme::handle_connect: fd {} -> {}, len {}",
             id, target_fd, len
         );
+        println!("FileScheme::handle_connect: One-Time Token: {:?}", payload);
         return Ok(len);
     }
 }
