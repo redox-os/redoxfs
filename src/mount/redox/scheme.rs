@@ -37,7 +37,7 @@ pub struct FileScheme<'sock, D: Disk> {
     fmap: super::resource::Fmaps,
 
     // Map of file id to other scheme's file descriptor.
-    other_scheme_fd_map: BTreeMap<usize, usize>,
+    other_scheme_fd_map: BTreeMap<u32, usize>,
 }
 
 impl<'sock, D: Disk> FileScheme<'sock, D> {
@@ -189,9 +189,15 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
 
     fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
         println!("FileScheme::handle_connect: handle id {}", id);
-        let target_fd = self.other_scheme_fd_map.get(&id).ok_or(Error::new(EBADF))?;
+        let resource = self.files.get(&id).ok_or(Error::new(EBADF))?;
+        let inode_id = resource.node_ptr().id();
+        println!("FileScheme::handle_connect: inode_id {}", inode_id);
+        let target_fd = self
+            .other_scheme_fd_map
+            .get(&inode_id)
+            .ok_or(Error::new(EBADF))?;
+        println!("FileScheme::handle_connect: fpath target_fd {}", target_fd);
         let mut buffer = [0u8; 100];
-        println!("fpath: target_fd {}", target_fd);
         let len = syscall::fpath(*target_fd, &mut buffer)?;
         let path = str::from_utf8(&buffer[..len]).map_err(|_| Error::new(EINVAL))?;
         println!(
@@ -959,7 +965,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             }
         }
 
-        let resource: Box<dyn Resource<D>> = if !last_part.is_empty() {
+        let (resource, node_id): (Box<dyn Resource<D>>, u32) = if !last_part.is_empty() {
             let mut stat = Stat::default();
             syscall::fstat(new_fd, &mut stat)?;
             let mode_type = stat.st_mode & Node::MODE_TYPE;
@@ -979,13 +985,14 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                     ctime.as_secs(),
                     ctime.subsec_nanos(),
                 )?;
+                let node_id = node.id();
                 let node_ptr = node.ptr();
                 if node.data().uid() != uid || node.data().gid() != gid {
                     node.data_mut().set_uid(uid);
                     node.data_mut().set_gid(gid);
                     tx.sync_tree(node)?;
                 }
-                Ok(node_ptr)
+                Ok(node_ptr, node_id)
             })?;
 
             let file_path = format!("{parent_path}/{last_part}");
@@ -1009,8 +1016,11 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.files.insert(id, resource);
-        println!("FileScheme::on_sendfd: mapping {} to fd {}", id, new_fd);
-        self.other_scheme_fd_map.insert(id, new_fd);
+        println!(
+            "FileScheme::on_sendfd: mapping {} to fd {}",
+            node_id, new_fd
+        );
+        self.other_scheme_fd_map.insert(node_id, new_fd);
         Ok(new_fd)
     }
 
