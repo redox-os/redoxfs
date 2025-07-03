@@ -9,7 +9,7 @@ use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::dirent::DirentBuf;
 use syscall::error::{
     Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
-    EOPNOTSUP, EPERM, EXDEV,
+    EOPNOTSUPP, EPERM, EXDEV,
 };
 use syscall::flag::{
     EventFlags, MapFlags, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
