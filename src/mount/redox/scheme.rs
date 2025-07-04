@@ -463,6 +463,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let gid = ctx.gid;
 
         // println!("Unlink '{}'", path);
+        println!("Unlink '{}'", path);
 
         let scheme_name = &self.name;
         self.fs.tx(|tx| {
@@ -493,6 +494,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
                         .and(Ok(()))
                 } else if child.data().is_sock() {
+                    println!("Unlinking socket: {}", child_name);
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SOCK)
                         .and(Ok(()))
                 } else {
