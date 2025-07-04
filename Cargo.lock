@@ -326,8 +326,8 @@ dependencies = [
 
 [[package]]
 name = "libredox"
-version = "0.1.6"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=get_ott_to_resource#bdd297ddd1f5d18b945405e7341ae231bc1a5d07"
+version = "0.1.5"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=get_proc_creds_cap#7255663740e5bff593152ff4eb27c6838c15fa6f"
 dependencies = [
  "bitflags",
  "libc",
@@ -510,7 +510,7 @@ dependencies = [
  "fuser",
  "getrandom 0.2.16",
  "libc",
- "libredox 0.1.6",
+ "libredox 0.1.5",
  "log",
  "range-tree",
  "redox-path",

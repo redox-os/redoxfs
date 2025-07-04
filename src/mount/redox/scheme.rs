@@ -192,7 +192,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             .other_scheme_fd_map
             .get(&inode_id)
             .ok_or(Error::new(EBADF))?;
-        let len = libredox::call::get_ott_to_socket(*target_fd, payload)?;
+        let len = libredox::call::get_socket_token(*target_fd, payload)?;
         return Ok(len);
     }
 }
