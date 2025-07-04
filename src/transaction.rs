@@ -738,7 +738,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    pub fn remove_node(&mut self, parent_ptr: TreePtr<Node>, name: &str, mode: u16) -> Result<()> {
+    pub fn remove_node(
+        &mut self,
+        parent_ptr: TreePtr<Node>,
+        name: &str,
+        mode: u16,
+    ) -> Result<Option<u32>> {
         let mut parent = self.read_tree(parent_ptr)?;
         let record_level = parent.data().record_level();
         let records = parent.data().size() / record_level.bytes();
@@ -787,6 +792,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
             if let Some((node_tree_ptr, mut node, addr)) = node_opt {
                 let links = node.data().links();
+                let node_id = node.id();
                 let remove_node = if links > 1 {
                     node.data_mut().set_links(links - 1);
                     println!("links > 1, not removing node: {}", name);
@@ -832,12 +838,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     unsafe {
                         self.deallocate(addr);
                     }
+                    return Ok(Some(node_id));
                 } else {
                     // Sync both parent and node at the same time
                     self.sync_trees(&[parent, node])?;
+                    return Ok(None);
                 }
-
-                return Ok(());
             }
         }
 

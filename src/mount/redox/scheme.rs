@@ -466,7 +466,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         println!("Unlink '{}'", path);
 
         let scheme_name = &self.name;
-        self.fs.tx(|tx| {
+        let unlink_result = self.fs.tx(|tx| {
             let mut nodes = Vec::new();
 
             let Some((child, child_name)) =
@@ -496,7 +496,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 } else if child.data().is_sock() {
                     println!("Unlinking socket: {}", child_name);
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SOCK)
-                        .and(Ok(()))
                 } else {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
                         .and(Ok(()))
@@ -504,7 +503,17 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             } else {
                 Err(Error::new(EISDIR))
             }
-        })
+        });
+        match unlink_result {
+            Ok(Some(node_id)) => {
+                println!("Unlinked socket with node_id: {}", node_id);
+
+                self.other_scheme_fd_map.remove(&node_id);
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /* Resource operations */
