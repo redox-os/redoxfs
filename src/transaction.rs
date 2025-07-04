@@ -1057,7 +1057,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         let links = node.data().links();
-        let node_id = node.data().id();
+        let node_id = node.id();
         let remove_node = if links > 1 {
             node.data_mut().set_links(links - 1);
             false
