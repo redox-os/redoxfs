@@ -788,19 +788,16 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     }
                 }
             }
-            println!("target path found: {}", name);
 
             if let Some((node_tree_ptr, mut node, addr)) = node_opt {
                 let links = node.data().links();
                 let node_id = node.id();
                 let remove_node = if links > 1 {
                     node.data_mut().set_links(links - 1);
-                    println!("links > 1, not removing node: {}", name);
                     false
                 } else {
                     node.data_mut().set_links(0);
                     self.truncate_node_inner(&mut node, 0)?;
-                    println!("links == 1, removing node: {}", name);
                     true
                 };
 

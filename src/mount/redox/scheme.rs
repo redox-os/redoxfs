@@ -175,33 +175,24 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<usize> {
         let Some(verb) = FsCall::try_from_raw(metadata[0] as usize) else {
-            println!("call_inner: Invalid verb in metadata: {:?}", metadata);
             return Err(Error::new(EINVAL));
         };
         match verb {
             FsCall::Connect => self.handle_connect(id, payload),
             _ => {
-                println!("call_inner: Unsupported verb: {:?}", verb);
                 return Err(Error::new(EOPNOTSUPP));
             }
         }
     }
 
     fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
-        println!("FileScheme::handle_connect: handle id {}", id);
         let resource = self.files.get(&id).ok_or(Error::new(EBADF))?;
         let inode_id = resource.node_ptr().id();
-        println!("FileScheme::handle_connect: inode_id {}", inode_id);
         let target_fd = self
             .other_scheme_fd_map
             .get(&inode_id)
             .ok_or(Error::new(EBADF))?;
         let len = libredox::call::get_ott_to_socket(*target_fd, payload)?;
-        println!(
-            "FileScheme::handle_connect: fd {} -> {}, len {}",
-            id, target_fd, len
-        );
-        println!("FileScheme::handle_connect: One-Time Token: {:?}", payload);
         return Ok(len);
     }
 }
@@ -217,7 +208,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         let path = url.trim_matches('/');
 
-        println!("Open '{}' {:X}", path, flags);
+        // println!("Open '{}' {:X}", path, flags);
 
         //TODO: try to move things into one transaction
         let scheme_name = &self.name;
@@ -463,7 +454,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let gid = ctx.gid;
 
         // println!("Unlink '{}'", path);
-        println!("Unlink '{}'", path);
 
         let scheme_name = &self.name;
         let unlink_result = self.fs.tx(|tx| {
@@ -493,7 +483,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 if child.data().is_symlink() {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
                 } else if child.data().is_sock() {
-                    println!("Unlinking socket: {}", child_name);
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SOCK)
                 } else {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
@@ -504,8 +493,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         });
         match unlink_result {
             Ok(Some(node_id)) => {
-                println!("Unlinked socket with node_id: {}", node_id);
-
                 if let Some(fd) = self.other_scheme_fd_map.remove(&node_id) {
                     syscall::close(fd)?;
                 }
@@ -923,8 +910,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn on_sendfd(&mut self, sendfd_request: &SendFdRequest) -> Result<usize> {
-        println!("Hello from FileScheme::on_sendfd");
-
         let ctx = sendfd_request.caller();
         let uid = ctx.uid;
         let gid = ctx.gid;
@@ -941,7 +926,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             log::error!("sendfd_inner: obtain_fd failed with error: {:?}", e);
             return Err(e);
         }
-        println!("Obtained new_fd: {}", new_fd);
 
         let parent_resource_ptr = parent_resource.node_ptr();
 
@@ -998,7 +982,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             })?;
 
             let file_path = format!("{parent_path}/{last_part}");
-            println!("Creating file at path: {}", file_path);
             let node_id = node_ptr.id();
 
             (
@@ -1022,10 +1005,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.files.insert(id, resource);
-        println!(
-            "FileScheme::on_sendfd: mapping {} to fd {}",
-            node_id, new_fd
-        );
         self.other_scheme_fd_map.insert(node_id, new_fd);
         Ok(new_fd)
     }
@@ -1037,7 +1016,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         metadata: &[u64],
         ctx: &CallerCtx,
     ) -> Result<usize> {
-        println!("FileScheme::call: id {}, metadata {:?}", id, metadata);
         self.call_inner(id, payload, metadata, ctx)
     }
 }
