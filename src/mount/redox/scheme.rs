@@ -506,7 +506,8 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             Ok(Some(node_id)) => {
                 println!("Unlinked socket with node_id: {}", node_id);
 
-                self.other_scheme_fd_map.remove(&node_id);
+                let fd = self.other_scheme_fd_map.remove(&node_id);
+                syscall::close(fd)?;
                 Ok(())
             }
             Ok(None) => Ok(()),
