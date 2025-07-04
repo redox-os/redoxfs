@@ -491,16 +491,16 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 Err(Error::new(EISDIR))
             }
         });
-        match unlink_result {
-            Ok(Some(node_id)) => {
-                if let Some(fd) = self.other_scheme_fd_map.remove(&node_id) {
-                    syscall::close(fd)?;
-                }
-                Ok(())
+
+        let Some(node_id) = unlink_result? else {
+            return Ok(());
+        };
+        if let Some(fd) = self.other_scheme_fd_map.remove(&node_id) {
+            if let Err(e) = syscall::close(fd) {
+                println!("[WARN] unlink: closing other scheme fd {}: {:?}", fd, e);
             }
-            Ok(None) => Ok(()),
-            Err(e) => Err(e),
         }
+        Ok(())
     }
 
     /* Resource operations */
@@ -923,7 +923,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         if let Err(e) =
             sendfd_request.obtain_fd(&self.socket, FobtainFdFlags::empty(), Err(&mut new_fd))
         {
-            log::error!("sendfd_inner: obtain_fd failed with error: {:?}", e);
             return Err(e);
         }
 
