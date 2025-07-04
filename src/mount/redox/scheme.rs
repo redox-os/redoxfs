@@ -492,13 +492,11 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
                 if child.data().is_symlink() {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
-                        .and(Ok(()))
                 } else if child.data().is_sock() {
                     println!("Unlinking socket: {}", child_name);
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SOCK)
                 } else {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
-                        .and(Ok(()))
                 }
             } else {
                 Err(Error::new(EISDIR))
