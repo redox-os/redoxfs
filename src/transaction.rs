@@ -993,7 +993,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(None)
     }
 
-    pub fn remove_node(&mut self, parent_ptr: TreePtr<Node>, name: &str, mode: u16) -> Result<()> {
+    pub fn remove_node(
+        &mut self,
+        parent_ptr: TreePtr<Node>,
+        name: &str,
+        mode: u16,
+    ) -> Result<Option<u32>> {
         #[cfg(feature = "log")]
         log::debug!(
             "REMOVE_NODE: name: {}, mode: {:x}, parent_ptr: {:?}",
@@ -1052,6 +1057,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         let links = node.data().links();
+        let node_id = node.id();
         let remove_node = if links > 1 {
             node.data_mut().set_links(links - 1);
             false
@@ -1102,12 +1108,13 @@ impl<'a, D: Disk> Transaction<'a, D> {
             unsafe {
                 self.deallocate(node_addr);
             }
+
+            Ok(Some(node_id))
         } else {
             // Sync both parent and node at the same time
             self.sync_trees(&[parent, node])?;
+            Ok(None)
         }
-
-        Ok(())
     }
 
     fn remove_node_inner(

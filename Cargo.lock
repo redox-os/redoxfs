@@ -234,6 +234,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "generic-rt"
+version = "0.1.0"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs#0387a2c40e34220449cd8d149c38522068b7e6b1"
+
+[[package]]
+name = "generic-rt"
+version = "0.1.0"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=socketcall-get-ott#6410e3a55646ef285ab14e257fc2344a5437f800"
+
+[[package]]
 name = "getrandom"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -254,6 +264,17 @@ dependencies = [
  "libc",
  "r-efi",
  "wasi 0.14.2+wasi-0.2.4",
+]
+
+[[package]]
+name = "goblin"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f27c1b4369c2cd341b5de549380158b105a04c331be5db9110eef7b6d2742134"
+dependencies = [
+ "log",
+ "plain",
+ "scroll",
 ]
 
 [[package]]
@@ -313,6 +334,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "libredox"
+version = "0.1.5"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=get_proc_creds_cap#7255663740e5bff593152ff4eb27c6838c15fa6f"
+dependencies = [
+ "bitflags",
+ "libc",
+ "redox-rt 0.1.0 (git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=socketcall-get-ott)",
+ "redox_syscall",
+]
+
+[[package]]
 name = "log"
 version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -357,6 +389,12 @@ name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
+
+[[package]]
+name = "plain"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "portable-atomic"
@@ -416,12 +454,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "436d45c2b6a5b159d43da708e62b25be3a4a3d5550d654b72216ade4c4bfd717"
 
 [[package]]
-name = "redox-scheme"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c00025a04f76fdcf72c15f10c7a12d9f2fdde93e539be9a57d5d632c4158a9e"
+name = "redox-rt"
+version = "0.1.0"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs#0387a2c40e34220449cd8d149c38522068b7e6b1"
 dependencies = [
- "libredox",
+ "bitflags",
+ "generic-rt 0.1.0 (git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs)",
+ "goblin",
+ "plain",
+ "redox_syscall",
+]
+
+[[package]]
+name = "redox-rt"
+version = "0.1.0"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=socketcall-get-ott#6410e3a55646ef285ab14e257fc2344a5437f800"
+dependencies = [
+ "bitflags",
+ "generic-rt 0.1.0 (git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=socketcall-get-ott)",
+ "goblin",
+ "plain",
+ "redox_syscall",
+]
+
+[[package]]
+name = "redox-scheme"
+version = "0.6.3"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-scheme.git?branch=open-o-nonblock#bff09f902f5912006c27afc0a6784009f56fde2c"
+dependencies = [
+ "libredox 0.1.4",
  "redox_syscall",
 ]
 
@@ -452,10 +513,11 @@ dependencies = [
  "fuser",
  "getrandom 0.2.16",
  "libc",
- "libredox",
+ "libredox 0.1.5",
  "log",
  "range-tree",
  "redox-path",
+ "redox-rt 0.1.0 (git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs)",
  "redox-scheme",
  "redox_syscall",
  "seahash",
@@ -493,6 +555,26 @@ name = "regex-syntax"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
+
+[[package]]
+name = "scroll"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04c565b551bafbef4157586fa379538366e4385d42082f255bfd96e4fe8519da"
+dependencies = [
+ "scroll_derive",
+]
+
+[[package]]
+name = "scroll_derive"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1db149f81d46d2deba7cd3c50772474707729550221e69588478ebf9ada425ae"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "seahash"
@@ -550,7 +632,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3669a69de26799d6321a5aa713f55f7e2cd37bd47be044b50f2acafc42c122bb"
 dependencies = [
  "libc",
- "libredox",
+ "libredox 0.1.4",
  "numtoa",
  "redox_termios",
 ]
