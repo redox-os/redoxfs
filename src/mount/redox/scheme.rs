@@ -987,7 +987,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let parent_node_ptr = parent_resource.node_ptr();
         let parent_path = parent_resource.path();
 
-        let mut url_buf = [0; 256];
+        // TODO: Move the PATH_MAX definition to a more appropriate place.
+        const PATH_MAX: usize = 4096;
+        let mut url_buf = [0u8; PATH_MAX];
         let url_len = syscall::fpath(new_fd, &mut url_buf)?;
         let url_str = str::from_utf8(&url_buf[..url_len]).map_err(|_| Error::new(EINVAL))?;
         let redox_path = RedoxPath::from_absolute(url_str).ok_or(Error::new(EINVAL))?;
