@@ -241,7 +241,7 @@ source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect
 [[package]]
 name = "generic-rt"
 version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=socketcall-get-ott#6410e3a55646ef285ab14e257fc2344a5437f800"
+source = "git+https://gitlab.redox-os.org/redox-os/relibc.git#518798f64e313a2d9067a52b6a3d5970c8208ae5"
 
 [[package]]
 name = "getrandom"
@@ -336,11 +336,11 @@ dependencies = [
 [[package]]
 name = "libredox"
 version = "0.1.5"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=get_proc_creds_cap#7255663740e5bff593152ff4eb27c6838c15fa6f"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=get_proc_creds_cap#738591709980df769fedf55e68a367e673546322"
 dependencies = [
  "bitflags",
  "libc",
- "redox-rt 0.1.0 (git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=socketcall-get-ott)",
+ "redox-rt 0.1.0 (git+https://gitlab.redox-os.org/redox-os/relibc.git)",
  "redox_syscall",
 ]
 
@@ -468,10 +468,10 @@ dependencies = [
 [[package]]
 name = "redox-rt"
 version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=socketcall-get-ott#6410e3a55646ef285ab14e257fc2344a5437f800"
+source = "git+https://gitlab.redox-os.org/redox-os/relibc.git#518798f64e313a2d9067a52b6a3d5970c8208ae5"
 dependencies = [
  "bitflags",
- "generic-rt 0.1.0 (git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=socketcall-get-ott)",
+ "generic-rt 0.1.0 (git+https://gitlab.redox-os.org/redox-os/relibc.git)",
  "goblin",
  "plain",
  "redox_syscall",
