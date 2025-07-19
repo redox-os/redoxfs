@@ -239,11 +239,6 @@ version = "0.1.0"
 source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs#0387a2c40e34220449cd8d149c38522068b7e6b1"
 
 [[package]]
-name = "generic-rt"
-version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/redox-os/relibc.git#518798f64e313a2d9067a52b6a3d5970c8208ae5"
-
-[[package]]
 name = "getrandom"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -336,11 +331,10 @@ dependencies = [
 [[package]]
 name = "libredox"
 version = "0.1.5"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=get_proc_creds_cap#738591709980df769fedf55e68a367e673546322"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=redox_get_socket_token#e48fb6858bedfda95ee14f099186660044d2dc0c"
 dependencies = [
  "bitflags",
  "libc",
- "redox-rt 0.1.0 (git+https://gitlab.redox-os.org/redox-os/relibc.git)",
  "redox_syscall",
 ]
 
@@ -459,19 +453,7 @@ version = "0.1.0"
 source = "git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs#0387a2c40e34220449cd8d149c38522068b7e6b1"
 dependencies = [
  "bitflags",
- "generic-rt 0.1.0 (git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs)",
- "goblin",
- "plain",
- "redox_syscall",
-]
-
-[[package]]
-name = "redox-rt"
-version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/redox-os/relibc.git#518798f64e313a2d9067a52b6a3d5970c8208ae5"
-dependencies = [
- "bitflags",
- "generic-rt 0.1.0 (git+https://gitlab.redox-os.org/redox-os/relibc.git)",
+ "generic-rt",
  "goblin",
  "plain",
  "redox_syscall",
@@ -517,7 +499,7 @@ dependencies = [
  "log",
  "range-tree",
  "redox-path",
- "redox-rt 0.1.0 (git+https://gitlab.redox-os.org/Ibuki.O/relibc.git?branch=bind-connect-redoxfs)",
+ "redox-rt",
  "redox-scheme",
  "redox_syscall",
  "seahash",
