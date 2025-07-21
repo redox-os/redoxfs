@@ -3,7 +3,6 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use redox_rt::protocol::FsCall;
 use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult, SendFdRequest, Socket};
 use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::dirent::DirentBuf;
@@ -17,6 +16,7 @@ use syscall::flag::{
 };
 use syscall::schemev2::NewFdFlags;
 use syscall::FobtainFdFlags;
+use syscall::FsCall;
 use syscall::MunmapFlags;
 
 use redox_path::{
