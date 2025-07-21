@@ -957,14 +957,13 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         let parent_resource_ptr = parent_resource.node_ptr();
 
-        let parent_node = self.fs.tx(|tx| tx.read_tree(parent_resource.node_ptr()))?;
+        let parent_node = self.fs.tx(|tx| tx.read_tree(parent_resource_ptr))?;
         if !parent_node.data().is_dir() {
             return Err(Error::new(ENOTDIR));
         }
         if !parent_node.data().permission(uid, gid, Node::MODE_WRITE) {
             return Err(Error::new(EACCES));
         }
-        let parent_node_ptr = parent_resource.node_ptr();
         let parent_path = parent_resource.path();
 
         // TODO: Move the PATH_MAX definition to a more appropriate place.
