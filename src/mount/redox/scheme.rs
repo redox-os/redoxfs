@@ -513,9 +513,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             return Ok(());
         };
         if let Some(fd) = self.other_scheme_fd_map.remove(&node_id) {
-            if let Err(e) = syscall::close(fd) {
-                println!("[WARN] unlink: closing other scheme fd {}: {:?}", fd, e);
-            }
+            let _ = syscall::close(fd);
         }
         Ok(())
     }
