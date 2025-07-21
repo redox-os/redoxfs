@@ -118,24 +118,6 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         Err(Error::new(ELOOP))
     }
 
-    fn call_inner(
-        &mut self,
-        id: usize,
-        payload: &mut [u8],
-        metadata: &[u64],
-        _ctx: &CallerCtx,
-    ) -> Result<usize> {
-        let Some(verb) = FsCall::try_from_raw(metadata[0] as usize) else {
-            return Err(Error::new(EINVAL));
-        };
-        match verb {
-            FsCall::Connect => self.handle_connect(id, payload),
-            _ => {
-                return Err(Error::new(EOPNOTSUPP));
-            }
-        }
-    }
-
     fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
         let resource = self.files.get(&id).ok_or(Error::new(EBADF))?;
         let inode_id = resource.node_ptr().id();
@@ -1066,6 +1048,12 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         metadata: &[u64],
         ctx: &CallerCtx,
     ) -> Result<usize> {
-        self.call_inner(id, payload, metadata, ctx)
+        let Some(verb) = FsCall::try_from_raw(metadata[0] as usize) else {
+            return Err(Error::new(EINVAL));
+        };
+        match verb {
+            FsCall::Connect => self.handle_connect(id, payload),
+            _ => Err(Error::new(EOPNOTSUPP)),
+        }
     }
 }
