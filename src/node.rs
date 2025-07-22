@@ -190,6 +190,7 @@ impl Node {
     pub const MODE_FILE: u16 = 0x8000;
     pub const MODE_DIR: u16 = 0x4000;
     pub const MODE_SYMLINK: u16 = 0xA000;
+    pub const MODE_SOCK: u16 = 0xC000;
 
     /// Mask for node permission bits
     pub const MODE_PERM: u16 = 0x0FFF;
@@ -308,6 +309,10 @@ impl Node {
 
     pub fn is_symlink(&self) -> bool {
         self.mode() & Self::MODE_TYPE == Self::MODE_SYMLINK
+    }
+
+    pub fn is_sock(&self) -> bool {
+        self.mode() & Self::MODE_SOCK == Self::MODE_SOCK
     }
 
     /// Tests if UID is the owner of that file, only true when uid=0 or when the UID stored in metadata is equal to the UID you supply
