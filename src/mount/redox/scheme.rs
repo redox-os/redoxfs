@@ -3,18 +3,20 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult};
+use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult, SendFdRequest, Socket};
 use syscall::data::{Stat, StatVfs, TimeSpec};
 use syscall::dirent::DirentBuf;
 use syscall::error::{
     Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
-    EPERM, EXDEV,
+    EOPNOTSUPP, EPERM, EXDEV,
 };
 use syscall::flag::{
     EventFlags, MapFlags, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
     O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
+use syscall::FobtainFdFlags;
+use syscall::FsCall;
 use syscall::MunmapFlags;
 
 use redox_path::{
@@ -26,22 +28,28 @@ use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
 use super::resource::{DirResource, Entry, FileResource, Resource};
 
-pub struct FileScheme<D: Disk> {
+pub struct FileScheme<'sock, D: Disk> {
     name: String,
     pub(crate) fs: FileSystem<D>,
+    socket: &'sock Socket,
     next_id: AtomicUsize,
     files: BTreeMap<usize, Box<dyn Resource<D>>>,
     fmap: super::resource::Fmaps,
+
+    // Map of file id to other scheme's file descriptor.
+    other_scheme_fd_map: BTreeMap<u32, usize>,
 }
 
-impl<D: Disk> FileScheme<D> {
-    pub fn new(name: String, fs: FileSystem<D>) -> FileScheme<D> {
+impl<'sock, D: Disk> FileScheme<'sock, D> {
+    pub fn new(name: String, fs: FileSystem<D>, socket: &'sock Socket) -> FileScheme<'sock, D> {
         FileScheme {
             name,
             fs,
+            socket,
             next_id: AtomicUsize::new(1),
             files: BTreeMap::new(),
             fmap: BTreeMap::new(),
+            other_scheme_fd_map: BTreeMap::new(),
         }
     }
 
@@ -108,6 +116,17 @@ impl<D: Disk> FileScheme<D> {
             }
         }
         Err(Error::new(ELOOP))
+    }
+
+    fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
+        let resource = self.files.get(&id).ok_or(Error::new(EBADF))?;
+        let inode_id = resource.node_ptr().id();
+        let target_fd = self
+            .other_scheme_fd_map
+            .get(&inode_id)
+            .ok_or(Error::new(EBADF))?;
+        let len = libredox::call::get_socket_token(*target_fd, payload)?;
+        return Ok(len);
     }
 
     fn open_internal(
@@ -383,7 +402,7 @@ fn dirname(path: &str) -> Option<String> {
     canonicalize_using_cwd(Some(path), "..")
 }
 
-impl<D: Disk> SchemeSync for FileScheme<D> {
+impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
         self.open_internal(TreePtr::root(), url, flags, ctx)
     }
@@ -454,7 +473,7 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
         // println!("Unlink '{}'", path);
 
         let scheme_name = &self.name;
-        self.fs.tx(|tx| {
+        let unlink_result = self.fs.tx(|tx| {
             let mut nodes = Vec::new();
 
             let Some((child, child_name)) =
@@ -480,15 +499,23 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
                 if child.data().is_symlink() {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
-                        .and(Ok(()))
+                } else if child.data().is_sock() {
+                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_SOCK)
                 } else {
                     tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
-                        .and(Ok(()))
                 }
             } else {
                 Err(Error::new(EISDIR))
             }
-        })
+        });
+
+        let Some(node_id) = unlink_result? else {
+            return Ok(());
+        };
+        if let Some(fd) = self.other_scheme_fd_map.remove(&node_id) {
+            let _ = syscall::close(fd);
+        }
+        Ok(())
     }
 
     /* Resource operations */
@@ -909,5 +936,121 @@ impl<D: Disk> SchemeSync for FileScheme<D> {
 
         // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
         // particular inode, remove that inode here.
+    }
+
+    fn on_sendfd(&mut self, sendfd_request: &SendFdRequest) -> Result<usize> {
+        let ctx = sendfd_request.caller();
+        let uid = ctx.uid;
+        let gid = ctx.gid;
+
+        let parent_resource = self
+            .files
+            .get(&sendfd_request.id())
+            .ok_or(Error::new(EBADF))?;
+
+        let mut new_fd = usize::MAX;
+        if let Err(e) =
+            sendfd_request.obtain_fd(&self.socket, FobtainFdFlags::empty(), Err(&mut new_fd))
+        {
+            return Err(e);
+        }
+
+        let parent_resource_ptr = parent_resource.node_ptr();
+
+        let parent_node = self.fs.tx(|tx| tx.read_tree(parent_resource_ptr))?;
+        if !parent_node.data().is_dir() {
+            return Err(Error::new(ENOTDIR));
+        }
+        if !parent_node.data().permission(uid, gid, Node::MODE_WRITE) {
+            return Err(Error::new(EACCES));
+        }
+        let parent_path = parent_resource.path();
+
+        // TODO: Move the PATH_MAX definition to a more appropriate place.
+        const PATH_MAX: usize = 4096;
+        let mut url_buf = [0u8; PATH_MAX];
+        let url_len = syscall::fpath(new_fd, &mut url_buf)?;
+        let url_str = str::from_utf8(&url_buf[..url_len]).map_err(|_| Error::new(EINVAL))?;
+        let redox_path = RedoxPath::from_absolute(url_str).ok_or(Error::new(EINVAL))?;
+        let (_, path) = redox_path.as_parts().ok_or(Error::new(EINVAL))?;
+
+        let mut last_part = String::new();
+        for part in path.as_ref().split('/') {
+            if !part.is_empty() {
+                last_part = part.to_string();
+            }
+        }
+
+        let (resource, node_id): (Box<dyn Resource<D>>, u32) = if !last_part.is_empty() {
+            let mut stat = Stat::default();
+            syscall::fstat(new_fd, &mut stat)?;
+            let mode_type = stat.st_mode & Node::MODE_TYPE;
+
+            let flags = 0o777;
+            let node_ptr = self.fs.tx(|tx| {
+                if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
+                    // If the file already exists, we cannot create it again
+                    return Err(Error::new(EEXIST));
+                }
+
+                let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                let mut node = tx.create_node(
+                    parent_resource_ptr,
+                    &last_part,
+                    mode_type | (flags as u16 & Node::MODE_PERM),
+                    ctime.as_secs(),
+                    ctime.subsec_nanos(),
+                )?;
+                let node_ptr = node.ptr();
+                if node.data().uid() != uid || node.data().gid() != gid {
+                    node.data_mut().set_uid(uid);
+                    node.data_mut().set_gid(gid);
+                    tx.sync_tree(node)?;
+                }
+                Ok(node_ptr)
+            })?;
+
+            let file_path = format!("{parent_path}/{last_part}");
+            let node_id = node_ptr.id();
+
+            (
+                Box::new(FileResource::new(
+                    file_path,
+                    Some(parent_resource_ptr),
+                    node_ptr,
+                    flags,
+                    uid,
+                )),
+                node_id,
+            )
+        } else {
+            return Err(Error::new(EINVAL));
+        };
+
+        self.fmap
+            .entry(resource.node_ptr().id())
+            .or_insert_with(Default::default)
+            .open_fds += 1;
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.files.insert(id, resource);
+        self.other_scheme_fd_map.insert(node_id, new_fd);
+        Ok(new_fd)
+    }
+
+    fn call(
+        &mut self,
+        id: usize,
+        payload: &mut [u8],
+        metadata: &[u64],
+        ctx: &CallerCtx,
+    ) -> Result<usize> {
+        let Some(verb) = FsCall::try_from_raw(metadata[0] as usize) else {
+            return Err(Error::new(EINVAL));
+        };
+        match verb {
+            FsCall::Connect => self.handle_connect(id, payload),
+            _ => Err(Error::new(EOPNOTSUPP)),
+        }
     }
 }
