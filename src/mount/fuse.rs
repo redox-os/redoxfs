@@ -434,7 +434,7 @@ impl<D: Disk> Filesystem for Fuse<'_, D> {
             .fs
             .tx(|tx| tx.remove_node(parent_ptr, name.to_str().unwrap(), Node::MODE_DIR))
         {
-            Ok(()) => {
+            Ok(_) => {
                 reply.ok();
             }
             Err(err) => {
@@ -449,7 +449,7 @@ impl<D: Disk> Filesystem for Fuse<'_, D> {
             .fs
             .tx(|tx| tx.remove_node(parent_ptr, name.to_str().unwrap(), Node::MODE_FILE))
         {
-            Ok(()) => {
+            Ok(_) => {
                 reply.ok();
             }
             Err(err) => {
