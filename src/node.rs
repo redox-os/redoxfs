@@ -176,8 +176,7 @@ impl Default for Node {
             gid: 0.into(),
             links: 0.into(),
             size: 0.into(),
-            // Node counts as a block.
-            //TODO: track all the blocks in indirect levels
+            // This node counts as a block
             blocks: 1.into(),
             ctime: 0.into(),
             ctime_nsec: 0.into(),
