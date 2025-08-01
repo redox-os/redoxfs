@@ -368,6 +368,7 @@ impl fmt::Debug for Node {
         let gid = self.gid;
         let links = self.links;
         let size = self.size;
+        let blocks = self.blocks;
         let ctime = self.ctime;
         let ctime_nsec = self.ctime_nsec;
         let mtime = self.mtime;
@@ -380,6 +381,7 @@ impl fmt::Debug for Node {
             .field("gid", &gid)
             .field("links", &links)
             .field("size", &size)
+            .field("blocks", &blocks)
             .field("ctime", &ctime)
             .field("ctime_nsec", &ctime_nsec)
             .field("mtime", &mtime)
