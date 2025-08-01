@@ -1650,7 +1650,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 let decomp_level = record.addr().level();
                 if decomp_level.0 > 0 {
                     // Maximum compressed record size is 64 KiB
-                    let mut comp = vec![0; 64 * 1024];
+                    let mut comp = alloc::vec![0; 64 * 1024];
                     // First two bytes store compressed data length
                     match lz4_flex::compress_into(record.data(), &mut comp[2..]) {
                         Ok(comp_len) => {
