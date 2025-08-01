@@ -191,11 +191,11 @@ impl AllocEntry {
     }
 
     pub fn allocate(addr: BlockAddr) -> Self {
-        Self::new(addr.index(), -addr.level().blocks())
+        Self::new(addr.index(), -addr.level().blocks::<i64>())
     }
 
     pub fn deallocate(addr: BlockAddr) -> Self {
-        Self::new(addr.index(), addr.level().blocks())
+        Self::new(addr.index(), addr.level().blocks::<i64>())
     }
 
     pub fn index(&self) -> u64 {
@@ -282,17 +282,17 @@ fn alloc_node_size_test() {
 fn allocator_test() {
     let mut alloc = Allocator::default();
 
-    assert_eq!(alloc.allocate(BlockLevel::default()), None);
+    assert_eq!(alloc.allocate(BlockMeta::default()), None);
 
-    alloc.deallocate(unsafe { BlockAddr::new(1, BlockLevel::default()) });
+    alloc.deallocate(unsafe { BlockAddr::new(1, BlockMeta::default()) });
     assert_eq!(
-        alloc.allocate(BlockLevel::default()),
-        Some(unsafe { BlockAddr::new(1, BlockLevel::default()) })
+        alloc.allocate(BlockMeta::default()),
+        Some(unsafe { BlockAddr::new(1, BlockMeta::default()) })
     );
-    assert_eq!(alloc.allocate(BlockLevel::default()), None);
+    assert_eq!(alloc.allocate(BlockMeta::default()), None);
 
     for addr in 1023..2048 {
-        alloc.deallocate(unsafe { BlockAddr::new(addr, BlockLevel::default()) });
+        alloc.deallocate(unsafe { BlockAddr::new(addr, BlockMeta::default()) });
     }
 
     assert_eq!(alloc.levels.len(), 11);
@@ -308,11 +308,11 @@ fn allocator_test() {
 
     for addr in 1023..2048 {
         assert_eq!(
-            alloc.allocate(BlockLevel::default()),
-            Some(unsafe { BlockAddr::new(addr, BlockLevel::default()) })
+            alloc.allocate(BlockMeta::default()),
+            Some(unsafe { BlockAddr::new(addr, BlockMeta::default()) })
         );
     }
-    assert_eq!(alloc.allocate(BlockLevel::default()), None);
+    assert_eq!(alloc.allocate(BlockMeta::default()), None);
 
     assert_eq!(alloc.levels.len(), 11);
     for level in 0..alloc.levels.len() {

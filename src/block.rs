@@ -125,8 +125,8 @@ impl BlockLevel {
 
     /// The number of [`BLOCK_SIZE`] blocks (i.e, level 0 blocks)
     /// in a block of this level
-    pub fn blocks(self) -> i64 {
-        1 << self.0
+    pub fn blocks<T: From<u32>>(self) -> T {
+        T::from(1u32 << self.0)
     }
 
     /// The number of bytes in a block of this level

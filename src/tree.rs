@@ -224,7 +224,7 @@ impl<T> Default for TreePtr<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BlockAddr, BlockData};
+    use crate::{BlockAddr, BlockData, BlockMeta};
 
     use super::*;
 
@@ -257,7 +257,7 @@ mod tests {
     }
 
     fn mock_block(addr: u64) -> BlockPtr<BlockRaw> {
-        let block_addr = unsafe { BlockAddr::new(addr, BlockLevel::default()) };
+        let block_addr = unsafe { BlockAddr::new(addr, BlockMeta::default()) };
         BlockData::empty(block_addr).unwrap().create_ptr()
     }
 

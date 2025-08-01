@@ -84,7 +84,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let mut found = false;
         for i in (0..self.allocator_log.len()).rev() {
             let entry = self.allocator_log[i];
-            if entry.index() == addr.index() && entry.count() == -addr.level().blocks() {
+            if entry.index() == addr.index() && entry.count() == -addr.level().blocks::<i64>() {
                 found = true;
                 self.allocator_log.remove(i);
                 break;
@@ -100,12 +100,42 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
     }
 
-    fn deallocate_block<T: BlockTrait>(&mut self, ptr: BlockPtr<T>) {
-        if !ptr.is_null() {
-            unsafe {
-                self.deallocate(ptr.addr());
-            }
+    unsafe fn node_allocate(
+        &mut self,
+        node: &mut TreeData<Node>,
+        meta: BlockMeta,
+    ) -> Result<BlockAddr> {
+        let addr = self.allocate(meta)?;
+        let blocks = node.data().blocks();
+        node.data_mut().set_blocks(
+            blocks
+                .checked_add(addr.level().blocks())
+                .expect("node allocated too many blocks"),
+        );
+        Ok(addr)
+    }
+
+    unsafe fn node_deallocate(&mut self, node: &mut TreeData<Node>, addr: BlockAddr) -> bool {
+        if !addr.is_null() {
+            self.deallocate(addr);
+            let blocks = node.data().blocks();
+            node.data_mut().set_blocks(
+                blocks
+                    .checked_sub(addr.level().blocks())
+                    .expect("node deallocated too many blocks"),
+            );
+            true
+        } else {
+            false
         }
+    }
+
+    unsafe fn node_deallocate_block<T: BlockTrait>(
+        &mut self,
+        node: &mut TreeData<Node>,
+        ptr: BlockPtr<T>,
+    ) -> bool {
+        self.node_deallocate(node, ptr.addr())
     }
 
     /// Drain `self.allocator_log` and `self.deallocate`,
@@ -1343,13 +1373,15 @@ impl<'a, D: Disk> Transaction<'a, D> {
         unsafe {
             match NodeLevel::new(record_offset).ok_or(Error::new(ERANGE))? {
                 NodeLevel::L0(i0) => {
-                    self.deallocate_block(node.data_mut().level0[i0].clear());
+                    let ptr = node.data_mut().level0[i0].clear();
+                    self.node_deallocate_block(node, ptr);
                 }
                 NodeLevel::L1(i1, i0) => {
                     let mut l0 = self.read_block_or_empty(node.data().level1[i1])?;
-                    self.deallocate_block(l0.data_mut().ptrs[i0].clear());
+                    self.node_deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
-                        self.deallocate_block(node.data_mut().level1[i1].clear());
+                        let ptr = node.data_mut().level1[i1].clear();
+                        self.node_deallocate_block(node, ptr);
                     } else {
                         node.data_mut().level1[i1] = self.sync_block(l0)?;
                     }
@@ -1357,14 +1389,15 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 NodeLevel::L2(i2, i1, i0) => {
                     let mut l1 = self.read_block_or_empty(node.data().level2[i2])?;
                     let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
-                    self.deallocate_block(l0.data_mut().ptrs[i0].clear());
+                    self.node_deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
-                        self.deallocate_block(l1.data_mut().ptrs[i1].clear());
+                        self.node_deallocate_block(node, l1.data_mut().ptrs[i1].clear());
                     } else {
                         l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
                     }
                     if l1.data().is_empty() {
-                        self.deallocate_block(node.data_mut().level2[i2].clear());
+                        let ptr = node.data_mut().level2[i2].clear();
+                        self.node_deallocate_block(node, ptr);
                     } else {
                         node.data_mut().level2[i2] = self.sync_block(l1)?;
                     }
@@ -1373,19 +1406,20 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     let mut l2 = self.read_block_or_empty(node.data().level3[i3])?;
                     let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
-                    self.deallocate_block(l0.data_mut().ptrs[i0].clear());
+                    self.node_deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
-                        self.deallocate_block(l1.data_mut().ptrs[i1].clear());
+                        self.node_deallocate_block(node, l1.data_mut().ptrs[i1].clear());
                     } else {
                         l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
                     }
                     if l1.data().is_empty() {
-                        self.deallocate_block(l2.data_mut().ptrs[i2].clear());
+                        self.node_deallocate_block(node, l2.data_mut().ptrs[i2].clear());
                     } else {
                         l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
                     }
                     if l2.data().is_empty() {
-                        self.deallocate_block(node.data_mut().level3[i3].clear());
+                        let ptr = node.data_mut().level3[i3].clear();
+                        self.node_deallocate_block(node, ptr);
                     } else {
                         node.data_mut().level3[i3] = self.sync_block(l2)?;
                     }
@@ -1395,24 +1429,25 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
                     let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
-                    self.deallocate_block(l0.data_mut().ptrs[i0].clear());
+                    self.node_deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
-                        self.deallocate_block(l1.data_mut().ptrs[i1].clear());
+                        self.node_deallocate_block(node, l1.data_mut().ptrs[i1].clear());
                     } else {
                         l1.data_mut().ptrs[i1] = self.sync_block(l0)?;
                     }
                     if l1.data().is_empty() {
-                        self.deallocate_block(l2.data_mut().ptrs[i2].clear());
+                        self.node_deallocate_block(node, l2.data_mut().ptrs[i2].clear());
                     } else {
                         l2.data_mut().ptrs[i2] = self.sync_block(l1)?;
                     }
                     if l2.data().is_empty() {
-                        self.deallocate_block(l3.data_mut().ptrs[i3].clear());
+                        self.node_deallocate_block(node, l3.data_mut().ptrs[i3].clear());
                     } else {
                         l3.data_mut().ptrs[i3] = self.sync_block(l2)?;
                     }
                     if l3.data().is_empty() {
-                        self.deallocate_block(node.data_mut().level4[i4].clear());
+                        let ptr = node.data_mut().level4[i4].clear();
+                        self.node_deallocate_block(node, ptr);
                     } else {
                         node.data_mut().level4[i4] = self.sync_block(l3)?;
                     }
@@ -1676,8 +1711,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
 
                 // CoW record using its current level
-                let mut old_addr =
-                    unsafe { record.swap_addr(self.allocate(record.addr().meta())?) };
+                let new_addr = unsafe { self.node_allocate(node, record.addr().meta())? };
+                let mut old_addr = record.swap_addr(new_addr);
 
                 // If the record was resized we need to dealloc the original ptr
                 if old_addr.is_null() {
@@ -1685,6 +1720,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
 
                 // Write record to disk
+                //TODO: deallocate new_addr on failure?
                 record_ptr = unsafe { self.write_block(record)? };
 
                 // Update record pointer
@@ -1692,8 +1728,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 node_changed = true;
 
                 // Deallocate old record
-                if !old_addr.is_null() {
-                    unsafe { self.deallocate(old_addr) };
+                unsafe {
+                    self.node_deallocate(node, old_addr);
                 }
             }
 
