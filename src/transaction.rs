@@ -395,9 +395,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
             };
             let comp_len = record.data()[0] as usize | ((record.data()[1] as usize) << 8);
-            if let Err(err) =
-                lz4_flex::decompress_into(&record.data()[2..(comp_len + 2)], &mut decomp)
-            {
+            let total_len = comp_len + 2;
+            if let Err(err) = lz4_flex::decompress_into(&record.data()[2..total_len], &mut decomp) {
                 #[cfg(feature = "log")]
                 log::error!("READ_RECORD: FAILED TO DECOMPRESS: {:?}", err);
                 return Err(Error::new(EIO));
@@ -1684,24 +1683,29 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 // Handle record compression, if record is larger than one block
                 let decomp_level = record.addr().level();
                 if decomp_level.0 > 0 {
-                    // Maximum compressed record size is 64 KiB
-                    let mut comp = alloc::vec![0; 64 * 1024];
-                    // First two bytes store compressed data length
-                    match lz4_flex::compress_into(record.data(), &mut comp[2..]) {
+                    match lz4_flex::compress_into(record.data(), &mut self.fs.compress_cache) {
                         Ok(comp_len) => {
-                            comp[0] = comp_len as u8;
-                            comp[1] = (comp_len >> 8) as u8;
-                            let comp_level = BlockLevel::for_bytes((comp_len as u64) + 2);
-                            comp.truncate(comp_level.bytes() as usize);
-                            // Replace record with compressed record, if it saves space
-                            if comp_level < decomp_level {
-                                record = BlockData::new(
-                                    BlockAddr::null(BlockMeta::new_compressed(
-                                        comp_level,
-                                        decomp_level,
-                                    )),
-                                    RecordRaw(comp.into_boxed_slice()),
-                                );
+                            let total_len = comp_len + 2;
+                            // Maximum compressed record size is 64 KiB
+                            if total_len <= 64 * 1024 {
+                                let comp_level = BlockLevel::for_bytes(total_len as u64);
+                                // Replace record with compressed record, if it saves space
+                                if comp_level < decomp_level {
+                                    if let Some(mut comp) = RecordRaw::empty(comp_level) {
+                                        // First two bytes store compressed data length
+                                        comp[0] = comp_len as u8;
+                                        comp[1] = (comp_len >> 8) as u8;
+                                        comp[2..total_len]
+                                            .copy_from_slice(&self.fs.compress_cache[..comp_len]);
+                                        record = BlockData::new(
+                                            BlockAddr::null(BlockMeta::new_compressed(
+                                                comp_level,
+                                                decomp_level,
+                                            )),
+                                            comp,
+                                        );
+                                    }
+                                }
                             }
                         }
                         Err(_err) => {

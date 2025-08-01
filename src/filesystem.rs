@@ -6,8 +6,13 @@ use xts_mode::{get_tweak_default, Xts128};
 #[cfg(feature = "std")]
 use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt, TreeList};
 use crate::{
-    Allocator, BlockAddr, BlockLevel, BlockMeta, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING,
+    Allocator, BlockAddr, BlockLevel, BlockMeta, Disk, Header, Transaction, BLOCK_SIZE,
+    HEADER_RING, RECORD_SIZE,
 };
+
+fn compress_cache() -> Box<[u8]> {
+    vec![0; lz4_flex::block::get_maximum_output_size(RECORD_SIZE as usize)].into_boxed_slice()
+}
 
 /// A file system
 pub struct FileSystem<D: Disk> {
@@ -19,6 +24,7 @@ pub struct FileSystem<D: Disk> {
     pub header: Header,
     pub(crate) allocator: Allocator,
     pub(crate) cipher_opt: Option<Xts128<Aes128>>,
+    pub(crate) compress_cache: Box<[u8]>,
 }
 
 impl<D: Disk> FileSystem<D> {
@@ -83,6 +89,7 @@ impl<D: Disk> FileSystem<D> {
                 header,
                 allocator: Allocator::default(),
                 cipher_opt,
+                compress_cache: compress_cache(),
             };
 
             unsafe { fs.reset_allocator()? };
@@ -162,6 +169,7 @@ impl<D: Disk> FileSystem<D> {
             header,
             allocator: Allocator::default(),
             cipher_opt,
+            compress_cache: compress_cache(),
         };
 
         // Write header generation zero
