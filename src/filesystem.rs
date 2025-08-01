@@ -5,7 +5,9 @@ use xts_mode::{get_tweak_default, Xts128};
 
 #[cfg(feature = "std")]
 use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt, TreeList};
-use crate::{Allocator, BlockAddr, BlockLevel, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING};
+use crate::{
+    Allocator, BlockAddr, BlockLevel, BlockMeta, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING,
+};
 
 /// A file system
 pub struct FileSystem<D: Disk> {
@@ -174,12 +176,12 @@ impl<D: Disk> FileSystem<D> {
         // Set tree and alloc pointers and write header generation one
         fs.tx(|tx| unsafe {
             let tree = BlockData::new(
-                BlockAddr::new(HEADER_RING + 1, BlockLevel::default()),
+                BlockAddr::new(HEADER_RING + 1, BlockMeta::default()),
                 TreeList::empty(BlockLevel::default()).unwrap(),
             );
 
             let mut alloc = BlockData::new(
-                BlockAddr::new(HEADER_RING + 2, BlockLevel::default()),
+                BlockAddr::new(HEADER_RING + 2, BlockMeta::default()),
                 AllocList::empty(BlockLevel::default()).unwrap(),
             );
 
@@ -199,7 +201,7 @@ impl<D: Disk> FileSystem<D> {
 
         fs.tx(|tx| unsafe {
             let mut root = BlockData::new(
-                BlockAddr::new(HEADER_RING + 3, BlockLevel::default()),
+                BlockAddr::new(HEADER_RING + 3, BlockMeta::default()),
                 Node::new(Node::MODE_DIR | 0o755, 0, 0, ctime, ctime_nsec),
             );
             root.data_mut().set_links(1);
@@ -254,12 +256,12 @@ impl<D: Disk> FileSystem<D> {
                 if count < 0 {
                     for i in 0..-count {
                         //TODO: replace assert with error?
-                        let addr = BlockAddr::new(index + i as u64, BlockLevel::default());
+                        let addr = BlockAddr::new(index + i as u64, BlockMeta::default());
                         assert_eq!(self.allocator.allocate_exact(addr), Some(addr));
                     }
                 } else {
                     for i in 0..count {
-                        let addr = BlockAddr::new(index + i as u64, BlockLevel::default());
+                        let addr = BlockAddr::new(index + i as u64, BlockMeta::default());
                         self.allocator.deallocate(addr);
                     }
                 }

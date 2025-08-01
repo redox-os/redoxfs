@@ -14,9 +14,9 @@ use syscall::error::{
 
 use crate::{
     htree::{self, HTreeHash, HTreeNode, HTreePtr},
-    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockPtr, BlockTrait,
-    DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData, TreePtr,
-    ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
+    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockMeta, BlockPtr,
+    BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData,
+    TreePtr, ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
 };
 
 pub struct Transaction<'a, D: Disk> {
@@ -57,11 +57,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
     // MARK: block operations
     //
 
-    /// Allocate a new block of size `level`, returning its address.
+    /// Allocate a new block of size defined by `meta`, returning its address.
     /// - returns `Err(ENOSPC)` if a block of this size could not be alloated.
     /// - unsafe because order must be done carefully and changes must be flushed to disk
-    pub(crate) unsafe fn allocate(&mut self, level: BlockLevel) -> Result<BlockAddr> {
-        match self.allocator.allocate(level) {
+    pub(crate) unsafe fn allocate(&mut self, meta: BlockMeta) -> Result<BlockAddr> {
+        match self.allocator.allocate(meta) {
             Some(addr) => {
                 self.allocator_log.push_back(AllocEntry::allocate(addr));
                 Ok(addr)
@@ -180,7 +180,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         while new_blocks.len() * ALLOC_LIST_ENTRIES
             <= self.allocator_log.len() + self.deallocate.len()
         {
-            new_blocks.push(unsafe { self.allocate(BlockLevel::default())? });
+            new_blocks.push(unsafe { self.allocate(BlockMeta::default())? });
         }
 
         // De-allocate old blocks (after allocation to prevent re-use)
@@ -321,8 +321,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
         ptr: BlockPtr<T>,
     ) -> Result<BlockData<T>> {
         if ptr.is_null() {
-            match T::empty(ptr.addr().level()) {
-                Some(empty) => Ok(BlockData::new(BlockAddr::default(), empty)),
+            let addr = ptr.addr();
+            match T::empty(addr.level()) {
+                Some(empty) => Ok(BlockData::new(addr, empty)),
                 None => {
                     #[cfg(feature = "log")]
                     log::error!("READ_BLOCK_OR_EMPTY: INVALID BLOCK LEVEL FOR TYPE");
@@ -336,13 +337,42 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
     unsafe fn read_record<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
-        ptr: BlockPtr<T>,
+        mut ptr: BlockPtr<T>,
         level: BlockLevel,
     ) -> Result<BlockData<T>> {
-        let record = unsafe { self.read_block_or_empty(ptr)? };
+        // Set null pointers to correct size (reduces number of copies below)
+        if ptr.is_null() {
+            ptr = BlockPtr::<T>::null(BlockMeta::new(level));
+        }
+
+        // Read record from disk, or construct empty one for null pointers
+        let mut record = unsafe { self.read_block_or_empty(ptr)? };
         if record.addr().level() >= level {
             // Return record if it is larger than or equal to requested level
             return Ok(record);
+        }
+
+        // Attempt to decompress if address metadata indicates compression
+        if let Some(decomp_level) = record.addr().decomp_level() {
+            // First 2 bytes store compressed data length
+            // This means only compressed record sizes up to 64 KiB are supported
+            let mut decomp = match T::empty(decomp_level) {
+                Some(empty) => empty,
+                None => {
+                    #[cfg(feature = "log")]
+                    log::error!("READ_RECORD: INVALID DECOMPRESSED BLOCK LEVEL FOR TYPE");
+                    return Err(Error::new(ENOENT));
+                }
+            };
+            let comp_len = record.data()[0] as usize | ((record.data()[1] as usize) << 8);
+            if let Err(err) =
+                lz4_flex::decompress_into(&record.data()[2..(comp_len + 2)], &mut decomp)
+            {
+                #[cfg(feature = "log")]
+                log::error!("READ_RECORD: FAILED TO DECOMPRESS: {:?}", err);
+                return Err(Error::new(EIO));
+            }
+            record = BlockData::new(BlockAddr::null(BlockMeta::new(decomp_level)), decomp);
         }
 
         // If a larger level was requested,
@@ -359,7 +389,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         };
         let len = min(raw.len(), old_raw.len());
         raw[..len].copy_from_slice(&old_raw[..len]);
-        Ok(BlockData::new(BlockAddr::null(level), raw))
+
+        Ok(BlockData::new(BlockAddr::null(BlockMeta::new(level)), raw))
     }
 
     /// Write block data to a new address, returning new address
@@ -368,8 +399,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         mut block: BlockData<T>,
     ) -> Result<BlockPtr<T>> {
         // Swap block to new address
-        let level = block.addr().level();
-        let old_addr = block.swap_addr(unsafe { self.allocate(level)? });
+        let meta = block.addr().meta();
+        let old_addr = block.swap_addr(unsafe { self.allocate(meta)? });
         // Deallocate old address (will only take effect after sync_allocator, which helps to
         // prevent re-use before a new header is written
         if !old_addr.is_null() {
@@ -773,7 +804,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         unsafe {
             let parent = self.read_tree(parent_ptr)?;
             let node_block_data = BlockData::new(
-                self.allocate(BlockLevel::default())?,
+                self.allocate(BlockMeta::default())?,
                 Node::new(
                     mode,
                     parent.data().uid(),
@@ -1594,7 +1625,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let mut node_changed = false;
 
         let record_level = node.data().record_level();
-        let node_records = node.data().size().div_ceil(record_level.bytes());
+        let node_size = node.data().size();
+        let node_records = node_size.div_ceil(record_level.bytes());
 
         let mut i = 0;
         while i < buf.len() {
@@ -1605,30 +1637,64 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let mut record_ptr = if node_records > (*offset / record_level.bytes()) {
                 self.node_record_ptr(node, *offset / record_level.bytes())?
             } else {
-                BlockPtr::null(level)
+                BlockPtr::null(BlockMeta::new(level))
             };
             let mut record = unsafe { self.read_record(record_ptr, level)? };
 
+            // If record has changed
             if buf[i..i + len] != record.data()[j..j + len] {
-                unsafe {
-                    // CoW record using its current level
-                    let mut old_addr = record.swap_addr(self.allocate(record.addr().level())?);
+                // Update record in memory
+                record.data_mut()[j..j + len].copy_from_slice(&buf[i..i + len]);
 
-                    // If the record was resized we need to dealloc the original ptr
-                    if old_addr.is_null() {
-                        old_addr = record_ptr.addr();
-                    }
-
-                    record.data_mut()[j..j + len].copy_from_slice(&buf[i..i + len]);
-                    record_ptr = self.write_block(record)?;
-
-                    if !old_addr.is_null() {
-                        self.deallocate(old_addr);
+                // Handle record compression, if record is larger than one block
+                let decomp_level = record.addr().level();
+                if decomp_level.0 > 0 {
+                    // Maximum compressed record size is 64 KiB
+                    let mut comp = vec![0; 64 * 1024];
+                    // First two bytes store compressed data length
+                    match lz4_flex::compress_into(record.data(), &mut comp[2..]) {
+                        Ok(comp_len) => {
+                            comp[0] = comp_len as u8;
+                            comp[1] = (comp_len >> 8) as u8;
+                            let comp_level = BlockLevel::for_bytes((comp_len as u64) + 2);
+                            comp.truncate(comp_level.bytes() as usize);
+                            // Replace record with compressed record, if it saves space
+                            if comp_level < decomp_level {
+                                record = BlockData::new(
+                                    BlockAddr::null(BlockMeta::new_compressed(
+                                        comp_level,
+                                        decomp_level,
+                                    )),
+                                    RecordRaw(comp.into_boxed_slice()),
+                                );
+                            }
+                        }
+                        Err(_err) => {
+                            // Failures to compress can be ignored, with the original record data used
+                        }
                     }
                 }
 
+                // CoW record using its current level
+                let mut old_addr =
+                    unsafe { record.swap_addr(self.allocate(record.addr().meta())?) };
+
+                // If the record was resized we need to dealloc the original ptr
+                if old_addr.is_null() {
+                    old_addr = record_ptr.addr();
+                }
+
+                // Write record to disk
+                record_ptr = unsafe { self.write_block(record)? };
+
+                // Update record pointer
                 self.sync_node_record_ptr(node, *offset / record_level.bytes(), record_ptr)?;
                 node_changed = true;
+
+                // Deallocate old record
+                if !old_addr.is_null() {
+                    unsafe { self.deallocate(old_addr) };
+                }
             }
 
             i += len;
