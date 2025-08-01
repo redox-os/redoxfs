@@ -377,10 +377,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         // Read record from disk, or construct empty one for null pointers
         let mut record = unsafe { self.read_block_or_empty(ptr)? };
-        if record.addr().level() >= level {
-            // Return record if it is larger than or equal to requested level
-            return Ok(record);
-        }
 
         // Attempt to decompress if address metadata indicates compression
         if let Some(decomp_level) = record.addr().decomp_level() {
@@ -402,6 +398,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 return Err(Error::new(EIO));
             }
             record = BlockData::new(BlockAddr::null(BlockMeta::new(decomp_level)), decomp);
+        }
+
+        // Return record if it is larger than or equal to requested level
+        if record.addr().level() >= level {
+            return Ok(record);
         }
 
         // If a larger level was requested,
@@ -1683,6 +1684,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 // Handle record compression, if record is larger than one block
                 let decomp_level = record.addr().level();
                 if decomp_level.0 > 0 {
+                    assert_eq!(decomp_level.bytes(), record.data().len() as u64);
                     match lz4_flex::compress_into(record.data(), &mut self.fs.compress_cache) {
                         Ok(comp_len) => {
                             let total_len = comp_len + 2;
