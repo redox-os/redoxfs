@@ -77,7 +77,7 @@ fn node_attr(node: &TreeData<Node>) -> FileAttr {
         ino: node.id() as u64,
         size: node.data().size(),
         // Blocks is in 512 byte blocks, not in our block size
-        blocks: node.data().size().div_ceil(BLOCK_SIZE) * (BLOCK_SIZE / 512),
+        blocks: node.data().blocks() * (BLOCK_SIZE / 512),
         blksize: 512,
         atime: SystemTime::UNIX_EPOCH + Duration::new(node.data().atime().0, node.data().atime().1),
         mtime: SystemTime::UNIX_EPOCH + Duration::new(node.data().mtime().0, node.data().mtime().1),

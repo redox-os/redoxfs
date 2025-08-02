@@ -9,42 +9,93 @@ const BLOCK_LIST_ENTRIES: usize = BLOCK_SIZE as usize / mem::size_of::<BlockPtr<
 ///
 /// This encodes a block's position _and_ [`BlockLevel`]:
 /// the first four bits of this `u64` encode the block's level,
+/// the next four bits indicates decompression level,
 /// the rest encode its index.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BlockAddr(u64);
 
 impl BlockAddr {
+    const INDEX_SHIFT: u64 = 8;
+    const DECOMP_LEVEL_MASK: u64 = 0xF0;
+    const DECOMP_LEVEL_SHIFT: u64 = 4;
+    const LEVEL_MASK: u64 = 0xF;
+
     // Unsafe because this can create invalid blocks
-    pub(crate) unsafe fn new(index: u64, level: BlockLevel) -> Self {
-        // Level must only use the lowest four bits
-        if level.0 > 0xF {
-            panic!("block level used more than four bits");
+    pub(crate) unsafe fn new(index: u64, meta: BlockMeta) -> Self {
+        // Level must fit within LEVEL_MASK
+        if meta.level.0 > Self::LEVEL_MASK as usize {
+            panic!("block level too large");
         }
 
-        // Index must not use the highest four bits
+        // Decomp level must fit within DECOMP_LEVEL_MASK
+        let decomp_level = meta.decomp_level.unwrap_or_default();
+        if (decomp_level.0 << Self::DECOMP_LEVEL_SHIFT) > Self::DECOMP_LEVEL_MASK as usize {
+            panic!("decompressed block level too large");
+        }
+
+        // Index must not use the metadata bits
         let inner = index
-            .checked_shl(4)
-            .expect("block index used highest four bits")
-            | (level.0 as u64);
+            .checked_shl(Self::INDEX_SHIFT as u32)
+            .expect("block index too large")
+            | ((decomp_level.0 as u64) << Self::DECOMP_LEVEL_SHIFT)
+            | (meta.level.0 as u64);
         Self(inner)
     }
 
-    pub fn null(level: BlockLevel) -> Self {
-        unsafe { Self::new(0, level) }
+    pub fn null(meta: BlockMeta) -> Self {
+        unsafe { Self::new(0, meta) }
     }
 
     pub fn index(&self) -> u64 {
         // The first four bits store the level
-        self.0 >> 4
+        self.0 >> Self::INDEX_SHIFT
     }
 
     pub fn level(&self) -> BlockLevel {
         // The first four bits store the level
-        BlockLevel((self.0 & 0xF) as usize)
+        BlockLevel((self.0 & Self::LEVEL_MASK) as usize)
+    }
+
+    pub fn decomp_level(&self) -> Option<BlockLevel> {
+        let value = (self.0 & Self::DECOMP_LEVEL_MASK) >> Self::DECOMP_LEVEL_SHIFT;
+        if value != 0 {
+            Some(BlockLevel(value as usize))
+        } else {
+            None
+        }
+    }
+
+    pub fn meta(&self) -> BlockMeta {
+        BlockMeta {
+            level: self.level(),
+            decomp_level: self.decomp_level(),
+        }
     }
 
     pub fn is_null(&self) -> bool {
         self.index() == 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct BlockMeta {
+    pub(crate) level: BlockLevel,
+    pub(crate) decomp_level: Option<BlockLevel>,
+}
+
+impl BlockMeta {
+    pub fn new(level: BlockLevel) -> Self {
+        Self {
+            level,
+            decomp_level: None,
+        }
+    }
+
+    pub fn new_compressed(level: BlockLevel, decomp_level: BlockLevel) -> Self {
+        Self {
+            level,
+            decomp_level: Some(decomp_level),
+        }
     }
 }
 
@@ -74,8 +125,8 @@ impl BlockLevel {
 
     /// The number of [`BLOCK_SIZE`] blocks (i.e, level 0 blocks)
     /// in a block of this level
-    pub fn blocks(self) -> i64 {
-        1 << self.0
+    pub fn blocks<T: From<u32>>(self) -> T {
+        T::from(1u32 << self.0)
     }
 
     /// The number of bytes in a block of this level
@@ -211,9 +262,9 @@ pub struct BlockPtr<T> {
 }
 
 impl<T> BlockPtr<T> {
-    pub fn null(level: BlockLevel) -> Self {
+    pub fn null(meta: BlockMeta) -> Self {
         Self {
-            addr: BlockAddr::null(level).0.into(),
+            addr: BlockAddr::null(meta).0.into(),
             hash: 0.into(),
             phantom: PhantomData,
         }

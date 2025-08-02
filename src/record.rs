@@ -5,7 +5,7 @@ use crate::{BlockLevel, BlockTrait, RECORD_LEVEL};
 
 //TODO: this is a box to prevent stack overflows
 #[derive(Clone)]
-pub struct RecordRaw(Box<[u8]>);
+pub struct RecordRaw(pub(crate) Box<[u8]>);
 
 unsafe impl BlockTrait for RecordRaw {
     fn empty(level: BlockLevel) -> Option<Self> {

@@ -1,6 +1,6 @@
 use crate::htree::{HTreeHash, HTreeNode, HTreePtr, HTREE_IDX_ENTRIES};
 use crate::{
-    unmount_path, BlockAddr, BlockData, BlockLevel, BlockPtr, DirEntry, DirList, DiskMemory,
+    unmount_path, BlockAddr, BlockData, BlockMeta, BlockPtr, DirEntry, DirList, DiskMemory,
     DiskSparse, FileSystem, Node, TreePtr, ALLOC_GC_THRESHOLD, BLOCK_SIZE,
 };
 use core::panic::AssertUnwindSafe;
@@ -515,7 +515,7 @@ fn create_minimal_l2_htree(
             let mut parent = tx.read_tree(parent_ptr).unwrap();
 
             let child1_block_data = BlockData::new(
-                unsafe { tx.allocate(BlockLevel::default()) }.unwrap(),
+                unsafe { tx.allocate(BlockMeta::default()) }.unwrap(),
                 Node::new(
                     Node::MODE_FILE,
                     parent.data().uid(),
