@@ -1,5 +1,5 @@
 use aes::Aes128;
-use alloc::collections::VecDeque;
+use alloc::{boxed::Box, collections::VecDeque, vec};
 use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 use xts_mode::{get_tweak_default, Xts128};
 
