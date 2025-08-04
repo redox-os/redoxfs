@@ -107,17 +107,25 @@ pub struct Node {
 
     /// The length of this file, in bytes
     pub size: Le<u64>,
+    /// The disk usage of this file, in blocks
+    pub blocks: Le<u64>,
 
+    /// Creation time
     pub ctime: Le<u64>,
     pub ctime_nsec: Le<u32>,
+
+    /// Modification time
     pub mtime: Le<u64>,
     pub mtime_nsec: Le<u32>,
+
+    /// Access time
     pub atime: Le<u64>,
     pub atime_nsec: Le<u32>,
 
+    /// Record level
     pub record_level: Le<u32>,
 
-    pub padding: [u8; BLOCK_SIZE as usize - 4094],
+    pub padding: [u8; BLOCK_SIZE as usize - 4038],
 
     /// The first 128 blocks of this file.
     ///
@@ -143,11 +151,11 @@ pub struct Node {
     /// Total size: 16 * 256 * 256 * 256 * RECORD_SIZE (32 TiB, 2 TiB each)
     pub level3: [BlockPtr<BlockListL3>; 16],
 
-    /// The next 12 * 256 * 256 * 256 * 256 blocks of this file,
-    /// stored behind 12 level four tables.
+    /// The next 8 * 256 * 256 * 256 * 256 blocks of this file,
+    /// stored behind 8 level four tables.
     ///
-    /// Total size: 12 * 256 * 256 * 256 * 256 * RECORD_SIZE (6 PiB, 512 TiB each)
-    pub level4: [BlockPtr<BlockListL4>; 12],
+    /// Total size: 8 * 256 * 256 * 256 * 256 * RECORD_SIZE (4 PiB, 512 TiB each)
+    pub level4: [BlockPtr<BlockListL4>; 8],
 }
 
 unsafe impl BlockTrait for Node {
@@ -168,6 +176,8 @@ impl Default for Node {
             gid: 0.into(),
             links: 0.into(),
             size: 0.into(),
+            // This node counts as a block
+            blocks: 1.into(),
             ctime: 0.into(),
             ctime_nsec: 0.into(),
             mtime: 0.into(),
@@ -175,12 +185,12 @@ impl Default for Node {
             atime: 0.into(),
             atime_nsec: 0.into(),
             record_level: 0.into(),
-            padding: [0; BLOCK_SIZE as usize - 4094],
+            padding: [0; BLOCK_SIZE as usize - 4038],
             level0: [BlockPtr::default(); 128],
             level1: [BlockPtr::default(); 64],
             level2: [BlockPtr::default(); 32],
             level3: [BlockPtr::default(); 16],
-            level4: [BlockPtr::default(); 12],
+            level4: [BlockPtr::default(); 8],
         }
     }
 }
@@ -253,6 +263,11 @@ impl Node {
         self.size.to_ne()
     }
 
+    /// The disk usage of this file, in blocks.
+    pub fn blocks(&self) -> u64 {
+        self.blocks.to_ne()
+    }
+
     pub fn ctime(&self) -> (u64, u32) {
         (self.ctime.to_ne(), self.ctime_nsec.to_ne())
     }
@@ -287,6 +302,10 @@ impl Node {
 
     pub fn set_size(&mut self, size: u64) {
         self.size = size.into();
+    }
+
+    pub fn set_blocks(&mut self, blocks: u64) {
+        self.blocks = blocks.into();
     }
 
     pub fn set_mtime(&mut self, mtime: u64, mtime_nsec: u32) {
@@ -348,6 +367,7 @@ impl fmt::Debug for Node {
         let gid = self.gid;
         let links = self.links;
         let size = self.size;
+        let blocks = self.blocks;
         let ctime = self.ctime;
         let ctime_nsec = self.ctime_nsec;
         let mtime = self.mtime;
@@ -360,6 +380,7 @@ impl fmt::Debug for Node {
             .field("gid", &gid)
             .field("links", &links)
             .field("size", &size)
+            .field("blocks", &blocks)
             .field("ctime", &ctime)
             .field("ctime_nsec", &ctime_nsec)
             .field("mtime", &mtime)

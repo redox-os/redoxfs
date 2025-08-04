@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use core::{fmt, mem, ops, slice};
 use endian_num::Le;
 
-use crate::{BlockAddr, BlockLevel, BlockPtr, BlockTrait, BLOCK_SIZE};
+use crate::{BlockAddr, BlockLevel, BlockMeta, BlockPtr, BlockTrait, BLOCK_SIZE};
 
 pub const ALLOC_LIST_ENTRIES: usize =
     (BLOCK_SIZE as usize - mem::size_of::<BlockPtr<AllocList>>()) / mem::size_of::<AllocEntry>();
@@ -52,10 +52,10 @@ impl Allocator {
 
     /// Find a free block of the given level, mark it as "used", and return its address.
     /// Returns [`None`] if there are no free blocks with this level.
-    pub fn allocate(&mut self, block_level: BlockLevel) -> Option<BlockAddr> {
+    pub fn allocate(&mut self, meta: BlockMeta) -> Option<BlockAddr> {
         // First, find the lowest level with a free block
         let mut index_opt = None;
-        let mut level = block_level.0;
+        let mut level = meta.level.0;
         // Start searching at the level we want. Smaller levels are too small!
         while level < self.levels.len() {
             if !self.levels[level].is_empty() {
@@ -68,13 +68,13 @@ impl Allocator {
         // If a free block was found, split it until we find a usable block of the right level.
         // The left side of the split block is kept free, and the right side is allocated.
         let index = index_opt?;
-        while level > block_level.0 {
+        while level > meta.level.0 {
             level -= 1;
             let level_size = 1 << level;
             self.levels[level].push(index + level_size);
         }
 
-        Some(unsafe { BlockAddr::new(index, block_level) })
+        Some(unsafe { BlockAddr::new(index, meta) })
     }
 
     /// Try to allocate the exact block specified, making all necessary splits.
@@ -112,7 +112,7 @@ impl Allocator {
             }
         }
 
-        Some(unsafe { BlockAddr::new(index_opt?, exact_addr.level()) })
+        Some(unsafe { BlockAddr::new(index_opt?, exact_addr.meta()) })
     }
 
     /// Deallocate the given block, marking it "free" so that it can be re-used later.
@@ -191,11 +191,11 @@ impl AllocEntry {
     }
 
     pub fn allocate(addr: BlockAddr) -> Self {
-        Self::new(addr.index(), -addr.level().blocks())
+        Self::new(addr.index(), -addr.level().blocks::<i64>())
     }
 
     pub fn deallocate(addr: BlockAddr) -> Self {
-        Self::new(addr.index(), addr.level().blocks())
+        Self::new(addr.index(), addr.level().blocks::<i64>())
     }
 
     pub fn index(&self) -> u64 {
@@ -282,17 +282,17 @@ fn alloc_node_size_test() {
 fn allocator_test() {
     let mut alloc = Allocator::default();
 
-    assert_eq!(alloc.allocate(BlockLevel::default()), None);
+    assert_eq!(alloc.allocate(BlockMeta::default()), None);
 
-    alloc.deallocate(unsafe { BlockAddr::new(1, BlockLevel::default()) });
+    alloc.deallocate(unsafe { BlockAddr::new(1, BlockMeta::default()) });
     assert_eq!(
-        alloc.allocate(BlockLevel::default()),
-        Some(unsafe { BlockAddr::new(1, BlockLevel::default()) })
+        alloc.allocate(BlockMeta::default()),
+        Some(unsafe { BlockAddr::new(1, BlockMeta::default()) })
     );
-    assert_eq!(alloc.allocate(BlockLevel::default()), None);
+    assert_eq!(alloc.allocate(BlockMeta::default()), None);
 
     for addr in 1023..2048 {
-        alloc.deallocate(unsafe { BlockAddr::new(addr, BlockLevel::default()) });
+        alloc.deallocate(unsafe { BlockAddr::new(addr, BlockMeta::default()) });
     }
 
     assert_eq!(alloc.levels.len(), 11);
@@ -308,11 +308,11 @@ fn allocator_test() {
 
     for addr in 1023..2048 {
         assert_eq!(
-            alloc.allocate(BlockLevel::default()),
-            Some(unsafe { BlockAddr::new(addr, BlockLevel::default()) })
+            alloc.allocate(BlockMeta::default()),
+            Some(unsafe { BlockAddr::new(addr, BlockMeta::default()) })
         );
     }
-    assert_eq!(alloc.allocate(BlockLevel::default()), None);
+    assert_eq!(alloc.allocate(BlockMeta::default()), None);
 
     assert_eq!(alloc.levels.len(), 11);
     for level in 0..alloc.levels.len() {
