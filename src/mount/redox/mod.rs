@@ -10,7 +10,7 @@ use self::scheme::FileScheme;
 pub mod resource;
 pub mod scheme;
 
-pub fn mount<D, P, T, F>(filesystem: FileSystem<D>, mountpoint: P, mut callback: F) -> io::Result<T>
+pub fn mount<D, P, T, F>(filesystem: FileSystem<D>, mountpoint: P, callback: F) -> io::Result<T>
 where
     D: Disk,
     P: AsRef<Path>,
