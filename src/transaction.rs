@@ -271,14 +271,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
             return Err(Error::new(ENOENT));
         }
 
-        let mut data = match T::empty(ptr.addr().level()) {
-            Some(some) => some,
-            None => {
-                #[cfg(feature = "log")]
-                log::error!("READ_BLOCK: INVALID BLOCK LEVEL FOR TYPE");
-                return Err(Error::new(ENOENT));
-            }
-        };
+        let mut data = T::empty(ptr.addr().level()).ok_or_else(|| {
+            #[cfg(feature = "log")]
+            log::error!("READ_BLOCK: INVALID BLOCK LEVEL FOR TYPE");
+            Error::new(ENOENT)
+        })?;
         if let Some(raw) = self.write_cache.get(&ptr.addr()) {
             data.copy_from_slice(raw);
         } else {
@@ -321,14 +318,13 @@ impl<'a, D: Disk> Transaction<'a, D> {
         ptr: BlockPtr<T>,
     ) -> Result<BlockData<T>> {
         if ptr.is_null() {
-            match T::empty(ptr.addr().level()) {
-                Some(empty) => Ok(BlockData::new(BlockAddr::default(), empty)),
-                None => {
+            T::empty(ptr.addr().level())
+                .map(|empty| BlockData::new(BlockAddr::default(), empty))
+                .ok_or_else(|| {
                     #[cfg(feature = "log")]
                     log::error!("READ_BLOCK_OR_EMPTY: INVALID BLOCK LEVEL FOR TYPE");
-                    Err(Error::new(ENOENT))
-                }
-            }
+                    Error::new(ENOENT)
+                })
         } else {
             self.read_block(ptr)
         }
@@ -349,14 +345,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
         // create a fake record with the requested level
         // and fill it with the data in the original record.
         let (_old_addr, old_raw) = unsafe { record.into_parts() };
-        let mut raw = match T::empty(level) {
-            Some(empty) => empty,
-            None => {
-                #[cfg(feature = "log")]
-                log::error!("READ_RECORD: INVALID BLOCK LEVEL FOR TYPE");
-                return Err(Error::new(ENOENT));
-            }
-        };
+        let mut raw = T::empty(level).ok_or_else(|| {
+            #[cfg(feature = "log")]
+            log::error!("READ_RECORD: INVALID BLOCK LEVEL FOR TYPE");
+            Error::new(ENOENT)
+        })?;
         let len = min(raw.len(), old_raw.len());
         raw[..len].copy_from_slice(&old_raw[..len]);
         Ok(BlockData::new(BlockAddr::null(level), raw))
@@ -430,14 +423,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let raw = self.read_block(l0.data().ptrs[i0])?;
 
         //TODO: transmute instead of copy?
-        let mut data = match T::empty(BlockLevel::default()) {
-            Some(some) => some,
-            None => {
-                #[cfg(feature = "log")]
-                log::error!("READ_TREE: INVALID BLOCK LEVEL FOR TYPE");
-                return Err(Error::new(ENOENT));
-            }
-        };
+        let mut data = T::empty(BlockLevel::default()).ok_or_else(|| {
+            #[cfg(feature = "log")]
+            log::error!("READ_TREE: INVALID BLOCK LEVEL FOR TYPE");
+            Error::new(ENOENT)
+        })?;
+
         data.copy_from_slice(raw.data());
 
         Ok((TreeData::new(ptr.id(), data), raw.addr()))
