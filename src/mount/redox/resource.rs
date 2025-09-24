@@ -521,7 +521,8 @@ impl<D: Disk> Resource<D> for FileResource {
 
                 fmap_info
                     .ranges
-                    .insert(range.start, range.end - range.start, fmap);
+                    .insert(range.start, range.end - range.start, fmap)
+                    .map_err(|_err| Error::new(EBADFD))?;
             } else {
                 let map = unsafe {
                     Fmap::new(
@@ -533,7 +534,10 @@ impl<D: Disk> Resource<D> for FileResource {
                         tx,
                     )?
                 };
-                fmap_info.ranges.insert(offset, aligned_size as u64, map);
+                fmap_info
+                    .ranges
+                    .insert(offset, aligned_size as u64, map)
+                    .map_err(|_err| Error::new(EBADFD))?;
             }
         }
         //dbg!(&self.fmaps);
@@ -574,7 +578,8 @@ impl<D: Disk> Resource<D> for FileResource {
             if fmap.rc > 0 {
                 fmap_info
                     .ranges
-                    .insert(range.start, range.end - range.start, fmap);
+                    .insert(range.start, range.end - range.start, fmap)
+                    .map_err(|_err| Error::new(EBADFD))?;
             }
         }
         //dbg!(&self.fmaps);
