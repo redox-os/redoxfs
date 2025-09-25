@@ -33,7 +33,7 @@ fn unmount_linux_path(mount_path: &str) -> io::Result<ExitStatus> {
 
 pub fn unmount_path(mount_path: &str) -> Result<(), io::Error> {
     if cfg!(target_os = "redox") {
-        fs::remove_file(format!(":{}", mount_path))?
+        fs::remove_file(format!("{}", mount_path))?
     } else {
         let status_res = if cfg!(target_os = "linux") {
             unmount_linux_path(mount_path)
