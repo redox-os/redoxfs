@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::thread::sleep;
 use std::time::Duration;
-use std::{fs, time};
+use std::{env, fs, time};
 
 static IMAGE_SEQ: AtomicUsize = AtomicUsize::new(0);
 
@@ -47,6 +47,9 @@ where
             if !Path::new(&mount_path).exists() {
                 dbg!(fs::create_dir(dbg!(&mount_path))).unwrap();
             }
+        } else {
+            //FIXME: cargo_bin is broken when cross compiling. This is redoxer specific workaround
+            env::set_var("CARGO_BIN_EXE_redoxfs", "/root/target/x86_64-unknown-redox/debug/redoxfs");
         }
         let mut mount_cmd = Command::cargo_bin("redoxfs").expect("unable to find mount bin");
         mount_cmd.arg("-d").arg(dbg!(&fs)).arg(dbg!(&mount_path));

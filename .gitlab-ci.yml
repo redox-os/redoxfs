@@ -26,4 +26,5 @@ test:redox:
     stage: test
     dependencies:
         - build:redox
-    script: redoxer test --verbose
+    # do not test binaries, and detect if redoxer hangs
+    script: redoxer test --verbose -- --test '*' --lib -- --nocapture
