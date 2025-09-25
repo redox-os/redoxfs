@@ -652,7 +652,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
             let scheme_name = &self.name;
             self.fs.tx(|tx| {
-                let orig_parent_ptr = match file.parent_ptr_opt() {
+                let _orig_parent_ptr = match file.parent_ptr_opt() {
                     Some(some) => some,
                     None => {
                         // println!("orig is root");
@@ -1043,7 +1043,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         id: usize,
         payload: &mut [u8],
         metadata: &[u64],
-        ctx: &CallerCtx,
+        _ctx: &CallerCtx,
     ) -> Result<usize> {
         let Some(verb) = FsCall::try_from_raw(metadata[0] as usize) else {
             return Err(Error::new(EINVAL));

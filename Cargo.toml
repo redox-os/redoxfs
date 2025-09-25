@@ -62,7 +62,7 @@ std = [
     "time",
     "uuid/v4",
     "redox_syscall/std",
-    "redox-scheme"
+    "redox-scheme",
 ]
 
 [target.'cfg(not(target_os = "redox"))'.dependencies]
@@ -72,3 +72,6 @@ time = { version = "0.3", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
+[dev-dependencies]
+assert_cmd = "2.0.17"

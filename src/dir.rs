@@ -126,7 +126,7 @@ impl DirList {
         self.count == 0
     }
 
-    pub fn entries(&self) -> DirEntryIterator {
+    pub fn entries(&self) -> DirEntryIterator<'_> {
         DirEntryIterator {
             dir_list: self,
             emit_count: 0,

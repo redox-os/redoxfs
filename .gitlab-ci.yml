@@ -26,4 +26,5 @@ test:redox:
     stage: test
     dependencies:
         - build:redox
-    script: redoxer test --verbose
+    # only run integration test as without KVM unit tests is super slow
+    script: redoxer test --verbose -- --test '*' -- --nocapture

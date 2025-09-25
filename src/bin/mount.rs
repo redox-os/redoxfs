@@ -128,7 +128,7 @@ fn print_usage_exit() -> ! {
 }
 
 fn usage() {
-    println!("redoxfs --no-daemon [-d] [--uuid] [disk or uuid] [mountpoint] [block in hex]");
+    println!("redoxfs [--no-daemon|-d] [--uuid] [disk or uuid] [mountpoint] [block in hex]");
 }
 
 enum DiskId {

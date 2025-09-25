@@ -518,8 +518,8 @@ impl<D: Disk> Resource<D> for FileResource {
             if let Some(mut fmap) = v_opt {
                 fmap.rc += 1;
                 fmap.flags |= flags;
-
-                fmap_info
+                //FIXME: Use result?
+                let _ = fmap_info
                     .ranges
                     .insert(range.start, range.end - range.start, fmap);
             } else {
@@ -533,7 +533,8 @@ impl<D: Disk> Resource<D> for FileResource {
                         tx,
                     )?
                 };
-                fmap_info.ranges.insert(offset, aligned_size as u64, map);
+                //FIXME: Use result?
+                let _ = fmap_info.ranges.insert(offset, aligned_size as u64, map);
             }
         }
         //dbg!(&self.fmaps);
@@ -572,7 +573,8 @@ impl<D: Disk> Resource<D> for FileResource {
             }
 
             if fmap.rc > 0 {
-                fmap_info
+                //FIXME: Use result?
+                let _ = fmap_info
                     .ranges
                     .insert(range.start, range.end - range.start, fmap);
             }
