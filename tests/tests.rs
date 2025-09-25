@@ -49,16 +49,37 @@ where
             }
         } else {
             //FIXME: cargo_bin is broken when cross compiling. This is redoxer specific workaround
-            env::set_var("CARGO_BIN_EXE_redoxfs", "/root/target/x86_64-unknown-redox/debug/redoxfs");
+            env::set_var(
+                "CARGO_BIN_EXE_redoxfs",
+                "/root/target/x86_64-unknown-redox/debug/redoxfs",
+            );
         }
         let mut mount_cmd = Command::cargo_bin("redoxfs").expect("unable to find mount bin");
         mount_cmd.arg("-d").arg(dbg!(&fs)).arg(dbg!(&mount_path));
         let mut child = mount_cmd.spawn().expect("mount failed to run");
 
-        sleep(Duration::from_millis(200));
+        let real_path = if cfg!(target_os = "redox") {
+            let real_path = dbg!(Path::new("/scheme").join(&mount_path));
+            let mut tries = 0;
+            loop {
+                if real_path.exists() {
+                    break;
+                }
+                tries += 1;
+                if tries == 10 {
+                    panic!("Fail to wait for mount")
+                }
+                println!("{tries}");
+                sleep(Duration::from_millis(500));
+            }
+            real_path
+        } else {
+            sleep(Duration::from_millis(200));
+            let r = Path::new(".").join(&mount_path);
+            r
+        };
 
-        let real_path = Path::new(&mount_path);
-        let res = catch_unwind(AssertUnwindSafe(|| callback(real_path)));
+        let res = catch_unwind(AssertUnwindSafe(|| callback(&real_path)));
 
         sleep(Duration::from_millis(200));
 
@@ -126,7 +147,7 @@ fn create_and_remove_directory() {
         let dir_path = path.join(dir_name);
 
         // Create the directory
-        fs::create_dir(&dir_path).unwrap();
+        fs::create_dir(&dir_path).expect(&format!("cannot create dir {}", &dir_path.display()));
         assert!(fs::exists(&dir_path).unwrap());
 
         // Check that the directory is empty
