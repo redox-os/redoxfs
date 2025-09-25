@@ -26,5 +26,5 @@ test:redox:
     stage: test
     dependencies:
         - build:redox
-    # do not test binaries, and detect if redoxer hangs
-    script: redoxer test --verbose -- --test '*' --lib -- --nocapture
+    # only run integration test as without KVM unit tests is super slow
+    script: redoxer test --verbose -- --test '*' -- --nocapture
