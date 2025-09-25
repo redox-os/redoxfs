@@ -10,6 +10,9 @@ use self::scheme::FileScheme;
 pub mod resource;
 pub mod scheme;
 
+//FIXME: mut callback is not mut
+#[allow(unused_mut)]
+
 pub fn mount<D, P, T, F>(filesystem: FileSystem<D>, mountpoint: P, mut callback: F) -> io::Result<T>
 where
     D: Disk,
