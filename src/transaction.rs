@@ -1553,11 +1553,27 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 return Ok(0);
             }
 
-            let end = min(node_size, offset + (buf.len() as u64));
-            let len = end - offset;
-            buf[..len as usize].copy_from_slice(&inline_data[offset as usize..end as usize]);
-            offset += len;
-            return Ok(len as usize);
+            // Read as much as possible from inline data
+            let mut i = 0;
+            if offset < inline_data.len() as u64 {
+                let len = min(
+                    buf.len() as u64,
+                    min(node_size - offset, inline_data.len() as u64 - offset),
+                );
+                buf[i..len as usize]
+                    .copy_from_slice(&inline_data[offset as usize..(offset + len) as usize]);
+                i += len as usize;
+                offset += len;
+            }
+
+            // Handle sparse data (outside of inline data)
+            while i < buf.len() && offset < node_size {
+                buf[i] = 0;
+                i += 1;
+                offset += 1;
+            }
+
+            return Ok(i);
         }
 
         let record_level = node.data().record_level();
