@@ -3,6 +3,12 @@ use endian_num::Le;
 
 use crate::{BlockLevel, BlockList, BlockPtr, BlockTrait, RecordRaw, BLOCK_SIZE, RECORD_LEVEL};
 
+bitflags::bitflags! {
+    pub struct NodeFlags: u32 {
+        const INLINE_DATA = 0x1;
+    }
+}
+
 /// An index into a [`Node`]'s block table.
 pub enum NodeLevel {
     L0(usize),
@@ -85,40 +91,8 @@ type BlockListL2 = BlockList<BlockListL1>;
 type BlockListL3 = BlockList<BlockListL2>;
 type BlockListL4 = BlockList<BlockListL3>;
 
-/// A file/folder node
 #[repr(C, packed)]
-pub struct Node {
-    /// This node's type & permissions.
-    /// - four most significant bits are the node's type
-    /// - next four bits are permissions for the node's user
-    /// - next four bits are permissions for the node's group
-    /// - four least significant bits are permissions for everyone else
-    pub mode: Le<u16>,
-
-    /// The uid that owns this file
-    pub uid: Le<u32>,
-
-    /// The gid that owns this file
-    pub gid: Le<u32>,
-
-    /// The number of links to this file
-    /// (directory entries, symlinks, etc)
-    pub links: Le<u32>,
-
-    /// The length of this file, in bytes
-    pub size: Le<u64>,
-
-    pub ctime: Le<u64>,
-    pub ctime_nsec: Le<u32>,
-    pub mtime: Le<u64>,
-    pub mtime_nsec: Le<u32>,
-    pub atime: Le<u64>,
-    pub atime_nsec: Le<u32>,
-
-    pub record_level: Le<u32>,
-
-    pub padding: [u8; BLOCK_SIZE as usize - 4094],
-
+pub struct NodeLevelData {
     /// The first 128 blocks of this file.
     ///
     /// Total size: 128 * RECORD_SIZE (16 MiB, 128 KiB each)
@@ -143,11 +117,72 @@ pub struct Node {
     /// Total size: 16 * 256 * 256 * 256 * RECORD_SIZE (32 TiB, 2 TiB each)
     pub level3: [BlockPtr<BlockListL3>; 16],
 
-    /// The next 12 * 256 * 256 * 256 * 256 blocks of this file,
-    /// stored behind 12 level four tables.
+    /// The next 8 * 256 * 256 * 256 * 256 blocks of this file,
+    /// stored behind 8 level four tables.
     ///
-    /// Total size: 12 * 256 * 256 * 256 * 256 * RECORD_SIZE (6 PiB, 512 TiB each)
-    pub level4: [BlockPtr<BlockListL4>; 12],
+    /// Total size: 8 * 256 * 256 * 256 * 256 * RECORD_SIZE (4 PiB, 512 TiB each)
+    pub level4: [BlockPtr<BlockListL4>; 8],
+}
+
+impl Default for NodeLevelData {
+    fn default() -> Self {
+        Self {
+            level0: [BlockPtr::default(); 128],
+            level1: [BlockPtr::default(); 64],
+            level2: [BlockPtr::default(); 32],
+            level3: [BlockPtr::default(); 16],
+            level4: [BlockPtr::default(); 8],
+        }
+    }
+}
+
+/// A file/folder node
+#[repr(C, packed)]
+pub struct Node {
+    /// This node's type & permissions.
+    /// - four most significant bits are the node's type
+    /// - next four bits are permissions for the node's user
+    /// - next four bits are permissions for the node's group
+    /// - four least significant bits are permissions for everyone else
+    pub mode: Le<u16>,
+
+    /// The uid that owns this file
+    pub uid: Le<u32>,
+
+    /// The gid that owns this file
+    pub gid: Le<u32>,
+
+    /// The number of hard links to this file
+    pub links: Le<u32>,
+
+    /// The length of this file, in bytes
+    pub size: Le<u64>,
+    /// The disk usage of this file, in blocks
+    pub blocks: Le<u64>,
+
+    /// Creation time
+    pub ctime: Le<u64>,
+    pub ctime_nsec: Le<u32>,
+
+    /// Modification time
+    pub mtime: Le<u64>,
+    pub mtime_nsec: Le<u32>,
+
+    /// Access time
+    pub atime: Le<u64>,
+    pub atime_nsec: Le<u32>,
+
+    /// Record level
+    pub record_level: Le<u32>,
+
+    /// Flags
+    pub flags: Le<u32>,
+
+    /// Padding
+    pub padding: [u8; BLOCK_SIZE as usize - 4042],
+
+    /// Level data, should not be used directly so inline data can be supported
+    pub(crate) level_data: NodeLevelData,
 }
 
 unsafe impl BlockTrait for Node {
@@ -168,6 +203,8 @@ impl Default for Node {
             gid: 0.into(),
             links: 0.into(),
             size: 0.into(),
+            // This node counts as a block
+            blocks: 1.into(),
             ctime: 0.into(),
             ctime_nsec: 0.into(),
             mtime: 0.into(),
@@ -175,12 +212,9 @@ impl Default for Node {
             atime: 0.into(),
             atime_nsec: 0.into(),
             record_level: 0.into(),
-            padding: [0; BLOCK_SIZE as usize - 4094],
-            level0: [BlockPtr::default(); 128],
-            level1: [BlockPtr::default(); 64],
-            level2: [BlockPtr::default(); 32],
-            level3: [BlockPtr::default(); 16],
-            level4: [BlockPtr::default(); 12],
+            flags: 0.into(),
+            padding: [0; BLOCK_SIZE as usize - 4042],
+            level_data: NodeLevelData::default(),
         }
     }
 }
@@ -219,6 +253,14 @@ impl Node {
                 0
             }
             .into(),
+            flags: if mode & Self::MODE_TYPE == Self::MODE_DIR {
+                // Directories must not use inline data (until h-tree supports it)
+                NodeFlags::empty()
+            } else {
+                NodeFlags::INLINE_DATA
+            }
+            .bits()
+            .into(),
             ..Default::default()
         }
     }
@@ -253,6 +295,11 @@ impl Node {
         self.size.to_ne()
     }
 
+    /// The disk usage of this file, in blocks.
+    pub fn blocks(&self) -> u64 {
+        self.blocks.to_ne()
+    }
+
     pub fn ctime(&self) -> (u64, u32) {
         (self.ctime.to_ne(), self.ctime_nsec.to_ne())
     }
@@ -267,6 +314,10 @@ impl Node {
 
     pub fn record_level(&self) -> BlockLevel {
         BlockLevel(self.record_level.to_ne() as usize)
+    }
+
+    pub fn flags(&self) -> NodeFlags {
+        NodeFlags::from_bits_retain(self.flags.to_ne())
     }
 
     pub fn set_mode(&mut self, mode: u16) {
@@ -289,6 +340,10 @@ impl Node {
         self.size = size.into();
     }
 
+    pub fn set_blocks(&mut self, blocks: u64) {
+        self.blocks = blocks.into();
+    }
+
     pub fn set_mtime(&mut self, mtime: u64, mtime_nsec: u32) {
         self.mtime = mtime.into();
         self.mtime_nsec = mtime_nsec.into();
@@ -297,6 +352,56 @@ impl Node {
     pub fn set_atime(&mut self, atime: u64, atime_nsec: u32) {
         self.atime = atime.into();
         self.atime_nsec = atime_nsec.into();
+    }
+
+    pub fn set_flags(&mut self, flags: NodeFlags) {
+        self.flags = flags.bits().into();
+    }
+
+    pub fn has_inline_data(&self) -> bool {
+        self.flags().contains(NodeFlags::INLINE_DATA)
+    }
+
+    pub fn inline_data(&self) -> Option<&[u8]> {
+        if self.has_inline_data() {
+            Some(unsafe {
+                slice::from_raw_parts(
+                    &self.level_data as *const NodeLevelData as *const u8,
+                    mem::size_of::<NodeLevelData>(),
+                )
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn inline_data_mut(&mut self) -> Option<&mut [u8]> {
+        if self.has_inline_data() {
+            Some(unsafe {
+                slice::from_raw_parts_mut(
+                    &mut self.level_data as *mut NodeLevelData as *mut u8,
+                    mem::size_of::<NodeLevelData>(),
+                )
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn level_data(&self) -> Option<&NodeLevelData> {
+        if !self.has_inline_data() {
+            Some(&self.level_data)
+        } else {
+            None
+        }
+    }
+
+    pub fn level_data_mut(&mut self) -> Option<&mut NodeLevelData> {
+        if !self.has_inline_data() {
+            Some(&mut self.level_data)
+        } else {
+            None
+        }
     }
 
     pub fn is_dir(&self) -> bool {
@@ -348,6 +453,7 @@ impl fmt::Debug for Node {
         let gid = self.gid;
         let links = self.links;
         let size = self.size;
+        let blocks = self.blocks;
         let ctime = self.ctime;
         let ctime_nsec = self.ctime_nsec;
         let mtime = self.mtime;
@@ -360,6 +466,7 @@ impl fmt::Debug for Node {
             .field("gid", &gid)
             .field("links", &links)
             .field("size", &size)
+            .field("blocks", &blocks)
             .field("ctime", &ctime)
             .field("ctime_nsec", &ctime_nsec)
             .field("mtime", &mtime)
@@ -393,6 +500,36 @@ impl ops::DerefMut for Node {
 #[test]
 fn node_size_test() {
     assert_eq!(mem::size_of::<Node>(), crate::BLOCK_SIZE as usize);
+}
+
+#[test]
+fn node_inline_data_test() {
+    let mut node = Node::default();
+    assert!(!node.has_inline_data());
+    assert!(node.inline_data().is_none());
+    assert!(node.inline_data_mut().is_none());
+    assert!(node.level_data().is_some());
+    assert!(node.level_data_mut().is_some());
+
+    node.set_flags(NodeFlags::INLINE_DATA);
+    assert!(node.has_inline_data());
+    assert!(node.level_data().is_none());
+    assert!(node.level_data_mut().is_none());
+
+    let node_addr = &node as *const Node as usize;
+    let meta_size = 128;
+    {
+        let inline_data = node.inline_data().unwrap();
+        let inline_data_addr = inline_data.as_ptr() as usize;
+        assert_eq!(node_addr + meta_size, inline_data_addr);
+        assert_eq!(inline_data.len(), (crate::BLOCK_SIZE as usize) - meta_size);
+    }
+    {
+        let inline_data = node.inline_data_mut().unwrap();
+        let inline_data_addr = inline_data.as_ptr() as usize;
+        assert_eq!(node_addr + meta_size, inline_data_addr);
+        assert_eq!(inline_data.len(), (crate::BLOCK_SIZE as usize) - meta_size);
+    }
 }
 
 #[cfg(kani)]
