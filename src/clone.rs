@@ -10,12 +10,13 @@ fn syscall_err(err: syscall::Error) -> io::Error {
 }
 
 //TODO: handle hard links
-pub fn clone_at<D: Disk, E: Disk>(
+pub fn clone_at<D: Disk, E: Disk, F: Fn(u64)>(
     tx_old: &mut Transaction<D>,
     parent_ptr_old: TreePtr<Node>,
     fs: &mut FileSystem<E>,
     parent_ptr: TreePtr<Node>,
     buf: &mut [u8],
+    progress: &F,
 ) -> syscall::Result<()> {
     let mut entries = Vec::new();
     tx_old.child_nodes(parent_ptr_old, &mut entries)?;
@@ -53,26 +54,40 @@ pub fn clone_at<D: Disk, E: Disk>(
             Ok(node_ptr)
         })?;
 
+        let size = fs.header.size();
+        let free = fs.allocator().free() * BLOCK_SIZE;
+        progress(size - free);
+
         if node_old.data().is_dir() {
-            clone_at(tx_old, node_ptr_old, fs, node_ptr, buf)?;
+            clone_at(tx_old, node_ptr_old, fs, node_ptr, buf, progress)?;
         }
     }
 
     Ok(())
 }
 
-pub fn clone<D: Disk, E: Disk>(
+pub fn clone<D: Disk, E: Disk, F: Fn(u64)>(
     fs_old: &mut FileSystem<D>,
     fs: &mut FileSystem<E>,
+    progress: F,
 ) -> syscall::Result<()> {
     fs_old.tx(|tx_old| {
         // Clone at root node
         let mut buf = vec![0; 4 * 1024 * 1024];
-        clone_at(tx_old, TreePtr::root(), fs, TreePtr::root(), &mut buf)?;
+        clone_at(
+            tx_old,
+            TreePtr::root(),
+            fs,
+            TreePtr::root(),
+            &mut buf,
+            &progress,
+        )?;
 
-        // Squash alloc log
-        fs.tx(|tx| tx.sync(true))?;
+        fs.tx(|tx| {
+            // Squash alloc log
+            tx.sync(true)?;
 
-        Ok(())
+            Ok(())
+        })
     })
 }
