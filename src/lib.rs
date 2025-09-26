@@ -28,7 +28,7 @@ pub use self::block::{
     BlockAddr, BlockData, BlockLevel, BlockList, BlockMeta, BlockPtr, BlockRaw, BlockTrait,
 };
 #[cfg(feature = "std")]
-pub use self::clone::{clone, clone_at};
+pub use self::clone::clone;
 pub use self::dir::{DirEntry, DirList};
 pub use self::disk::*;
 pub use self::filesystem::FileSystem;

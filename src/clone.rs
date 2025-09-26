@@ -10,13 +10,13 @@ fn syscall_err(err: syscall::Error) -> io::Error {
 }
 
 //TODO: handle hard links
-pub fn clone_at<D: Disk, E: Disk, F: Fn(u64)>(
+fn clone_at<D: Disk, E: Disk, F: FnMut(u64)>(
     tx_old: &mut Transaction<D>,
     parent_ptr_old: TreePtr<Node>,
     fs: &mut FileSystem<E>,
     parent_ptr: TreePtr<Node>,
     buf: &mut [u8],
-    progress: &F,
+    progress: &mut F,
 ) -> syscall::Result<()> {
     let mut entries = Vec::new();
     tx_old.child_nodes(parent_ptr_old, &mut entries)?;
@@ -66,10 +66,10 @@ pub fn clone_at<D: Disk, E: Disk, F: Fn(u64)>(
     Ok(())
 }
 
-pub fn clone<D: Disk, E: Disk, F: Fn(u64)>(
+pub fn clone<D: Disk, E: Disk, F: FnMut(u64)>(
     fs_old: &mut FileSystem<D>,
     fs: &mut FileSystem<E>,
-    progress: F,
+    mut progress: F,
 ) -> syscall::Result<()> {
     fs_old.tx(|tx_old| {
         // Clone at root node
@@ -80,7 +80,7 @@ pub fn clone<D: Disk, E: Disk, F: Fn(u64)>(
             fs,
             TreePtr::root(),
             &mut buf,
-            &progress,
+            &mut progress,
         )?;
 
         fs.tx(|tx| {
