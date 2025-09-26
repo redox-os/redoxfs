@@ -520,6 +520,7 @@ dependencies = [
  "argon2",
  "assert_cmd",
  "base64ct",
+ "bitflags",
  "endian-num",
  "env_logger",
  "fuser",

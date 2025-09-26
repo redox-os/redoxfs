@@ -40,6 +40,7 @@ required-features = ["std"]
 aes = { version = "0.8", default-features = false }
 argon2 = { version = "0.4", default-features = false, features = ["alloc"] }
 base64ct = { version = "1", default-features = false }
+bitflags = "2"
 endian-num = "0.1"
 env_logger = { version = "0.11", optional = true }
 getrandom = { version = "0.2.5", optional = true }

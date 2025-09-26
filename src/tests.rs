@@ -1,8 +1,8 @@
 use crate::htree::{HTreeHash, HTreeNode, HTreePtr, HTREE_IDX_ENTRIES};
 use crate::{
-    BlockAddr, BlockData, BlockMeta, BlockPtr, DirEntry, DirList, DiskMemory,
-    DiskSparse, FileSystem, Node, TreePtr, ALLOC_GC_THRESHOLD, BLOCK_SIZE,
-    transaction::FsCtx,
+    transaction::{level_data, level_data_mut, FsCtx},
+    BlockAddr, BlockData, BlockMeta, BlockPtr, DirEntry, DirList, DiskMemory, DiskSparse,
+    FileSystem, Node, TreePtr, ALLOC_GC_THRESHOLD, BLOCK_SIZE,
 };
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
@@ -289,8 +289,8 @@ fn create_minimal_l2_htree(
             let l2_ptr = tx.sync_block(&mut parent, l2).unwrap();
             let l2_ptr = unsafe { l2_ptr.cast() };
 
-            parent.data_mut().level0[0] = BlockPtr::marker(2);
-            parent.data_mut().level0[1] = l2_ptr;
+            level_data_mut(&mut parent)?.level0[0] = BlockPtr::marker(2);
+            level_data_mut(&mut parent)?.level0[1] = l2_ptr;
             let size = parent.data().size() + BLOCK_SIZE * 4;
             parent.data_mut().size = size.into();
             tx.sync_tree(parent).unwrap();
@@ -321,10 +321,10 @@ fn insert_dir_entry_without_hash_change() {
             // THEN the child node is added, but the H-Tree retains its structure, and the updated nodes retain
             // the old HTreeHash value
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 2);
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 2);
 
-            let l2_ptr = unsafe { parent.data().level0[1].cast() };
+            let l2_ptr = unsafe { level_data(&parent)?.level0[1].cast() };
             let l2: BlockData<HTreeNode<HTreeNode<DirList>>> = tx.read_block(l2_ptr).unwrap();
 
             let l1_ptr = l2.data().ptrs[0];
@@ -369,10 +369,10 @@ fn insert_dir_entry_without_hash_change() {
             // THEN the child node is removed, the H-Tree retains its structure, and the updated nodes retain
             // the old HTreeHash value
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 2);
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 2);
 
-            let l2_ptr = unsafe { parent.data().level0[1].cast() };
+            let l2_ptr = unsafe { level_data(&parent)?.level0[1].cast() };
             let l2: BlockData<HTreeNode<HTreeNode<DirList>>> = tx.read_block(l2_ptr).unwrap();
 
             let l1_ptr = l2.data().ptrs[0];
@@ -433,10 +433,10 @@ fn insert_dir_entry_with_hash_change() {
             // the new HTreeHash value
             let child2_htree_hash = HTreeHash::from_name(child2_name);
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 2);
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 2);
 
-            let l2_ptr = unsafe { parent.data().level0[1].cast() };
+            let l2_ptr = unsafe { level_data(&parent)?.level0[1].cast() };
             let l2: BlockData<HTreeNode<HTreeNode<DirList>>> = tx.read_block(l2_ptr).unwrap();
 
             let l1_ptr = l2.data().ptrs[0];
@@ -482,10 +482,10 @@ fn insert_dir_entry_with_hash_change() {
             // to child1's HTreeHash value
             let child1_htree_hash = HTreeHash::from_name(child1_name);
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 2);
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 2);
 
-            let l2_ptr = unsafe { parent.data().level0[1].cast() };
+            let l2_ptr = unsafe { level_data(&parent)?.level0[1].cast() };
             let l2: BlockData<HTreeNode<HTreeNode<DirList>>> = tx.read_block(l2_ptr).unwrap();
 
             let l1_ptr = l2.data().ptrs[0];
@@ -546,8 +546,8 @@ fn delete_to_empty() {
             );
 
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(!parent.data().level0[0].is_marker());
-            assert!(parent.data().level0[0].addr().is_null());
+            assert!(!level_data(&parent)?.level0[0].is_marker());
+            assert!(level_data(&parent)?.level0[0].addr().is_null());
 
             Ok(())
         })
@@ -570,11 +570,11 @@ fn split_htree_level0_to_level1() {
 
             // Confirm preconditions: the level 0 is full of the expected entries.
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 0);
-            assert!(!parent.data().level0[0].addr().is_null());
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 0);
+            assert!(!level_data(&parent)?.level0[0].addr().is_null());
 
-            let dir_ptr: BlockPtr<DirList> = unsafe { parent.data().level0[1].cast() };
+            let dir_ptr: BlockPtr<DirList> = unsafe { level_data(&parent)?.level0[1].cast() };
             let dir_list = tx.read_block(dir_ptr).unwrap();
             for (i, entry) in dir_list.data().entries().enumerate() {
                 assert_eq!(entry.name().unwrap(), format!("child__{i:0243}"));
@@ -599,11 +599,12 @@ fn split_htree_level0_to_level1() {
         // THEN the level is increased and the DirList is split
         fs.tx(|tx| {
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 1);
-            assert!(!parent.data().level0[1].addr().is_null());
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 1);
+            assert!(!level_data(&parent)?.level0[1].addr().is_null());
 
-            let htree_ptr: BlockPtr<HTreeNode<DirList>> = unsafe { parent.data().level0[1].cast() };
+            let htree_ptr: BlockPtr<HTreeNode<DirList>> =
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let htree_node = tx.read_block(htree_ptr).unwrap();
             assert!(!htree_node.data().ptrs[0].is_null());
             assert_eq!(
@@ -654,11 +655,12 @@ fn split_htree_level0_to_level1() {
         // THEN only the other split remains
         fs.tx(|tx| {
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 1);
-            assert!(!parent.data().level0[1].addr().is_null());
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 1);
+            assert!(!level_data(&parent)?.level0[1].addr().is_null());
 
-            let htree_ptr: BlockPtr<HTreeNode<DirList>> = unsafe { parent.data().level0[1].cast() };
+            let htree_ptr: BlockPtr<HTreeNode<DirList>> =
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let htree_node = tx.read_block(htree_ptr).unwrap();
             assert!(!htree_node.data().ptrs[0].is_null());
             assert_eq!(
@@ -692,8 +694,8 @@ fn split_htree_level0_to_level1() {
         // THEN the level1 is collapsed back to an empty state
         fs.tx(|tx| {
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(!parent.data().level0[0].is_marker());
-            assert!(parent.data().level0[1].is_null());
+            assert!(!level_data(&parent)?.level0[0].is_marker());
+            assert!(level_data(&parent)?.level0[1].is_null());
             Ok(())
         })
         .unwrap();
@@ -717,11 +719,11 @@ fn split_htree_with_multiple_levels() {
 
             // Confirm preconditions: the level 0 is full of the expected entries.
             let mut parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 2);
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 2);
 
             let l2_ptr: BlockPtr<HTreeNode<HTreeNode<DirList>>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let mut l2_node = tx.read_block(l2_ptr).unwrap();
             for i in 0..HTREE_IDX_ENTRIES {
                 if i == 0 {
@@ -745,7 +747,7 @@ fn split_htree_with_multiple_levels() {
 
             l2_node.data_mut().ptrs[0].ptr = unsafe { tx.write_block(l1_node) }.unwrap();
             let l2_record_ptr = unsafe { tx.write_block(l2_node) }.unwrap();
-            parent.data_mut().level0[1] = unsafe { l2_record_ptr.cast() };
+            level_data_mut(&mut parent)?.level0[1] = unsafe { l2_record_ptr.cast() };
             tx.sync_tree(parent).unwrap();
 
             Ok(())
@@ -767,12 +769,12 @@ fn split_htree_with_multiple_levels() {
         // THEN the branch splits all the way to the root, increasing the level
         fs.tx(|tx| {
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 3);
-            assert!(!parent.data().level0[1].addr().is_null());
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 3);
+            assert!(!level_data(&parent)?.level0[1].addr().is_null());
 
             let htree_ptr: BlockPtr<HTreeNode<HTreeNode<HTreeNode<DirList>>>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let htree_node = tx.read_block(htree_ptr).unwrap();
 
             // Note that while a split tries to evenly divide the H-tree entries between the new two sibling nodes,
@@ -817,7 +819,7 @@ fn split_htree_with_multiple_levels() {
         fs.tx(|tx| {
             let parent = tx.read_tree(parent_ptr).unwrap();
             let htree_ptr: BlockPtr<HTreeNode<HTreeNode<HTreeNode<DirList>>>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let htree_node = tx.read_block(htree_ptr).unwrap();
 
             assert!(!htree_node.data().ptrs[0].is_null());
@@ -864,7 +866,7 @@ fn split_htree_with_multiple_levels() {
         fs.tx(|tx| {
             let parent = tx.read_tree(parent_ptr).unwrap();
             let htree_ptr: BlockPtr<HTreeNode<HTreeNode<HTreeNode<DirList>>>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let htree_node = tx.read_block(htree_ptr).unwrap();
 
             assert!(!htree_node.data().ptrs[0].is_null());
@@ -914,7 +916,7 @@ fn split_htree_with_multiple_levels() {
         fs.tx(|tx| {
             let parent = tx.read_tree(parent_ptr).unwrap();
             let htree_ptr: BlockPtr<HTreeNode<HTreeNode<HTreeNode<DirList>>>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let htree_node = tx.read_block(htree_ptr).unwrap();
 
             assert!(!htree_node.data().ptrs[0].is_null());
@@ -945,11 +947,11 @@ fn split_htree_with_multiple_levels_using_duplicates() {
 
             // Confirm preconditions: the level 0 is full of the expected entries.
             let mut parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 2);
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 2);
 
             let l2_ptr: BlockPtr<HTreeNode<HTreeNode<DirList>>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let mut l2_node = tx.read_block(l2_ptr).unwrap();
             for i in 0..HTREE_IDX_ENTRIES {
                 if i == 0 {
@@ -973,7 +975,7 @@ fn split_htree_with_multiple_levels_using_duplicates() {
 
             l2_node.data_mut().ptrs[0].ptr = unsafe { tx.write_block(l1_node) }.unwrap();
             let l2_record_ptr = unsafe { tx.write_block(l2_node) }.unwrap();
-            parent.data_mut().level0[1] = unsafe { l2_record_ptr.cast() };
+            level_data_mut(&mut parent)?.level0[1] = unsafe { l2_record_ptr.cast() };
             tx.sync_tree(parent).unwrap();
 
             Ok(())
@@ -987,12 +989,12 @@ fn split_htree_with_multiple_levels_using_duplicates() {
         // THEN the branch splits all the way to the root, increasing the level
         fs.tx(|tx| {
             let parent = tx.read_tree(parent_ptr).unwrap();
-            assert!(parent.data().level0[0].is_marker());
-            assert_eq!(parent.data().level0[0].addr().level().0, 3);
-            assert!(!parent.data().level0[1].addr().is_null());
+            assert!(level_data(&parent)?.level0[0].is_marker());
+            assert_eq!(level_data(&parent)?.level0[0].addr().level().0, 3);
+            assert!(!level_data(&parent)?.level0[1].addr().is_null());
 
             let htree_ptr: BlockPtr<HTreeNode<HTreeNode<HTreeNode<DirList>>>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let htree_node = tx.read_block(htree_ptr).unwrap();
 
             // Note that while a split tries to evenly divide the H-tree entries between the new two sibling nodes,
@@ -1040,7 +1042,7 @@ fn split_htree_with_multiple_levels_using_duplicates() {
         fs.tx(|tx| {
             let parent = tx.read_tree(parent_ptr).unwrap();
             let htree_ptr: BlockPtr<HTreeNode<HTreeNode<HTreeNode<DirList>>>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             let htree_node = tx.read_block(htree_ptr).unwrap();
 
             assert!(!htree_node.data().ptrs[0].is_null());

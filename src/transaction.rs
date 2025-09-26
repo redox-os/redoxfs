@@ -15,9 +15,18 @@ use syscall::error::{
 use crate::{
     htree::{self, HTreeHash, HTreeNode, HTreePtr},
     AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockMeta, BlockPtr,
-    BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, RecordRaw, TreeData,
-    TreePtr, ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
+    BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, NodeLevelData,
+    RecordRaw, TreeData, TreePtr, ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH,
+    HEADER_RING,
 };
+
+pub(crate) fn level_data(node: &TreeData<Node>) -> Result<&NodeLevelData> {
+    node.data().level_data().ok_or(Error::new(EIO))
+}
+
+pub(crate) fn level_data_mut(node: &mut TreeData<Node>) -> Result<&mut NodeLevelData> {
+    node.data_mut().level_data_mut().ok_or(Error::new(EIO))
+}
 
 pub trait AllocCtx {
     fn allocate(&mut self, _addr: BlockAddr) {}
@@ -706,18 +715,18 @@ impl<'a, D: Disk> Transaction<'a, D> {
         children: &mut Vec<DirEntry>,
     ) -> Result<()> {
         let parent = self.read_tree(parent_ptr)?;
-        if parent.data().level0[0].is_marker() {
-            let htree_levels = parent.data().level0[0].addr().level().0;
+        if level_data(&parent)?.level0[0].is_marker() {
+            let htree_levels = level_data(&parent)?.level0[0].addr().level().0;
             let htree_root = if htree_levels == 0 {
                 // Create a fake root to satisfy the recursive child_nodes_inner function signature
                 let mut fake_htree_node =
                     BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
-                let dir_ptr = parent.data().level0[1];
+                let dir_ptr = level_data(&parent)?.level0[1];
                 let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
                 fake_htree_node.data_mut().ptrs[0] = htree_ptr;
                 fake_htree_node
             } else {
-                let htree_record_ptr = parent.data().level0[1];
+                let htree_record_ptr = level_data(&parent)?.level0[1];
                 let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { htree_record_ptr.cast() };
                 self.read_block(htree_ptr)?
             };
@@ -756,23 +765,23 @@ impl<'a, D: Disk> Transaction<'a, D> {
     /// Returns ENOENT if this node is not found.
     pub fn find_node(&mut self, parent_ptr: TreePtr<Node>, name: &str) -> Result<TreeData<Node>> {
         let parent = self.read_tree(parent_ptr)?;
-        if !parent.data().level0[0].is_marker() {
+        if !level_data(&parent)?.level0[0].is_marker() {
             return Err(Error::new(ENOENT));
         }
 
-        let htree_levels = parent.data().level0[0].addr().level().0;
+        let htree_levels = level_data(&parent)?.level0[0].addr().level().0;
 
         let root_htree_node = if htree_levels == 0 {
             // Create a fake root to satisfy the recursive inner_find_node function signature
             let mut fake_htree_node =
                 BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
-            let dir_ptr = parent.data().level0[1];
+            let dir_ptr = level_data(&parent)?.level0[1];
             let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
             fake_htree_node.data_mut().ptrs[0] = htree_ptr;
             fake_htree_node
         } else {
             let root_htree_ptr: BlockPtr<HTreeNode<RecordRaw>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             self.read_block(root_htree_ptr)?
         };
 
@@ -881,37 +890,37 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let record_byte_size = parent.data().record_level().bytes();
 
         // If this is a brand new directory, create the first DirList block
-        if !parent.data().level0[0].is_marker() {
+        if !level_data(&parent)?.level0[0].is_marker() {
             let marker: BlockPtr<RecordRaw> = BlockPtr::marker(0);
             assert!(marker.is_marker());
 
-            parent.data_mut().level0[0] = BlockPtr::marker(0);
-            assert!(parent.data().level0[0].is_marker());
+            level_data_mut(&mut parent)?.level0[0] = BlockPtr::marker(0);
+            assert!(level_data(&parent)?.level0[0].is_marker());
 
             // Create the first DirList block
             let dir = BlockData::<DirList>::empty(BlockAddr::default()).unwrap();
             let dir_ptr = self.sync_block(&mut parent, dir)?;
 
             // Add the DirList directly to the parent directory
-            parent.data_mut().level0[1] = unsafe { dir_ptr.cast() };
+            level_data_mut(&mut parent)?.level0[1] = unsafe { dir_ptr.cast() };
             let size = parent.data().size() + record_byte_size;
             parent.data_mut().set_size(size);
         }
 
-        let mut htree_levels = parent.data().level0[0].addr().level().0;
+        let mut htree_levels = level_data(&parent)?.level0[0].addr().level().0;
 
         let mut htree_root = if htree_levels == 0 {
             // If we have no H-tree root, create a fake one to satisfy the recurisve inner_link_node function
             let mut fake_htree_node =
                 BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
-            let dir_ptr = parent.data().level0[1];
+            let dir_ptr = level_data(&parent)?.level0[1];
             let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
             fake_htree_node.data_mut().ptrs[0] = htree_ptr;
             fake_htree_node
         } else {
             // Otherwise get the real H-tree root
             let htree_root_ptr: BlockPtr<HTreeNode<RecordRaw>> =
-                unsafe { parent.data().level0[1].cast() };
+                unsafe { level_data(&parent)?.level0[1].cast() };
             self.read_block(htree_root_ptr)?
         };
 
@@ -926,7 +935,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         // If we used a fake root, and we grew beyond a single DirList block, we need to create a real root
         if htree_levels == 0 && !htree_root.data().ptrs[1].is_null() {
             htree_levels = 1;
-            parent.data_mut().level0[0] = BlockPtr::marker(1);
+            level_data_mut(&mut parent)?.level0[0] = BlockPtr::marker(1);
             let size = parent.data().size() + record_byte_size;
             parent.data_mut().set_size(size);
         }
@@ -961,17 +970,17 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let new_root_ptr = self.sync_block(&mut parent, new_root)?;
 
             // Add the parent node pointer, increase the level, and increase one block size per allocated block
-            parent.data_mut().level0[0] = BlockPtr::marker(htree_levels as u8 + 1);
-            parent.data_mut().level0[1] = unsafe { new_root_ptr.cast() };
+            level_data_mut(&mut parent)?.level0[0] = BlockPtr::marker(htree_levels as u8 + 1);
+            level_data_mut(&mut parent)?.level0[1] = unsafe { new_root_ptr.cast() };
             let size = parent.data().size() + 2 * record_byte_size;
             parent.data_mut().set_size(size);
         } else if htree_levels > 0 {
             // Update the parent node with the new root pointer
             let root_block_ptr = self.sync_block(&mut parent, htree_root)?;
-            parent.data_mut().level0[1] = unsafe { root_block_ptr.cast() };
+            level_data_mut(&mut parent)?.level0[1] = unsafe { root_block_ptr.cast() };
         } else {
             // Update the parent with the DirList block, ignoring the fake htree_root
-            parent.data_mut().level0[1] = htree_root.data().ptrs[0].ptr;
+            level_data_mut(&mut parent)?.level0[1] = htree_root.data().ptrs[0].ptr;
         }
         self.sync_trees(&[parent, node])?;
         Ok(())
@@ -1079,26 +1088,26 @@ impl<'a, D: Disk> Transaction<'a, D> {
         );
 
         let mut parent = self.read_tree(parent_ptr)?;
-        if !parent.data().level0[0].is_marker() {
+        if !level_data(&parent)?.level0[0].is_marker() {
             #[cfg(feature = "log")]
             log::error!("REMOVE_NODE: Parent has no htree marker set (not a directory or empty)");
             return Err(Error::new(ENOENT));
         }
 
-        let htree_levels = parent.data().level0[0].addr().level().0;
+        let htree_levels = level_data(&parent)?.level0[0].addr().level().0;
         let name_hash = HTreeHash::from_name(name);
 
         let mut htree_root = if htree_levels == 0 {
             // If we have no H-tree root, create a fake one to satisfy the recurisve inner_link_node function
             let mut fake_htree_node =
                 BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
-            let dir_ptr = parent.data().level0[1];
+            let dir_ptr = level_data(&parent)?.level0[1];
             let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
             fake_htree_node.data_mut().ptrs[0] = htree_ptr;
             fake_htree_node
         } else {
             // Otherwise get the real H-tree root
-            let htree_root_record_ptr = parent.data().level0[1];
+            let htree_root_record_ptr = level_data(&parent)?.level0[1];
             let htree_root_ptr: BlockPtr<HTreeNode<RecordRaw>> =
                 unsafe { htree_root_record_ptr.cast() };
             self.read_block(htree_root_ptr)?
@@ -1161,16 +1170,16 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 let size = parent.data().size() - record_byte_size;
                 parent.data_mut().set_size(size);
             }
-            parent.data_mut().level0[0] = BlockPtr::default();
-            parent.data_mut().level0[1] = BlockPtr::default();
+            level_data_mut(&mut parent)?.level0[0] = BlockPtr::default();
+            level_data_mut(&mut parent)?.level0[1] = BlockPtr::default();
         } else if htree_levels > 0 {
             // Update the real htree_root and update the ptr in the parent
             let htree_root_block_ptr = self.sync_block(&mut parent, htree_root)?;
-            parent.data_mut().level0[1] = unsafe { htree_root_block_ptr.cast() };
+            level_data_mut(&mut parent)?.level0[1] = unsafe { htree_root_block_ptr.cast() };
         } else {
             // The htree_root is fake, so update the parent with the ptr to the one and only directory list
             let dir_list_block_ptr = htree_root.data().ptrs[0].ptr;
-            parent.data_mut().level0[1] = unsafe { dir_list_block_ptr.cast() };
+            level_data_mut(&mut parent)?.level0[1] = unsafe { dir_list_block_ptr.cast() };
         }
 
         if remove_node {
@@ -1348,24 +1357,24 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ) -> Result<BlockPtr<RecordRaw>> {
         unsafe {
             match NodeLevel::new(record_offset).ok_or(Error::new(ERANGE))? {
-                NodeLevel::L0(i0) => Ok(node.data().level0[i0]),
+                NodeLevel::L0(i0) => Ok(level_data(node)?.level0[i0]),
                 NodeLevel::L1(i1, i0) => {
-                    let l0 = self.read_block_or_empty(node.data().level1[i1])?;
+                    let l0 = self.read_block_or_empty(level_data(node)?.level1[i1])?;
                     Ok(l0.data().ptrs[i0])
                 }
                 NodeLevel::L2(i2, i1, i0) => {
-                    let l1 = self.read_block_or_empty(node.data().level2[i2])?;
+                    let l1 = self.read_block_or_empty(level_data(node)?.level2[i2])?;
                     let l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
                     Ok(l0.data().ptrs[i0])
                 }
                 NodeLevel::L3(i3, i2, i1, i0) => {
-                    let l2 = self.read_block_or_empty(node.data().level3[i3])?;
+                    let l2 = self.read_block_or_empty(level_data(node)?.level3[i3])?;
                     let l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     let l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
                     Ok(l0.data().ptrs[i0])
                 }
                 NodeLevel::L4(i4, i3, i2, i1, i0) => {
-                    let l3 = self.read_block_or_empty(node.data().level4[i4])?;
+                    let l3 = self.read_block_or_empty(level_data(node)?.level4[i4])?;
                     let l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
                     let l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     let l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
@@ -1383,21 +1392,21 @@ impl<'a, D: Disk> Transaction<'a, D> {
         unsafe {
             match NodeLevel::new(record_offset).ok_or(Error::new(ERANGE))? {
                 NodeLevel::L0(i0) => {
-                    let ptr = node.data_mut().level0[i0].clear();
+                    let ptr = level_data_mut(node)?.level0[i0].clear();
                     self.deallocate_block(node, ptr);
                 }
                 NodeLevel::L1(i1, i0) => {
-                    let mut l0 = self.read_block_or_empty(node.data().level1[i1])?;
+                    let mut l0 = self.read_block_or_empty(level_data(node)?.level1[i1])?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
-                        let ptr = node.data_mut().level1[i1].clear();
+                        let ptr = level_data_mut(node)?.level1[i1].clear();
                         self.deallocate_block(node, ptr);
                     } else {
-                        node.data_mut().level1[i1] = self.sync_block(node, l0)?;
+                        level_data_mut(node)?.level1[i1] = self.sync_block(node, l0)?;
                     }
                 }
                 NodeLevel::L2(i2, i1, i0) => {
-                    let mut l1 = self.read_block_or_empty(node.data().level2[i2])?;
+                    let mut l1 = self.read_block_or_empty(level_data(node)?.level2[i2])?;
                     let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
@@ -1406,14 +1415,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
                         l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
                     }
                     if l1.data().is_empty() {
-                        let ptr = node.data_mut().level2[i2].clear();
+                        let ptr = level_data_mut(node)?.level2[i2].clear();
                         self.deallocate_block(node, ptr);
                     } else {
-                        node.data_mut().level2[i2] = self.sync_block(node, l1)?;
+                        level_data_mut(node)?.level2[i2] = self.sync_block(node, l1)?;
                     }
                 }
                 NodeLevel::L3(i3, i2, i1, i0) => {
-                    let mut l2 = self.read_block_or_empty(node.data().level3[i3])?;
+                    let mut l2 = self.read_block_or_empty(level_data(node)?.level3[i3])?;
                     let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
@@ -1428,14 +1437,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
                         l2.data_mut().ptrs[i2] = self.sync_block(node, l1)?;
                     }
                     if l2.data().is_empty() {
-                        let ptr = node.data_mut().level3[i3].clear();
+                        let ptr = level_data_mut(node)?.level3[i3].clear();
                         self.deallocate_block(node, ptr);
                     } else {
-                        node.data_mut().level3[i3] = self.sync_block(node, l2)?;
+                        level_data_mut(node)?.level3[i3] = self.sync_block(node, l2)?;
                     }
                 }
                 NodeLevel::L4(i4, i3, i2, i1, i0) => {
-                    let mut l3 = self.read_block_or_empty(node.data().level4[i4])?;
+                    let mut l3 = self.read_block_or_empty(level_data(node)?.level4[i4])?;
                     let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
                     let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
@@ -1456,10 +1465,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
                         l3.data_mut().ptrs[i3] = self.sync_block(node, l2)?;
                     }
                     if l3.data().is_empty() {
-                        let ptr = node.data_mut().level4[i4].clear();
+                        let ptr = level_data_mut(node)?.level4[i4].clear();
                         self.deallocate_block(node, ptr);
                     } else {
-                        node.data_mut().level4[i4] = self.sync_block(node, l3)?;
+                        level_data_mut(node)?.level4[i4] = self.sync_block(node, l3)?;
                     }
                 }
             }
@@ -1478,34 +1487,34 @@ impl<'a, D: Disk> Transaction<'a, D> {
         unsafe {
             match NodeLevel::new(record_offset).ok_or(Error::new(ERANGE))? {
                 NodeLevel::L0(i0) => {
-                    node.data_mut().level0[i0] = ptr;
+                    level_data_mut(node)?.level0[i0] = ptr;
                 }
                 NodeLevel::L1(i1, i0) => {
-                    let mut l0 = self.read_block_or_empty(node.data().level1[i1])?;
+                    let mut l0 = self.read_block_or_empty(level_data(node)?.level1[i1])?;
 
                     l0.data_mut().ptrs[i0] = ptr;
-                    node.data_mut().level1[i1] = self.sync_block(node, l0)?;
+                    level_data_mut(node)?.level1[i1] = self.sync_block(node, l0)?;
                 }
                 NodeLevel::L2(i2, i1, i0) => {
-                    let mut l1 = self.read_block_or_empty(node.data().level2[i2])?;
+                    let mut l1 = self.read_block_or_empty(level_data(node)?.level2[i2])?;
                     let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
-                    node.data_mut().level2[i2] = self.sync_block(node, l1)?;
+                    level_data_mut(node)?.level2[i2] = self.sync_block(node, l1)?;
                 }
                 NodeLevel::L3(i3, i2, i1, i0) => {
-                    let mut l2 = self.read_block_or_empty(node.data().level3[i3])?;
+                    let mut l2 = self.read_block_or_empty(level_data(node)?.level3[i3])?;
                     let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
                     l2.data_mut().ptrs[i2] = self.sync_block(node, l1)?;
-                    node.data_mut().level3[i3] = self.sync_block(node, l2)?;
+                    level_data_mut(node)?.level3[i3] = self.sync_block(node, l2)?;
                 }
                 NodeLevel::L4(i4, i3, i2, i1, i0) => {
-                    let mut l3 = self.read_block_or_empty(node.data().level4[i4])?;
+                    let mut l3 = self.read_block_or_empty(level_data(node)?.level4[i4])?;
                     let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
                     let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
                     let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
@@ -1514,7 +1523,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
                     l2.data_mut().ptrs[i2] = self.sync_block(node, l1)?;
                     l3.data_mut().ptrs[i3] = self.sync_block(node, l2)?;
-                    node.data_mut().level4[i4] = self.sync_block(node, l3)?;
+                    level_data_mut(node)?.level4[i4] = self.sync_block(node, l3)?;
                 }
             }
         }
