@@ -16,7 +16,7 @@ pub const BLOCK_SIZE: u64 = 4096;
 pub const RECORD_LEVEL: usize = 5;
 pub const RECORD_SIZE: u64 = BLOCK_SIZE << RECORD_LEVEL;
 pub const SIGNATURE: &[u8; 8] = b"RedoxFS\0";
-pub const VERSION: u64 = 7;
+pub const VERSION: u64 = 8;
 pub const DIR_ENTRY_MAX_LENGTH: usize = 252;
 
 pub static IS_UMT: AtomicUsize = AtomicUsize::new(0);
@@ -25,8 +25,10 @@ pub use self::allocator::{AllocEntry, AllocList, Allocator, ALLOC_LIST_ENTRIES};
 #[cfg(feature = "std")]
 pub use self::archive::{archive, archive_at};
 pub use self::block::{
-    BlockAddr, BlockData, BlockLevel, BlockList, BlockPtr, BlockRaw, BlockTrait,
+    BlockAddr, BlockData, BlockLevel, BlockList, BlockMeta, BlockPtr, BlockRaw, BlockTrait,
 };
+#[cfg(feature = "std")]
+pub use self::clone::clone;
 pub use self::dir::{DirEntry, DirList};
 pub use self::disk::*;
 pub use self::filesystem::FileSystem;
@@ -34,7 +36,7 @@ pub use self::header::{Header, HEADER_RING};
 pub use self::key::{Key, KeySlot, Salt};
 #[cfg(feature = "std")]
 pub use self::mount::mount;
-pub use self::node::{Node, NodeLevel};
+pub use self::node::{Node, NodeFlags, NodeLevel, NodeLevelData};
 pub use self::record::RecordRaw;
 pub use self::transaction::Transaction;
 pub use self::tree::{Tree, TreeData, TreeList, TreePtr};
@@ -45,6 +47,8 @@ mod allocator;
 #[cfg(feature = "std")]
 mod archive;
 mod block;
+#[cfg(feature = "std")]
+mod clone;
 mod dir;
 mod disk;
 mod filesystem;

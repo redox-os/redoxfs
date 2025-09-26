@@ -76,3 +76,9 @@ impl Disk for DiskFile {
         self.file.seek(SeekFrom::End(0)).or_eio()
     }
 }
+
+impl From<File> for DiskFile {
+    fn from(file: File) -> Self {
+        Self { file }
+    }
+}
