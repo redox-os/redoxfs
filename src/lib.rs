@@ -36,7 +36,7 @@ pub use self::header::{Header, HEADER_RING};
 pub use self::key::{Key, KeySlot, Salt};
 #[cfg(feature = "std")]
 pub use self::mount::mount;
-pub use self::node::{Node, NodeLevel, NodeLevelData};
+pub use self::node::{Node, NodeFlags, NodeLevel, NodeLevelData};
 pub use self::record::RecordRaw;
 pub use self::transaction::Transaction;
 pub use self::tree::{Tree, TreeData, TreeList, TreePtr};

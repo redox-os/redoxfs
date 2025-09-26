@@ -15,17 +15,25 @@ use syscall::error::{
 use crate::{
     htree::{self, HTreeHash, HTreeNode, HTreePtr},
     AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockMeta, BlockPtr,
-    BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeLevel, NodeLevelData,
-    RecordRaw, TreeData, TreePtr, ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH,
-    HEADER_RING,
+    BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeFlags, NodeLevel,
+    NodeLevelData, RecordRaw, TreeData, TreePtr, ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES,
+    DIR_ENTRY_MAX_LENGTH, HEADER_RING,
 };
 
 pub(crate) fn level_data(node: &TreeData<Node>) -> Result<&NodeLevelData> {
-    node.data().level_data().ok_or(Error::new(EIO))
+    node.data().level_data().ok_or_else(|| {
+        #[cfg(feature = "log")]
+        log::error!("LEVEL_DATA: NODE HAS INLINE DATA");
+        Error::new(EIO)
+    })
 }
 
 pub(crate) fn level_data_mut(node: &mut TreeData<Node>) -> Result<&mut NodeLevelData> {
-    node.data_mut().level_data_mut().ok_or(Error::new(EIO))
+    node.data_mut().level_data_mut().ok_or_else(|| {
+        #[cfg(feature = "log")]
+        log::error!("LEVEL_DATA_MUT: NODE HAS INLINE DATA");
+        Error::new(EIO)
+    })
 }
 
 pub trait AllocCtx {
@@ -1538,6 +1546,20 @@ impl<'a, D: Disk> Transaction<'a, D> {
         buf: &mut [u8],
     ) -> Result<usize> {
         let node_size = node.data().size();
+
+        // Try reading from inline data
+        if let Some(inline_data) = node.data().inline_data() {
+            if offset >= node_size {
+                return Ok(0);
+            }
+
+            let end = min(node_size, offset + (buf.len() as u64));
+            let len = end - offset;
+            buf[..len as usize].copy_from_slice(&inline_data[offset as usize..end as usize]);
+            offset += len;
+            return Ok(len as usize);
+        }
+
         let record_level = node.data().record_level();
 
         let mut bytes_read = 0;
@@ -1631,7 +1653,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 self.write_node_inner(node, &mut offset, &zeroes[start as usize..end as usize])?;
             }
             assert_eq!(offset, size);
-        } else {
+        } else if !node.data().has_inline_data() {
             // Deallocate records
             for record in
                 (size.div_ceil(record_level.bytes())..old_size / record_level.bytes()).rev()
@@ -1670,7 +1692,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    pub fn write_node_inner(
+    fn write_node_inner_records(
         &mut self,
         node: &mut TreeData<Node>,
         offset: &mut u64,
@@ -1766,6 +1788,49 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         if node.data().size() < *offset {
             node.data_mut().set_size(*offset);
+            node_changed = true;
+        }
+
+        Ok(node_changed)
+    }
+
+    pub fn write_node_inner(
+        &mut self,
+        node: &mut TreeData<Node>,
+        offset: &mut u64,
+        buf: &[u8],
+    ) -> Result<bool> {
+        let mut node_changed = false;
+
+        // Try writing to inline data
+        let node_size = node.data().size();
+        let convert_inline = if let Some(inline_data) = node.data_mut().inline_data_mut() {
+            let end = *offset + (buf.len() as u64);
+            if end < inline_data.len() as u64 {
+                inline_data[*offset as usize..end as usize].copy_from_slice(buf);
+                *offset += buf.len() as u64;
+                if node.data().size() < *offset {
+                    node.data_mut().set_size(*offset);
+                }
+                return Ok(true);
+            } else {
+                Some(inline_data[..node_size as usize].to_vec())
+            }
+        } else {
+            None
+        };
+
+        if let Some(inline_data) = convert_inline {
+            // If inline data cannot fit, convert to records
+            let mut flags = node.data().flags();
+            flags.remove(NodeFlags::INLINE_DATA);
+            node.data_mut().set_flags(flags);
+            node.data_mut().level_data = NodeLevelData::default();
+            self.write_node_inner_records(node, &mut 0, &inline_data)?;
+            node_changed = true;
+        }
+
+        if self.write_node_inner_records(node, offset, buf)? {
             node_changed = true;
         }
 

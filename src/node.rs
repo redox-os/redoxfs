@@ -181,8 +181,8 @@ pub struct Node {
     /// Padding
     pub padding: [u8; BLOCK_SIZE as usize - 4042],
 
-    /// Level data, kept private so inline data can be supported
-    level_data: NodeLevelData,
+    /// Level data, should not be used directly so inline data can be supported
+    pub(crate) level_data: NodeLevelData,
 }
 
 unsafe impl BlockTrait for Node {
@@ -252,6 +252,14 @@ impl Node {
                 // Folders do not
                 0
             }
+            .into(),
+            flags: if mode & Self::MODE_TYPE == Self::MODE_DIR {
+                // Directories must not use inline data (until h-tree supports it)
+                NodeFlags::empty()
+            } else {
+                NodeFlags::INLINE_DATA
+            }
+            .bits()
             .into(),
             ..Default::default()
         }
