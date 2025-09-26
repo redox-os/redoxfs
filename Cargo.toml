@@ -25,6 +25,12 @@ doc = false
 required-features = ["std"]
 
 [[bin]]
+name = "redoxfs-clone"
+path = "src/bin/clone.rs"
+doc = false
+required-features = ["std"]
+
+[[bin]]
 name = "redoxfs-mkfs"
 path = "src/bin/mkfs.rs"
 doc = false

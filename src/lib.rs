@@ -27,6 +27,8 @@ pub use self::archive::{archive, archive_at};
 pub use self::block::{
     BlockAddr, BlockData, BlockLevel, BlockList, BlockMeta, BlockPtr, BlockRaw, BlockTrait,
 };
+#[cfg(feature = "std")]
+pub use self::clone::{clone, clone_at};
 pub use self::dir::{DirEntry, DirList};
 pub use self::disk::*;
 pub use self::filesystem::FileSystem;
@@ -45,6 +47,8 @@ mod allocator;
 #[cfg(feature = "std")]
 mod archive;
 mod block;
+#[cfg(feature = "std")]
+mod clone;
 mod dir;
 mod disk;
 mod filesystem;
