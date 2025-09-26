@@ -71,7 +71,7 @@ pub fn clone<D: Disk, E: Disk>(
         clone_at(tx_old, TreePtr::root(), fs, TreePtr::root(), &mut buf)?;
 
         // Squash alloc log
-        //TODO tx.sync(true)?;
+        fs.tx(|tx| tx.sync(true))?;
 
         Ok(())
     })
