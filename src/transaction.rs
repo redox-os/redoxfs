@@ -19,7 +19,7 @@ use crate::{
     TreePtr, ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
 };
 
-trait AllocCtx {
+pub trait AllocCtx {
     fn allocate(&mut self, _addr: BlockAddr) {}
     fn deallocate(&mut self, _addr: BlockAddr) {}
 }

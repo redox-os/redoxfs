@@ -253,9 +253,10 @@ impl<D: Disk> Resource<D> for DirResource {
     ) -> Result<DirentBuf<&'buf mut [u8]>> {
         match &self.data {
             Some(data) => {
-                for (idx, entry) in data.iter().enumerate().skip(opaque_offset as usize) {
+                let opaque_offset = opaque_offset as usize;
+                for (idx, entry) in data.iter().enumerate().skip(opaque_offset) {
                     let child = tx.read_tree(entry.node_ptr)?;
-                    buf.entry(DirEntry {
+                    let result = buf.entry(DirEntry {
                         inode: child.id() as u64,
                         next_opaque_id: idx as u64 + 1,
                         name: &entry.name,
@@ -266,7 +267,15 @@ impl<D: Disk> Resource<D> for DirResource {
                             //TODO: more types?
                             _ => DirentKind::Unspecified,
                         },
-                    })?;
+                    });
+                    if let Err(err) = result {
+                        if err.errno == EINVAL && idx > opaque_offset {
+                            // POSIX allows partial result of getdents
+                            break;
+                        } else {
+                            return Err(err);
+                        }
+                    }
                 }
                 Ok(buf)
             }
@@ -511,8 +520,8 @@ impl<D: Disk> Resource<D> for FileResource {
             if let Some(mut fmap) = v_opt {
                 fmap.rc += 1;
                 fmap.flags |= flags;
-
-                fmap_info
+                //FIXME: Use result?
+                let _ = fmap_info
                     .ranges
                     .insert(range.start, range.end - range.start, fmap);
             } else {
@@ -526,7 +535,8 @@ impl<D: Disk> Resource<D> for FileResource {
                         tx,
                     )?
                 };
-                fmap_info.ranges.insert(offset, aligned_size as u64, map);
+                //FIXME: Use result?
+                let _ = fmap_info.ranges.insert(offset, aligned_size as u64, map);
             }
         }
         //dbg!(&self.fmaps);
@@ -565,7 +575,8 @@ impl<D: Disk> Resource<D> for FileResource {
             }
 
             if fmap.rc > 0 {
-                fmap_info
+                //FIXME: Use result?
+                let _ = fmap_info
                     .ranges
                     .insert(range.start, range.end - range.start, fmap);
             }

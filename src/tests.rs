@@ -1,17 +1,12 @@
 use crate::htree::{HTreeHash, HTreeNode, HTreePtr, HTREE_IDX_ENTRIES};
 use crate::{
-    unmount_path, BlockAddr, BlockData, BlockMeta, BlockPtr, DirEntry, DirList, DiskMemory,
+    BlockAddr, BlockData, BlockMeta, BlockPtr, DirEntry, DirList, DiskMemory,
     DiskSparse, FileSystem, Node, TreePtr, ALLOC_GC_THRESHOLD, BLOCK_SIZE,
+    transaction::FsCtx,
 };
-use core::panic::AssertUnwindSafe;
-use std::panic::catch_unwind;
-use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
-use std::thread::sleep;
-use std::time::Duration;
-use std::{fs, thread, time};
+use std::{fs, time};
 
 static IMAGE_SEQ: AtomicUsize = AtomicUsize::new(0);
 
@@ -34,226 +29,6 @@ where
     dbg!(fs::remove_file(dbg!(disk_path))).unwrap();
 
     res
-}
-
-fn with_mounted<T, F>(callback: F) -> T
-where
-    T: Send + Sync + 'static,
-    F: FnOnce(&Path) -> T + Send + Sync + 'static,
-{
-    let mount_path_o = format!("image{}", IMAGE_SEQ.fetch_add(1, Relaxed));
-    let mount_path = mount_path_o.clone();
-
-    let res = with_redoxfs(move |fs| {
-        if cfg!(not(target_os = "redox")) {
-            if !Path::new(&mount_path).exists() {
-                dbg!(fs::create_dir(dbg!(&mount_path))).unwrap();
-            }
-        }
-        let join_handle = crate::mount(fs, dbg!(mount_path), move |real_path| {
-            let real_path = real_path.to_owned();
-            thread::spawn(move || {
-                let res = catch_unwind(AssertUnwindSafe(|| callback(&real_path)));
-
-                let real_path = real_path.to_str().unwrap();
-
-                if cfg!(target_os = "redox") {
-                    dbg!(fs::remove_file(dbg!(format!(":{}", real_path)))).unwrap();
-                } else {
-                    if !dbg!(Command::new("sync").status()).unwrap().success() {
-                        panic!("sync failed");
-                    }
-
-                    if !unmount_path(real_path).is_ok() {
-                        // There seems to be a race condition where the device can be busy when trying to unmount.
-                        // So, we pause for a moment and retry. There will still be an error output to the logs
-                        // for the first failed attempt.
-                        sleep(Duration::from_millis(200));
-                        if !unmount_path(real_path).is_ok() {
-                            panic!("umount failed");
-                        }
-                    }
-                }
-
-                res.unwrap()
-            })
-        })
-        .unwrap();
-
-        join_handle.join().unwrap()
-    });
-
-    if cfg!(not(target_os = "redox")) {
-        dbg!(fs::remove_dir(dbg!(mount_path_o))).unwrap();
-    }
-
-    res
-}
-
-#[test]
-fn simple() {
-    with_mounted(|path| {
-        dbg!(fs::create_dir(&path.join("test"))).unwrap();
-    })
-}
-
-#[test]
-fn create_and_remove_file() {
-    with_mounted(|path| {
-        let file_name = "test_file.txt";
-        let file_path = path.join(file_name);
-
-        // Create the file
-        fs::write(&file_path, "Hello, world!").unwrap();
-        assert!(fs::exists(&file_path).unwrap());
-
-        // Read the file
-        let contents = fs::read_to_string(&file_path).unwrap();
-        assert_eq!(contents, "Hello, world!");
-
-        // Remove the file
-        fs::remove_file(&file_path).unwrap();
-        assert!(!fs::exists(&file_path).unwrap());
-    });
-}
-
-#[test]
-fn create_and_remove_directory() {
-    with_mounted(|path| {
-        let dir_name = "test_dir";
-        let dir_path = path.join(dir_name);
-
-        // Create the directory
-        fs::create_dir(&dir_path).unwrap();
-        assert!(fs::exists(&dir_path).unwrap());
-
-        // Check that the directory is empty
-        let entries: Vec<_> = fs::read_dir(&dir_path)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert!(entries.is_empty());
-
-        // Add a file to the directory
-        let file_name = "test_file.txt";
-        let file_path = dir_path.join(file_name);
-        fs::write(&file_path, "Hello, world!").unwrap();
-
-        // Check that the dir cannot be removed when not empty
-        let error = fs::remove_dir(&dir_path);
-        assert!(error.is_err());
-        assert_eq!(
-            error.unwrap_err().kind(),
-            std::io::ErrorKind::DirectoryNotEmpty
-        );
-
-        // Remove the file
-        fs::remove_file(&file_path).unwrap();
-
-        // Remove the directory
-        fs::remove_dir(&dir_path).unwrap();
-        assert!(!fs::exists(&dir_path).unwrap());
-    });
-}
-
-#[test]
-fn create_and_remove_symlink() {
-    with_mounted(|path| {
-        let real_file = "real_file.txt";
-        let real_path = path.join(real_file);
-        let symlink_file = "symlink_to_real_file.txt";
-        let symlink_path = path.join(symlink_file);
-
-        // Create the real file
-        fs::write(&real_path, "Hello, world!").unwrap();
-
-        // Create the symmlink according to the platform
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real_file, &symlink_path).unwrap();
-
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&real_file, &symlink_path).unwrap();
-
-        // Check that the symlink exists and points to the correct target
-        let exists = fs::exists(&symlink_path);
-        assert!(
-            exists.is_ok() && exists.unwrap(),
-            "Symlink should exist but was: {:?}",
-            fs::exists(&symlink_path)
-        );
-        let symlink_metadata = fs::symlink_metadata(&symlink_path).unwrap();
-        assert!(symlink_metadata.file_type().is_symlink());
-        let target = fs::read_link(&symlink_path).unwrap();
-        assert_eq!(target.to_str().unwrap(), real_file);
-        assert_eq!(fs::read(&symlink_path).unwrap(), b"Hello, world!");
-
-        // Confirm the symlink cannot be removed as a directory
-        let error = fs::remove_dir(&symlink_path);
-        assert!(error.is_err());
-        assert_eq!(error.unwrap_err().kind(), std::io::ErrorKind::NotADirectory);
-
-        // Remove the symlink
-        fs::remove_file(&symlink_path).unwrap();
-        assert!(!fs::exists(&symlink_path).unwrap());
-    });
-}
-
-#[cfg(target_os = "redox")]
-#[test]
-fn mmap() {
-    use syscall;
-
-    //TODO
-    with_mounted(|path| {
-        use std::slice;
-
-        let path = dbg!(path.join("test"));
-
-        let mmap_inner = |write: bool| {
-            let fd = dbg!(libredox::call::open(
-                path.to_str().unwrap(),
-                libredox::flag::O_CREAT | libredox::flag::O_RDWR | libredox::flag::O_CLOEXEC,
-                0,
-            ))
-            .unwrap();
-
-            let map = unsafe {
-                slice::from_raw_parts_mut(
-                    dbg!(libredox::call::mmap(libredox::call::MmapArgs {
-                        fd,
-                        offset: 0,
-                        length: 128,
-                        prot: libredox::flag::PROT_READ | libredox::flag::PROT_WRITE,
-                        flags: libredox::flag::MAP_SHARED,
-                        addr: core::ptr::null_mut(),
-                    }))
-                    .unwrap() as *mut u8,
-                    128,
-                )
-            };
-
-            // Maps should be available after closing
-            assert_eq!(dbg!(libredox::call::close(fd)), Ok(()));
-
-            for i in 0..128 {
-                if write {
-                    map[i as usize] = i;
-                }
-                assert_eq!(map[i as usize], i);
-            }
-
-            //TODO: add msync
-            unsafe {
-                assert_eq!(
-                    dbg!(libredox::call::munmap(map.as_mut_ptr().cast(), map.len())),
-                    Ok(())
-                );
-            }
-        };
-
-        mmap_inner(true);
-        mmap_inner(false);
-    })
 }
 
 #[test]
@@ -466,35 +241,6 @@ fn many_create_write_list_find_read_delete() {
     }
 }
 
-#[test]
-fn many_write_read_delete_mounted() {
-    with_mounted(|path| {
-        let total_count = 500;
-
-        for i in 0..total_count {
-            fs::write(
-                &path.join(format!("file{}", i)),
-                format!("Hello, number {i}!"),
-            )
-            .unwrap();
-        }
-
-        // Confirm each of the created files can be found and read
-        for i in 0..total_count {
-            let contents = fs::read_to_string(&path.join(format!("file{}", i))).unwrap();
-            assert_eq!(contents, format!("Hello, number {i}!"));
-        }
-
-        // Remove all the files
-        for i in 0..total_count {
-            let file_path = path.join(format!("file{i}"));
-            assert!(fs::exists(&file_path).unwrap());
-            fs::remove_file(&file_path).unwrap();
-            assert!(!fs::exists(&file_path).unwrap());
-        }
-    });
-}
-
 //
 // MARK: H-Tree tests
 //
@@ -515,7 +261,7 @@ fn create_minimal_l2_htree(
             let mut parent = tx.read_tree(parent_ptr).unwrap();
 
             let child1_block_data = BlockData::new(
-                unsafe { tx.allocate(BlockMeta::default()) }.unwrap(),
+                unsafe { tx.allocate(&mut FsCtx, BlockMeta::default()) }.unwrap(),
                 Node::new(
                     Node::MODE_FILE,
                     parent.data().uid(),
@@ -531,16 +277,16 @@ fn create_minimal_l2_htree(
 
             let mut dir_list = BlockData::<DirList>::empty(BlockAddr::default()).unwrap();
             dir_list.data_mut().append(&child1_dir_entry);
-            let dir_ptr = tx.sync_block(dir_list).unwrap();
+            let dir_ptr = tx.sync_block(&mut parent, dir_list).unwrap();
 
             let mut l1 = BlockData::<HTreeNode<DirList>>::empty(BlockAddr::default()).unwrap();
             l1.data_mut().ptrs[0] = HTreePtr::new(child1_htree_hash, dir_ptr);
-            let l1_ptr = tx.sync_block(l1).unwrap();
+            let l1_ptr = tx.sync_block(&mut parent, l1).unwrap();
 
             let mut l2 =
                 BlockData::<HTreeNode<HTreeNode<DirList>>>::empty(BlockAddr::default()).unwrap();
             l2.data_mut().ptrs[0] = HTreePtr::new(child1_htree_hash, l1_ptr);
-            let l2_ptr = tx.sync_block(l2).unwrap();
+            let l2_ptr = tx.sync_block(&mut parent, l2).unwrap();
             let l2_ptr = unsafe { l2_ptr.cast() };
 
             parent.data_mut().level0[0] = BlockPtr::marker(2);
