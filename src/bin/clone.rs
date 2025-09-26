@@ -117,7 +117,7 @@ fn main() {
     let used_old = size_old - free_old;
     match clone(&mut fs_old, &mut fs, |used| {
         eprint!(
-            "{}%: {}/{}\r",
+            "{}%: {} MB/{} MB\r",
             (used * 100) / used_old,
             used / 1000 / 1000,
             used_old / 1000 / 1000
