@@ -120,7 +120,7 @@ fn main() {
         let percent = (used * 100) / used_old;
         if percent != last_percent {
             eprint!(
-                "{}%: {} MB/{} MB\r",
+                "\r{}%: {} MB/{} MB",
                 percent,
                 used / 1000 / 1000,
                 used_old / 1000 / 1000
