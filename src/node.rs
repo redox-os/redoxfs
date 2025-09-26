@@ -101,8 +101,7 @@ pub struct Node {
     /// The gid that owns this file
     pub gid: Le<u32>,
 
-    /// The number of links to this file
-    /// (directory entries, symlinks, etc)
+    /// The number of hard links to this file
     pub links: Le<u32>,
 
     /// The length of this file, in bytes
