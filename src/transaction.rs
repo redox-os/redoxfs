@@ -53,10 +53,10 @@ pub struct Transaction<'a, D: Disk> {
     pub header: Header,
     //TODO: make private
     pub header_changed: bool,
-    allocator: Allocator,
+    pub(crate) allocator: Allocator,
     allocator_log: VecDeque<AllocEntry>,
     deallocate: Vec<BlockAddr>,
-    write_cache: BTreeMap<BlockAddr, Box<[u8]>>,
+    pub(crate) write_cache: BTreeMap<BlockAddr, Box<[u8]>>,
 }
 
 impl<'a, D: Disk> Transaction<'a, D> {

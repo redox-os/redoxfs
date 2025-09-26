@@ -116,7 +116,7 @@ fn main() {
     let free_old = fs_old.allocator().free() * redoxfs::BLOCK_SIZE;
     let used_old = size_old - free_old;
     let mut last_percent = 0;
-    match clone(&mut fs_old, &mut fs, move |used| {
+    let clone_res = clone(&mut fs_old, &mut fs, move |used| {
         let percent = (used * 100) / used_old;
         if percent != last_percent {
             eprint!(
@@ -127,7 +127,9 @@ fn main() {
             );
             last_percent = percent;
         }
-    }) {
+    });
+    eprintln!();
+    match clone_res {
         Ok(()) => (),
         Err(err) => {
             println!(
