@@ -66,10 +66,9 @@ where
                     break;
                 }
                 tries += 1;
-                if tries == 10 {
+                if tries == 100 {
                     panic!("Fail to wait for mount")
                 }
-                println!("{tries}");
                 sleep(Duration::from_millis(500));
             }
             real_path
