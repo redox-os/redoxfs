@@ -237,6 +237,11 @@ impl<D: Disk> FileSystem<D> {
         &self.allocator
     }
 
+    /// Unsafe as it can corrupt the filesystem
+    pub unsafe fn allocator_mut(&mut self) -> &mut Allocator {
+        &mut self.allocator
+    }
+
     /// Reset allocator to state stored on disk
     ///
     /// # Safety

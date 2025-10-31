@@ -21,7 +21,7 @@ impl BlockAddr {
     const LEVEL_MASK: u64 = 0xF;
 
     // Unsafe because this can create invalid blocks
-    pub(crate) unsafe fn new(index: u64, meta: BlockMeta) -> Self {
+    pub unsafe fn new(index: u64, meta: BlockMeta) -> Self {
         // Level must fit within LEVEL_MASK
         if meta.level.0 > Self::LEVEL_MASK as usize {
             panic!("block level too large");

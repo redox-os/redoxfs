@@ -36,6 +36,12 @@ path = "src/bin/mkfs.rs"
 doc = false
 required-features = ["std"]
 
+[[bin]]
+name = "redoxfs-resize"
+path = "src/bin/resize.rs"
+doc = false
+required-features = ["std"]
+
 [dependencies]
 aes = { version = "0.8", default-features = false }
 argon2 = { version = "0.4", default-features = false, features = ["alloc"] }
@@ -44,10 +50,12 @@ bitflags = "2"
 endian-num = "0.1"
 env_logger = { version = "0.11", optional = true }
 getrandom = { version = "0.2.5", optional = true }
+humansize = { version = "2", optional = true }
 libc = "0.2"
 libredox = { version = "0.1.6", features = ["call"], optional = true }
 log = { version = "0.4.14", default-features = false, optional = true }
 lz4_flex = { version = "0.11", default-features = false, features = ["checked-decode"] }
+parse-size = { version = "1", optional = true }
 range-tree = { version = "0.1", optional = true }
 redox-path = "0.3.0"
 redox-scheme = { version = "0.7.0", optional = true }
@@ -63,8 +71,10 @@ std = [
     "env_logger",
     "fuser",
     "getrandom",
+    "humansize",
     "libc",
     "libredox",
+    "parse-size",
     "range-tree",
     "termion",
     "time",
