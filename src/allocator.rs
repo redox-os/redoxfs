@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{collections::BTreeSet, vec::Vec};
 use core::{fmt, mem, ops, slice};
 use endian_num::Le;
 
@@ -32,11 +32,11 @@ pub struct Allocator {
     /// ...and so on.
     ///
     /// Each inner array contains a list of free block indices,
-    levels: Vec<Vec<u64>>,
+    levels: Vec<BTreeSet<u64>>,
 }
 
 impl Allocator {
-    pub fn levels(&self) -> &Vec<Vec<u64>> {
+    pub fn levels(&self) -> &Vec<BTreeSet<u64>> {
         &self.levels
     }
 
@@ -54,24 +54,32 @@ impl Allocator {
     /// Returns [`None`] if there are no free blocks with this level.
     pub fn allocate(&mut self, meta: BlockMeta) -> Option<BlockAddr> {
         // First, find the lowest level with a free block
-        let mut index_opt = None;
-        let mut level = meta.level.0;
-        // Start searching at the level we want. Smaller levels are too small!
-        while level < self.levels.len() {
-            if !self.levels[level].is_empty() {
-                index_opt = self.levels[level].pop();
-                break;
+        let mut free_opt = None;
+        {
+            let mut level = meta.level.0;
+            // Start searching at the level we want. Smaller levels are too small!
+            while level < self.levels.len() {
+                if let Some(&index) = self.levels[level].first() {
+                    // Find the index closest to the start of the filesystem
+                    free_opt = match free_opt {
+                        Some((free_level, free_index)) if free_index <= index => {
+                            Some((free_level, free_index))
+                        }
+                        _ => Some((level, index)),
+                    };
+                }
+                level += 1;
             }
-            level += 1;
         }
 
         // If a free block was found, split it until we find a usable block of the right level.
         // The left side of the split block is kept free, and the right side is allocated.
-        let index = index_opt?;
+        let (mut level, index) = free_opt?;
+        self.levels[level].remove(&index);
         while level > meta.level.0 {
             level -= 1;
             let level_size = 1 << level;
-            self.levels[level].push(index + level_size);
+            self.levels[level].insert(index + level_size);
         }
 
         Some(unsafe { BlockAddr::new(index, meta) })
@@ -94,17 +102,16 @@ impl Allocator {
 
             // Split higher block if found
             if let Some(index) = index_opt.take() {
-                self.levels[level].push(index);
-                self.levels[level].push(index + level_size);
+                self.levels[level].insert(index);
+                self.levels[level].insert(index + level_size);
             }
 
             // Look for matching block and remove it
-            for i in 0..self.levels[level].len() {
-                let start = self.levels[level][i];
+            for &start in self.levels[level].iter() {
                 if start <= exact_index {
                     let end = start + level_size;
                     if end > exact_index {
-                        self.levels[level].remove(i);
+                        self.levels[level].remove(&start);
                         index_opt = Some(start);
                         break;
                     }
@@ -125,42 +132,37 @@ impl Allocator {
         let mut level = addr.level().0;
         loop {
             while level >= self.levels.len() {
-                self.levels.push(Vec::new());
+                self.levels.push(BTreeSet::new());
             }
 
             let level_size = 1 << level;
             let next_size = level_size << 1;
 
             let mut found = false;
-            let mut i = 0;
             // look at all free blocks in the current level...
-            while i < self.levels[level].len() {
-                // index of the second block we're looking at
-                let level_index = self.levels[level][i];
-
+            for &level_index in self.levels[level].iter() {
                 // - the block we just freed aligns with the next largest block, and
                 // - the second block we're looking at is the right sibling of this block
                 if index % next_size == 0 && index + level_size == level_index {
                     // "alloc" the next highest block, repeat deallocation process.
-                    self.levels[level].remove(i);
+                    self.levels[level].remove(&level_index);
                     found = true;
                     break;
                 // - the index of this block doesn't align with the next largest block, and
                 // - the block we're looking at is the left neighbor of this block
                 } else if level_index % next_size == 0 && level_index + level_size == index {
                     // "alloc" the next highest block, repeat deallocation process.
-                    self.levels[level].remove(i);
+                    self.levels[level].remove(&level_index);
                     index = level_index; // index moves to left block
                     found = true;
                     break;
                 }
-                i += 1;
             }
 
             // We couldn't find a higher block,
             // deallocate this one and finish
             if !found {
-                self.levels[level].push(index);
+                self.levels[level].insert(index);
                 return;
             }
 
@@ -298,11 +300,11 @@ fn allocator_test() {
     assert_eq!(alloc.levels.len(), 11);
     for level in 0..alloc.levels.len() {
         if level == 0 {
-            assert_eq!(alloc.levels[level], [1023]);
+            assert_eq!(alloc.levels[level], [1023].into());
         } else if level == 10 {
-            assert_eq!(alloc.levels[level], [1024]);
+            assert_eq!(alloc.levels[level], [1024].into());
         } else {
-            assert_eq!(alloc.levels[level], [0u64; 0]);
+            assert_eq!(alloc.levels[level], [0u64; 0].into());
         }
     }
 
@@ -316,6 +318,6 @@ fn allocator_test() {
 
     assert_eq!(alloc.levels.len(), 11);
     for level in 0..alloc.levels.len() {
-        assert_eq!(alloc.levels[level], [0u64; 0]);
+        assert_eq!(alloc.levels[level], [0u64; 0].into());
     }
 }
