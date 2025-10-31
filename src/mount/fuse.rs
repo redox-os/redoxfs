@@ -12,12 +12,11 @@ use self::fuser::TimeOrNow;
 use crate::mount::fuse::TimeOrNow::Now;
 use crate::mount::fuse::TimeOrNow::SpecificTime;
 
-use crate::{filesystem, Disk, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
-
 use self::fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
     ReplyEntry, ReplyStatfs, ReplyWrite, Request, Session,
 };
+use crate::{filesystem, mount::TxWrapper, Disk, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 use std::time::Duration;
 
 const TTL: Duration = Duration::new(1, 0); // 1 second
@@ -42,10 +41,11 @@ where
     // be `root`, thus that we need to allow `root` to have access.
     let defer_permissions = [MountOption::CUSTOM("defer_permissions".to_owned())];
 
+    let mut tx_wrapper = TxWrapper::new(&mut filesystem);
     let res = {
         let mut session = Session::new(
             Fuse {
-                fs: &mut filesystem,
+                fs: &mut tx_wrapper,
             },
             mountpoint,
             if cfg!(target_os = "macos") {
@@ -63,13 +63,13 @@ where
     };
 
     // Squash allocations and sync on unmount
-    let _ = Transaction::new(&mut filesystem).commit(true);
+    let _ = tx_wrapper.commit(true);
 
     Ok(res)
 }
 
-pub struct Fuse<'f, D: Disk> {
-    pub fs: &'f mut filesystem::FileSystem<D>,
+pub struct Fuse<'fs, 'tx, D: Disk> {
+    pub fs: &'tx mut TxWrapper<'fs, D>,
 }
 
 fn node_attr(node: &TreeData<Node>) -> FileAttr {
@@ -99,7 +99,7 @@ fn node_attr(node: &TreeData<Node>) -> FileAttr {
     }
 }
 
-impl<D: Disk> Filesystem for Fuse<'_, D> {
+impl<D: Disk> Filesystem for Fuse<'_, '_, D> {
     fn lookup(&mut self, _req: &Request, parent_id: u64, name: &OsStr, reply: ReplyEntry) {
         let parent_ptr = TreePtr::new(parent_id as u32);
         match self
@@ -459,10 +459,19 @@ impl<D: Disk> Filesystem for Fuse<'_, D> {
     }
 
     fn statfs(&mut self, _req: &Request, _ino: u64, reply: ReplyStatfs) {
-        let bsize = BLOCK_SIZE;
-        let blocks = self.fs.header.size() / bsize;
-        let bfree = self.fs.allocator().free();
-        reply.statfs(blocks, bfree, bfree, 0, 0, bsize as u32, 256, 0);
+        match self.fs.tx(|tx| {
+            let bsize = BLOCK_SIZE;
+            let blocks = tx.header.size() / bsize;
+            let bfree = tx.allocator.free();
+            Ok((blocks, bfree, bsize))
+        }) {
+            Ok((blocks, bfree, bsize)) => {
+                reply.statfs(blocks, bfree, bfree, 0, 0, bsize as u32, 256, 0);
+            }
+            Err(err) => {
+                reply.error(err.errno);
+            }
+        }
     }
 
     fn symlink(

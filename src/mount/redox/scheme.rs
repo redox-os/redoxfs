@@ -24,13 +24,13 @@ use redox_path::{
     RedoxPath,
 };
 
-use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
+use crate::{mount::TxWrapper, Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
 use super::resource::{DirResource, Entry, FileResource, Resource};
 
-pub struct FileScheme<'sock, D: Disk> {
+pub struct FileScheme<'fs, 'sock, D: Disk> {
     name: String,
-    pub(crate) fs: FileSystem<D>,
+    pub(crate) fs: TxWrapper<'fs, D>,
     socket: &'sock Socket,
     next_id: AtomicUsize,
     files: BTreeMap<usize, Box<dyn Resource<D>>>,
@@ -40,8 +40,12 @@ pub struct FileScheme<'sock, D: Disk> {
     other_scheme_fd_map: BTreeMap<u32, usize>,
 }
 
-impl<'sock, D: Disk> FileScheme<'sock, D> {
-    pub fn new(name: String, fs: FileSystem<D>, socket: &'sock Socket) -> FileScheme<'sock, D> {
+impl<'fs, 'sock, D: Disk> FileScheme<'fs, 'sock, D> {
+    pub fn new(
+        name: String,
+        fs: TxWrapper<'fs, D>,
+        socket: &'sock Socket,
+    ) -> FileScheme<'fs, 'sock, D> {
         FileScheme {
             name,
             fs,
@@ -402,7 +406,7 @@ fn dirname(path: &str) -> Option<String> {
     canonicalize_using_cwd(Some(path), "..")
 }
 
-impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
+impl<'fs, 'sock, D: Disk> SchemeSync for FileScheme<'fs, 'sock, D> {
     fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
         self.open_internal(TreePtr::root(), url, flags, ctx)
     }
@@ -842,12 +846,13 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn fstatvfs(&mut self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
         if let Some(_file) = self.files.get(&id) {
-            stat.f_bsize = BLOCK_SIZE as u32;
-            stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
-            stat.f_bfree = self.fs.allocator().free();
-            stat.f_bavail = stat.f_bfree;
-
-            Ok(())
+            self.fs.tx(|tx| {
+                stat.f_bsize = BLOCK_SIZE as u32;
+                stat.f_blocks = tx.header.size() / (stat.f_bsize as u64);
+                stat.f_bfree = tx.allocator.free();
+                stat.f_bavail = stat.f_bfree;
+                Ok(())
+            })
         } else {
             Err(Error::new(EBADF))
         }
