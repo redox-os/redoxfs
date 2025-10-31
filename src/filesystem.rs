@@ -125,12 +125,13 @@ impl<D: Disk> FileSystem<D> {
         ctime: u64,
         ctime_nsec: u32,
     ) -> Result<Self> {
-        let size = disk.size()?;
+        let disk_size = disk.size()?;
+        let disk_blocks = disk_size / BLOCK_SIZE;
         let block_offset = (reserved.len() as u64).div_ceil(BLOCK_SIZE);
-
-        if size < (block_offset + HEADER_RING + 4) * BLOCK_SIZE {
+        if disk_blocks < (block_offset + HEADER_RING + 4) {
             return Err(Error::new(syscall::error::ENOSPC));
         }
+        let fs_blocks = disk_blocks - block_offset;
 
         // Fill reserved data, pad with zeroes
         for block in 0..block_offset as usize {
@@ -147,7 +148,7 @@ impl<D: Disk> FileSystem<D> {
             }
         }
 
-        let mut header = Header::new(size);
+        let mut header = Header::new(fs_blocks * BLOCK_SIZE);
 
         let cipher_opt = match password_opt {
             Some(password) => {
@@ -193,7 +194,7 @@ impl<D: Disk> FileSystem<D> {
                 AllocList::empty(BlockLevel::default()).unwrap(),
             );
 
-            let alloc_free = size / BLOCK_SIZE - (block_offset + HEADER_RING + 4);
+            let alloc_free = fs_blocks - (HEADER_RING + 4);
             alloc.data_mut().entries[0] = AllocEntry::new(HEADER_RING + 4, alloc_free as i64);
 
             tx.header.tree = tx.write_block(tree)?;
