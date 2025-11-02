@@ -117,7 +117,7 @@ fn bootloader_password() -> Option<Vec<u8>> {
 }
 
 fn print_err_exit(err: impl AsRef<str>) -> ! {
-    eprintln!("{}", err.as_ref());
+    eprintln!("redoxfs: {}", err.as_ref());
     usage();
     process::exit(1)
 }
@@ -128,7 +128,7 @@ fn print_usage_exit() -> ! {
 }
 
 fn usage() {
-    println!("redoxfs [--no-daemon|-d] [--uuid] [disk or uuid] [mountpoint] [block in hex]");
+    eprintln!("redoxfs [--no-daemon|-d] [--uuid] [disk or uuid] [mountpoint] [block in hex]");
 }
 
 enum DiskId {
@@ -139,8 +139,9 @@ enum DiskId {
 fn filesystem_by_path(
     path: &str,
     block_opt: Option<u64>,
+    log_errors: bool,
 ) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
-    println!("redoxfs: opening {}", path);
+    log::debug!("opening {}", path);
     let attempts = 10;
     for attempt in 0..=attempts {
         let password_opt = if attempt > 0 {
@@ -169,8 +170,8 @@ fn filesystem_by_path(
             Ok(disk) => {
                 match redoxfs::FileSystem::open(disk, password_opt.as_deref(), block_opt, true) {
                     Ok(filesystem) => {
-                        println!(
-                            "redoxfs: opened filesystem on {} with uuid {}",
+                        log::debug!(
+                            "opened filesystem on {} with uuid {}",
                             path,
                             Uuid::from_bytes(filesystem.header.uuid()).hyphenated()
                         );
@@ -180,18 +181,22 @@ fn filesystem_by_path(
                     Err(err) => match err.errno {
                         syscall::ENOKEY => {
                             if password_opt.is_some() {
-                                println!("redoxfs: incorrect password ({}/{})", attempt, attempts);
+                                eprintln!("redoxfs: incorrect password ({}/{})", attempt, attempts);
                             }
                         }
                         _ => {
-                            println!("redoxfs: failed to open filesystem {}: {}", path, err);
+                            if log_errors {
+                                log::error!("failed to open filesystem {}: {}", path, err);
+                            }
                             break;
                         }
                     },
                 }
             }
             Err(err) => {
-                println!("redoxfs: failed to open image {}: {}", path, err);
+                if log_errors {
+                    log::error!("failed to open image {}: {}", path, err);
+                }
                 break;
             }
         }
@@ -225,7 +230,7 @@ fn filesystem_by_uuid(
                             .unwrap_or(RedoxPath::from_absolute("/")?)
                             .is_scheme_category("disk")
                         {
-                            println!("redoxfs: found scheme {}", disk);
+                            log::debug!("found scheme {}", disk);
                             match fs::read_dir(disk) {
                                 Ok(entries) => {
                                     for entry_res in entries {
@@ -233,21 +238,21 @@ fn filesystem_by_uuid(
                                             if let Ok(path) =
                                                 entry.path().into_os_string().into_string()
                                             {
-                                                println!("redoxfs: found path {}", path);
+                                                log::debug!("found path {}", path);
                                                 if let Some((path, filesystem)) =
-                                                    filesystem_by_path(&path, block_opt)
+                                                    filesystem_by_path(&path, block_opt, false)
                                                 {
                                                     if &filesystem.header.uuid() == uuid.as_bytes()
                                                     {
-                                                        println!(
-                                                            "redoxfs: filesystem on {} matches uuid {}",
+                                                        log::debug!(
+                                                            "filesystem on {} matches uuid {}",
                                                             path,
                                                             uuid.hyphenated()
                                                         );
                                                         return Some((path, filesystem));
                                                     } else {
-                                                        println!(
-                                                            "redoxfs: filesystem on {} does not match uuid {}",
+                                                        log::debug!(
+                                                            "filesystem on {} does not match uuid {}",
                                                             path,
                                                             uuid.hyphenated()
                                                         );
@@ -258,7 +263,7 @@ fn filesystem_by_uuid(
                                     }
                                 }
                                 Err(err) => {
-                                    println!("redoxfs: failed to list '{}': {}", disk, err);
+                                    log::debug!("failed to list '{}': {}", disk, err);
                                 }
                             }
                         }
@@ -267,7 +272,7 @@ fn filesystem_by_uuid(
             }
         }
         Err(err) => {
-            println!("redoxfs: failed to list schemes: {}", err);
+            log::error!("failed to list schemes: {}", err);
         }
     }
 
@@ -283,7 +288,7 @@ fn daemon(
     setsig();
 
     let filesystem_opt = match *disk_id {
-        DiskId::Path(ref path) => filesystem_by_path(path, block_opt),
+        DiskId::Path(ref path) => filesystem_by_path(path, block_opt, true),
         DiskId::Uuid(ref uuid) => filesystem_by_uuid(uuid, block_opt),
     };
 
@@ -291,8 +296,8 @@ fn daemon(
         match mount(filesystem, mountpoint, |mounted_path| {
             capability_mode();
 
-            println!(
-                "redoxfs: mounted filesystem on {} to {}",
+            log::info!(
+                "mounted filesystem on {} to {}",
                 path,
                 mounted_path.display()
             );
@@ -305,8 +310,8 @@ fn daemon(
                 process::exit(0);
             }
             Err(err) => {
-                println!(
-                    "redoxfs: failed to mount {} to {}: {}",
+                log::error!(
+                    "failed to mount {} to {}: {}",
                     path, mountpoint, err
                 );
             }
@@ -315,10 +320,10 @@ fn daemon(
 
     match *disk_id {
         DiskId::Path(ref path) => {
-            println!("redoxfs: not able to mount path {}", path);
+            log::error!("not able to mount path {}", path);
         }
         DiskId::Uuid(ref uuid) => {
-            println!("redoxfs: not able to mount uuid {}", uuid.hyphenated());
+            log::error!("not able to mount uuid {}", uuid.hyphenated());
         }
     }
 
@@ -348,9 +353,9 @@ fn main() {
                     match args.next().as_deref().map(Uuid::parse_str) {
                         Some(Ok(uuid)) => uuid,
                         Some(Err(err)) => {
-                            print_err_exit(format!("redoxfs: invalid uuid '{}': {}", arg, err))
+                            print_err_exit(format!("invalid uuid '{}': {}", arg, err))
                         }
-                        None => print_err_exit("redoxfs: no uuid provided"),
+                        None => print_err_exit("no uuid provided"),
                     },
                 ));
             }
@@ -361,7 +366,7 @@ fn main() {
 
             opts if mountpoint.is_some() => match u64::from_str_radix(opts, 16) {
                 Ok(block) => block_opt = Some(block),
-                Err(err) => print_err_exit(format!("redoxfs: invalid block '{}': {}", opts, err)),
+                Err(err) => print_err_exit(format!("invalid block '{}': {}", opts, err)),
             },
 
             _ => print_usage_exit(),
@@ -369,11 +374,11 @@ fn main() {
     }
 
     let Some(disk_id) = disk_id else {
-        print_err_exit("redoxfs: no disk provided");
+        print_err_exit("no disk provided");
     };
 
     let Some(mountpoint) = mountpoint else {
-        print_err_exit("redoxfs: no mountpoint provided");
+        print_err_exit("no mountpoint provided");
     };
 
     if daemonise {
@@ -401,7 +406,7 @@ fn main() {
             panic!("redoxfs: failed to create pipe");
         }
     } else {
-        println!("redoxfs: running in foreground");
+        log::info!("running in foreground");
         daemon(&disk_id, &mountpoint, block_opt, None);
     }
 }
