@@ -1830,7 +1830,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
                 return Ok(true);
             } else {
-                Some(inline_data[..node_size as usize].to_vec())
+                Some(inline_data[..min(node_size as usize, inline_data.len())].to_vec())
             }
         } else {
             None
