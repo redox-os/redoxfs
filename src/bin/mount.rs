@@ -310,10 +310,7 @@ fn daemon(
                 process::exit(0);
             }
             Err(err) => {
-                log::error!(
-                    "failed to mount {} to {}: {}",
-                    path, mountpoint, err
-                );
+                log::error!("failed to mount {} to {}: {}", path, mountpoint, err);
             }
         }
     }

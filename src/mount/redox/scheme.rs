@@ -29,7 +29,8 @@ use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 use super::resource::{DirResource, Entry, FileResource, Resource};
 
 pub struct FileScheme<'sock, D: Disk> {
-    name: String,
+    scheme_name: String,
+    mounted_path: String,
     pub(crate) fs: FileSystem<D>,
     socket: &'sock Socket,
     next_id: AtomicUsize,
@@ -41,9 +42,15 @@ pub struct FileScheme<'sock, D: Disk> {
 }
 
 impl<'sock, D: Disk> FileScheme<'sock, D> {
-    pub fn new(name: String, fs: FileSystem<D>, socket: &'sock Socket) -> FileScheme<'sock, D> {
+    pub fn new(
+        scheme_name: String,
+        mounted_path: String,
+        fs: FileSystem<D>,
+        socket: &'sock Socket,
+    ) -> FileScheme<'sock, D> {
         FileScheme {
-            name,
+            scheme_name,
+            mounted_path,
             fs,
             socket,
             next_id: AtomicUsize::new(1),
@@ -143,7 +150,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         // println!("Open '{}' {:X}", &path, flags);
 
         //TODO: try to move things into one transaction
-        let scheme_name = &self.name;
+        let scheme_name = &self.scheme_name;
         let mut nodes = Vec::new();
         let node_opt = self
             .fs
@@ -432,7 +439,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         // println!("Rmdir '{}'", path);
 
-        let scheme_name = &self.name;
+        let scheme_name = &self.scheme_name;
         self.fs.tx(|tx| {
             let mut nodes = Vec::new();
 
@@ -472,7 +479,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         // println!("Unlink '{}'", path);
 
-        let scheme_name = &self.name;
+        let scheme_name = &self.scheme_name;
         let unlink_result = self.fs.tx(|tx| {
             let mut nodes = Vec::new();
 
@@ -587,15 +594,11 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     fn fpath(&mut self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         if let Some(file) = self.files.get(&id) {
-            let name = self.name.as_bytes();
+            let mounted_path = self.mounted_path.as_bytes();
 
             let mut i = 0;
-            while i < buf.len() && i < name.len() {
-                buf[i] = name[i];
-                i += 1;
-            }
-            if i < buf.len() {
-                buf[i] = b':';
+            while i < buf.len() && i < mounted_path.len() {
+                buf[i] = mounted_path[i];
                 i += 1;
             }
             if i < buf.len() {
@@ -650,7 +653,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 return Err(Error::new(EPERM));
             }
 
-            let scheme_name = &self.name;
+            let scheme_name = &self.scheme_name;
             self.fs.tx(|tx| {
                 let _orig_parent_ptr = match file.parent_ptr_opt() {
                     Some(some) => some,
@@ -757,7 +760,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 return Err(Error::new(EPERM));
             }
 
-            let scheme_name = &self.name;
+            let scheme_name = &self.scheme_name;
             self.fs.tx(|tx| {
                 let orig_parent_ptr = match file.parent_ptr_opt() {
                     Some(some) => some,

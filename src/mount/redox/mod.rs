@@ -20,12 +20,13 @@ where
     F: FnOnce(&Path) -> T,
 {
     let mountpoint = mountpoint.as_ref();
-    let socket = Socket::create(&format!("{}", mountpoint.display()))?;
+    let scheme_name = format!("{}", mountpoint.display());
+    let socket = Socket::create(&scheme_name)?;
 
     let mounted_path = format!("/scheme/{}", mountpoint.display());
     let res = callback(Path::new(&mounted_path));
 
-    let mut scheme = FileScheme::new(format!("{}", mountpoint.display()), filesystem, &socket);
+    let mut scheme = FileScheme::new(scheme_name, mounted_path, filesystem, &socket);
     while IS_UMT.load(Ordering::SeqCst) == 0 {
         let req = match socket.next_request(SignalBehavior::Restart)? {
             None => break,
