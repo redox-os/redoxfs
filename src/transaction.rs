@@ -1151,7 +1151,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
             false
         } else {
             node.data_mut().set_links(0);
-            self.truncate_node_inner(&mut node, 0)?;
             true
         };
 
@@ -1191,6 +1190,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         if remove_node {
+            self.truncate_node_inner(&mut node, 0)?;
             self.sync_tree(parent)?;
             self.remove_tree(node.ptr())?;
             unsafe {
