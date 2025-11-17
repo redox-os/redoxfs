@@ -1087,6 +1087,16 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         mode: u16,
     ) -> Result<Option<u32>> {
+        self.remove_node_in_use(parent_ptr, name, mode, false)
+    }
+
+    pub fn remove_node_in_use(
+        &mut self,
+        parent_ptr: TreePtr<Node>,
+        name: &str,
+        mode: u16,
+        in_use: bool,
+    ) -> Result<Option<u32>> {
         #[cfg(feature = "log")]
         log::debug!(
             "REMOVE_NODE: name: {}, mode: {:x}, parent_ptr: {:?}",
@@ -1123,7 +1133,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         // Read node and test type against requested type
         // TODO: Do this check as part of the removal tree processing, and get rid of this extra find
-        let (mut node, node_addr) = self
+        let (mut node, _node_addr) = self
             .find_node_inner(htree_root.data(), name, name_hash, htree_levels.max(1))?
             .ok_or(Error::new(ENOENT))?;
 
@@ -1190,19 +1200,31 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         if remove_node {
-            self.truncate_node_inner(&mut node, 0)?;
             self.sync_tree(parent)?;
-            self.remove_tree(node.ptr())?;
-            unsafe {
-                self.deallocate(&mut FsCtx, node_addr);
-            }
-
+            self.release_node(node.ptr(), in_use)?;
             Ok(Some(node_id))
         } else {
             // Sync both parent and node at the same time
             self.sync_trees(&[parent, node])?;
             Ok(None)
         }
+    }
+
+    pub fn release_node(&mut self, node_ptr: TreePtr<Node>, in_use: bool) -> Result<()> {
+        if in_use {
+            eprintln!(
+                "LEAKING NODE {}, TODO PUT IT IN RELEASE LIST",
+                node_ptr.id()
+            );
+        } else {
+            let (mut node, node_addr) = self.read_tree_and_addr(node_ptr)?;
+            self.truncate_node_inner(&mut node, 0)?;
+            self.remove_tree(node.ptr())?;
+            unsafe {
+                self.deallocate(&mut FsCtx, node_addr);
+            }
+        }
+        Ok(())
     }
 
     fn remove_node_inner(

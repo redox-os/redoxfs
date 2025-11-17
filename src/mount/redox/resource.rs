@@ -363,8 +363,13 @@ pub struct FileResource {
 pub struct FileMmapInfo {
     base: *mut u8,
     size: usize,
-    ranges: RangeTree<Fmap>,
+    pub ranges: RangeTree<Fmap>,
     pub open_fds: usize,
+}
+impl FileMmapInfo {
+    pub fn in_use(&self) -> bool {
+        self.open_fds > 0 || !self.ranges.is_empty()
+    }
 }
 impl Default for FileMmapInfo {
     fn default() -> Self {
@@ -582,6 +587,8 @@ impl<D: Disk> Resource<D> for FileResource {
             }
         }
         //dbg!(&self.fmaps);
+
+        //TODO: allow release of node if not in use anymore
 
         Ok(())
     }
