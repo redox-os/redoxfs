@@ -1,13 +1,4 @@
-use std::fs;
-use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
-
 use crate::{Disk, FileSystem, Node, Transaction, TreePtr, BLOCK_SIZE};
-
-fn syscall_err(err: syscall::Error) -> io::Error {
-    io::Error::from_raw_os_error(err.errno)
-}
 
 fn tx_progress<D: Disk, F: FnMut(u64)>(tx: &mut Transaction<D>, progress: &mut F) {
     let size = tx.header.size();
