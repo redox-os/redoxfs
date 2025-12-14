@@ -85,9 +85,9 @@ std = [
 fuser = { version = "0.14", optional = true }
 
 [target.'cfg(target_os = "redox")'.dependencies]
-libredox = { version = "0.1.6", features = ["call"], optional = true }
+libredox = { git = "https://gitlab.redox-os.org/Ibuki.O/libredox.git", branch = "update-syscall", features = ["call"], optional = true }
 redox-path = "0.3.0"
-redox-scheme = { version = "0.7.0", optional = true }
+redox-scheme = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-scheme.git", branch = "add-unlinkat", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
