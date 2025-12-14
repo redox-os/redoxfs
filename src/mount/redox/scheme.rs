@@ -927,12 +927,13 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             .get(&sendfd_request.id())
             .ok_or(Error::new(EBADF))?;
 
-        let mut new_fd = usize::MAX;
+        let mut new_fds = [usize::MAX];
         if let Err(e) =
-            sendfd_request.obtain_fd(&self.socket, FobtainFdFlags::empty(), Err(&mut new_fd))
+            sendfd_request.obtain_fd(&self.socket, FobtainFdFlags::empty(), &mut new_fds)
         {
             return Err(e);
         }
+        let new_fd = new_fds[0];
 
         let parent_resource_ptr = parent_resource.node_ptr();
 
