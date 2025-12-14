@@ -437,12 +437,11 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let uid = ctx.uid;
         let gid = ctx.gid;
 
-        let start_ptr = self
-            .handles
-            .get(&dirfd)
-            .ok_or(Error::new(EBADF))?
-            .node_ptr();
-        // println!("Unlinkat '{}' flags: {:X}", path, flags);
+        let start_ptr = self.files.get(&dirfd).ok_or(Error::new(EBADF))?.node_ptr();
+        // println!("Unlinkat '{}' flags: {:X}", path, flags);+
+
+        let scheme_name = &self.scheme_name;
+
         let unlink_result = self.fs.tx(|tx| {
             let mut nodes = Vec::new();
 
@@ -451,6 +450,16 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             else {
                 return Err(Error::new(ENOENT));
             };
+
+            let Some((parent, _parent_name)) = nodes.last() else {
+                return Err(Error::new(EPERM));
+            };
+
+            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
             // Check AT_REMOVEDIR
             if flags & syscall::AT_REMOVEDIR == syscall::AT_REMOVEDIR {
                 // --- rmdir ---
