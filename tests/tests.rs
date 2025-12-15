@@ -414,3 +414,100 @@ fn many_write_read_delete_mounted() {
         }
     });
 }
+
+#[test]
+fn rename_no_replace() {
+    let disk = DiskMemory::new(1024 * 1024 * 1024);
+    let mut fs = FileSystem::create(disk, None, 0, 0)
+        .expect("Creating in memory file system should succeed");
+
+    let root = TreePtr::root();
+    let dir = fs
+        .tx(|tx| tx.create_node(root, "dir", Node::MODE_DIR, 0, 0))
+        .expect("Creating a directory should succeed");
+    let source_file = fs
+        .tx(|tx| tx.create_node(root, "source", Node::MODE_FILE, 0, 0))
+        .expect("Creating source file to copy should succeed");
+    let no_clobber_file = fs
+        .tx(|tx| tx.create_node(root, "no_clobber", Node::MODE_FILE, 0, 0))
+        .expect("Creating second file to not clobber should succeed");
+
+    // Rename /source to /target
+    fs.tx(|tx| tx.rename_node_no_replace(root, "source", root, "target"))
+        .expect("Renaming existing 'source' to non-existing 'target' should succeed");
+    let target_file = fs
+        .tx(|tx| tx.find_node(root, "target"))
+        .expect("'target' should exist because we just renamed 'source' to 'target'");
+    assert_eq!(
+        source_file.id(),
+        target_file.id(),
+        "source and target are most definitely the same file"
+    );
+
+    // Don't rename /target to /no_clobber
+    let err = fs
+        .tx(|tx| tx.rename_node_no_replace(root, "target", root, "no_clobber"))
+        .expect_err("Renaming 'target' to existing 'no_clobber' should fail");
+    assert_eq!(
+        syscall::EEXIST,
+        err.errno,
+        "Renaming to existing file should fail with EEXIST"
+    );
+    assert_ne!(
+        no_clobber_file.id(),
+        target_file.id(),
+        "'target' and 'no_clobber' should be distinct files"
+    );
+
+    // Don't rename /target to /dir
+    let err = fs
+        .tx(|tx| tx.rename_node_no_replace(root, "target", root, "dir"))
+        .expect_err("Renaming 'target' to existing directory 'dir' should fail");
+    assert_eq!(
+        syscall::EEXIST,
+        err.errno,
+        "Renaming to existing file should fail with EEXIST"
+    );
+    assert_ne!(
+        dir.id(),
+        target_file.id(),
+        "'target' and 'dir' should be distinct nodes"
+    );
+
+    // Don't rename /dir to /target
+    let err = fs
+        .tx(|tx| tx.rename_node_no_replace(root, "dir", root, "target"))
+        .expect_err("Renaming 'dir' to existing file 'target' should fail");
+    assert_eq!(
+        syscall::EEXIST,
+        err.errno,
+        "Renaming to existing file should fail with EEXIST"
+    );
+    assert_ne!(
+        target_file.id(),
+        dir.id(),
+        "'dir' and 'target' should be distinct nodes"
+    );
+
+    // Don't rename /target to /target
+    let err = fs
+        .tx(|tx| tx.rename_node_no_replace(root, "target", root, "target"))
+        .expect_err("Renaming 'target' to itself should fail");
+    assert_eq!(
+        syscall::EEXIST,
+        err.errno,
+        "Renaming file to itself should fail with EEXIST"
+    );
+
+    // Rename /target to /dir/target
+    fs.tx(|tx| tx.rename_node_no_replace(root, "target", dir.ptr(), "target"))
+        .expect("Renaming /target to /dir/target should succeed");
+    let moved_target = fs
+        .tx(|tx| tx.find_node(dir.ptr(), "target"))
+        .expect("'target' should have moved to /dir/target");
+    assert_eq!(target_file.id(), moved_target.id());
+
+    // Rename /dir to /newdir
+    fs.tx(|tx| tx.rename_node_no_replace(root, "dir", root, "newdir"))
+        .expect("Renaming 'dir' to 'newdir' should succeed");
+}
