@@ -1339,6 +1339,35 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
+    pub fn rename_node_no_replace(
+        &mut self,
+        orig_parent_ptr: TreePtr<Node>,
+        orig_name: &str,
+        new_parent_ptr: TreePtr<Node>,
+        new_name: &str,
+    ) -> Result<()> {
+        let orig = self.find_node(orig_parent_ptr, orig_name)?;
+
+        // The target shouldn't exist.
+        if self.find_node(new_parent_ptr, new_name).is_ok() {
+            return Err(Error::new(EEXIST));
+        }
+
+        // The rest is the same as rename_node.
+        // Link original file to new name
+        self.check_name(&new_parent_ptr, new_name)?;
+        self.link_node(new_parent_ptr, new_name, orig.ptr())?;
+
+        // Remove original file
+        self.remove_node(
+            orig_parent_ptr,
+            orig_name,
+            orig.data().mode() & Node::MODE_TYPE,
+        )?;
+
+        Ok(())
+    }
+
     fn check_name(&mut self, parent_ptr: &TreePtr<Node>, name: &str) -> Result<()> {
         if name.contains(':') {
             return Err(Error::new(EINVAL));
