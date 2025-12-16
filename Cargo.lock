@@ -507,7 +507,7 @@ checksum = "20145670ba436b55d91fc92d25e71160fbfbdd57831631c8d7d36377a476f1cb"
 
 [[package]]
 name = "redoxfs"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "aes",
  "argon2",
