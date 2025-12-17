@@ -928,9 +928,11 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             .ok_or(Error::new(EBADF))?;
 
         let mut new_fd = usize::MAX;
-        if let Err(e) =
-            sendfd_request.obtain_fd(&self.socket, FobtainFdFlags::empty(), &mut [new_fd])
-        {
+        if let Err(e) = sendfd_request.obtain_fd(
+            &self.socket,
+            FobtainFdFlags::empty(),
+            std::slice::from_mut(&mut new_fd),
+        ) {
             return Err(e);
         }
 
