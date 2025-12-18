@@ -2,7 +2,7 @@
 name = "redoxfs"
 description = "The Redox Filesystem"
 repository = "https://gitlab.redox-os.org/redox-os/redoxfs"
-version = "0.8.3"
+version = "0.8.4"
 license-file = "LICENSE"
 readme = "README.md"
 authors = ["Jeremy Soller <jackpot51@gmail.com>"]
@@ -56,7 +56,7 @@ log = { version = "0.4.14", default-features = false, optional = true }
 lz4_flex = { version = "0.11", default-features = false, features = ["checked-decode"] }
 parse-size = { version = "1", optional = true }
 range-tree = { version = "0.1", optional = true }
-redox_syscall = "0.5.15"
+redox_syscall = "0.6.0"
 seahash = { version = "4.1.0", default-features = false }
 termion = { version = "4", optional = true }
 uuid = { version = "1.4", default-features = false }
@@ -85,9 +85,9 @@ std = [
 fuser = { version = "0.14", optional = true }
 
 [target.'cfg(target_os = "redox")'.dependencies]
-libredox = { version = "0.1.6", features = ["call"], optional = true }
+libredox = { version = "0.1.11", features = ["call"], optional = true }
 redox-path = "0.3.0"
-redox-scheme = { version = "0.7.0", optional = true }
+redox-scheme = { version = "0.8.3", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

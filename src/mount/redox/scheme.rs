@@ -432,59 +432,21 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         self.open_internal(dir_node_ptr, path, flags, ctx)
     }
 
-    fn rmdir(&mut self, url: &str, ctx: &CallerCtx) -> Result<()> {
+    fn unlinkat(&mut self, dirfd: usize, url: &str, flags: usize, ctx: &CallerCtx) -> Result<()> {
         let path = url.trim_matches('/');
         let uid = ctx.uid;
         let gid = ctx.gid;
 
-        // println!("Rmdir '{}'", path);
+        let start_ptr = self.files.get(&dirfd).ok_or(Error::new(EBADF))?.node_ptr();
+        // println!("Unlinkat '{}' flags: {:X}", path, flags);+
 
         let scheme_name = &self.scheme_name;
-        self.fs.tx(|tx| {
-            let mut nodes = Vec::new();
 
-            let Some((child, child_name)) =
-                Self::path_nodes(scheme_name, tx, TreePtr::root(), path, uid, gid, &mut nodes)?
-            else {
-                return Err(Error::new(ENOENT));
-            };
-
-            let Some((parent, _parent_name)) = nodes.last() else {
-                return Err(Error::new(EPERM));
-            };
-
-            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                // println!("dir not writable {:o}", parent.1.mode);
-                return Err(Error::new(EACCES));
-            }
-
-            if child.data().is_dir() {
-                if !child.data().permission(uid, gid, Node::MODE_WRITE) {
-                    // println!("dir not writable {:o}", parent.1.mode);
-                    return Err(Error::new(EACCES));
-                }
-
-                tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
-                    .and(Ok(()))
-            } else {
-                Err(Error::new(ENOTDIR))
-            }
-        })
-    }
-
-    fn unlink(&mut self, url: &str, ctx: &CallerCtx) -> Result<()> {
-        let path = url.trim_matches('/');
-        let uid = ctx.uid;
-        let gid = ctx.gid;
-
-        // println!("Unlink '{}'", path);
-
-        let scheme_name = &self.scheme_name;
         let unlink_result = self.fs.tx(|tx| {
             let mut nodes = Vec::new();
 
             let Some((child, child_name)) =
-                Self::path_nodes(scheme_name, tx, TreePtr::root(), path, uid, gid, &mut nodes)?
+                Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes)?
             else {
                 return Err(Error::new(ENOENT));
             };
@@ -498,21 +460,35 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 return Err(Error::new(EACCES));
             }
 
-            if !child.data().is_dir() {
-                if child.data().uid() != uid && uid != 0 {
-                    // println!("file not owned by current user {}", parent.1.uid);
-                    return Err(Error::new(EACCES));
-                }
-
-                if child.data().is_symlink() {
-                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
-                } else if child.data().is_sock() {
-                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_SOCK)
+            // Check AT_REMOVEDIR
+            if flags & syscall::AT_REMOVEDIR == syscall::AT_REMOVEDIR {
+                // --- rmdir ---
+                if child.data().is_dir() {
+                    if !child.data().permission(uid, gid, Node::MODE_WRITE) {
+                        return Err(Error::new(EACCES));
+                    }
+                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
                 } else {
-                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
+                    Err(Error::new(ENOTDIR))
                 }
             } else {
-                Err(Error::new(EISDIR))
+                // --- unlink ---
+                if !child.data().is_dir() {
+                    if child.data().uid() != uid && uid != 0 {
+                        // println!("file not owned by current user {}", parent.1.uid);
+                        return Err(Error::new(EACCES));
+                    }
+
+                    if child.data().is_symlink() {
+                        tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
+                    } else if child.data().is_sock() {
+                        tx.remove_node(parent.ptr(), &child_name, Node::MODE_SOCK)
+                    } else {
+                        tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
+                    }
+                } else {
+                    Err(Error::new(EISDIR))
+                }
             }
         });
 
@@ -952,9 +928,11 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             .ok_or(Error::new(EBADF))?;
 
         let mut new_fd = usize::MAX;
-        if let Err(e) =
-            sendfd_request.obtain_fd(&self.socket, FobtainFdFlags::empty(), Err(&mut new_fd))
-        {
+        if let Err(e) = sendfd_request.obtain_fd(
+            &self.socket,
+            FobtainFdFlags::empty(),
+            std::slice::from_mut(&mut new_fd),
+        ) {
             return Err(e);
         }
 
