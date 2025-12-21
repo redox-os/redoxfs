@@ -1,5 +1,3 @@
-use assert_cmd::cargo::CommandCargoExt;
-
 use core::panic::AssertUnwindSafe;
 use redoxfs::{unmount_path, DirEntry, DiskMemory, DiskSparse, FileSystem, Node, TreePtr};
 
@@ -54,7 +52,7 @@ where
                 "/root/target/x86_64-unknown-redox/debug/redoxfs",
             );
         }
-        let mut mount_cmd = Command::cargo_bin("redoxfs").expect("unable to find mount bin");
+        let mut mount_cmd = Command::new(assert_cmd::cargo_bin!("redoxfs"));
         mount_cmd.arg("-d").arg(dbg!(&fs)).arg(dbg!(&mount_path));
         let mut child = mount_cmd.spawn().expect("mount failed to run");
 
@@ -84,6 +82,7 @@ where
         sleep(Duration::from_millis(200));
 
         child.kill().expect("Can't kill");
+        let _ = child.wait();
 
         if cfg!(target_os = "redox") {
             unmount_path(&mount_path).unwrap();
@@ -92,12 +91,12 @@ where
                 panic!("sync failed");
             }
 
-            if !unmount_path(&mount_path).is_ok() {
+            if unmount_path(&mount_path).is_err() {
                 // There seems to be a race condition where the device can be busy when trying to unmount.
                 // So, we pause for a moment and retry. There will still be an error output to the logs
                 // for the first failed attempt.
                 sleep(Duration::from_millis(200));
-                if !unmount_path(&mount_path).is_ok() {
+                if unmount_path(&mount_path).is_err() {
                     panic!("umount failed");
                 }
             }
@@ -116,7 +115,7 @@ where
 #[test]
 fn simple() {
     with_mounted(|path| {
-        dbg!(fs::create_dir(&path.join("test"))).unwrap();
+        dbg!(fs::create_dir(path.join("test"))).unwrap();
     })
 }
 
@@ -147,7 +146,8 @@ fn create_and_remove_directory() {
         let dir_path = path.join(dir_name);
 
         // Create the directory
-        fs::create_dir(&dir_path).expect(&format!("cannot create dir {}", &dir_path.display()));
+        fs::create_dir(&dir_path)
+            .unwrap_or_else(|_| panic!("cannot create dir {}", &dir_path.display()));
         assert!(fs::exists(&dir_path).unwrap());
 
         // Check that the directory is empty
@@ -192,7 +192,7 @@ fn create_and_remove_symlink() {
 
         // Create the symmlink according to the platform
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&real_file, &symlink_path).unwrap();
+        std::os::unix::fs::symlink(real_file, &symlink_path).unwrap();
 
         #[cfg(windows)]
         std::os::windows::fs::symlink_file(&real_file, &symlink_path).unwrap();
@@ -296,7 +296,7 @@ fn many_create_write_list_find_read_delete() {
             tx.create_node(
                 tree_ptr,
                 &format!("file{i:05}"),
-                Node::MODE_FILE | 0644,
+                Node::MODE_FILE | 0o644,
                 1,
                 0,
             )
@@ -324,7 +324,7 @@ fn many_create_write_list_find_read_delete() {
     // Confirm that they can be listed
     {
         let mut children = Vec::<DirEntry>::with_capacity(total_count);
-        let _ = fs.tx(|tx| tx.child_nodes(tree_ptr, &mut children)).unwrap();
+        fs.tx(|tx| tx.child_nodes(tree_ptr, &mut children)).unwrap();
         assert_eq!(
             children.len(),
             total_count,
@@ -373,15 +373,15 @@ fn many_create_write_list_find_read_delete() {
     // Delete all the files
     for i in 0..total_count {
         let file_name = format!("file{i:05}");
-        let result = fs.tx(|tx| tx.remove_node(tree_ptr, &file_name, Node::MODE_FILE));
-        if result.is_err() {
+        if let Err(e) = fs.tx(|tx| tx.remove_node(tree_ptr, &file_name, Node::MODE_FILE)) {
             println!("Failure on delete iteration {i}");
-            result.unwrap();
+            panic!("{e}");
         }
+
         let result = fs.tx(|tx| tx.find_node(tree_ptr, &file_name));
-        if !result.is_err() || result.err().unwrap().errno != syscall::error::ENOENT {
+        if result.is_ok() || result.unwrap_err().errno != syscall::error::ENOENT {
             println!("Failure on delete verification iteration {i}");
-            assert!(false, "Deletion appears to ahve failred");
+            panic!("Deletion appears to have failed");
         }
     }
 }
@@ -393,7 +393,7 @@ fn many_write_read_delete_mounted() {
 
         for i in 0..total_count {
             fs::write(
-                &path.join(format!("file{}", i)),
+                path.join(format!("file{}", i)),
                 format!("Hello, number {i}!"),
             )
             .unwrap();
@@ -401,7 +401,7 @@ fn many_write_read_delete_mounted() {
 
         // Confirm each of the created files can be found and read
         for i in 0..total_count {
-            let contents = fs::read_to_string(&path.join(format!("file{}", i))).unwrap();
+            let contents = fs::read_to_string(path.join(format!("file{}", i))).unwrap();
             assert_eq!(contents, format!("Hello, number {i}!"));
         }
 
@@ -509,5 +509,108 @@ fn rename_no_replace() {
 
     // Rename /dir to /newdir
     fs.tx(|tx| tx.rename_node_no_replace(root, "dir", root, "newdir"))
+        .expect("Renaming 'dir' to 'newdir' should succeed");
+}
+
+#[test]
+fn rename_works() {
+    let disk = DiskMemory::new(1024 * 1024 * 1024);
+    let mut fs = FileSystem::create(disk, None, 0, 0)
+        .expect("Creating in memory file system should succeed");
+
+    let root = TreePtr::root();
+    let dir = fs
+        .tx(|tx| tx.create_node(root, "dir", Node::MODE_DIR, 0, 0))
+        .expect("Creating a directory should succeed");
+    let source_file = fs
+        .tx(|tx| tx.create_node(root, "source", Node::MODE_FILE, 0, 0))
+        .expect("Creating source file should succeed");
+    let target_file_orig = fs
+        .tx(|tx| tx.create_node(root, "target", Node::MODE_FILE, 0, 0))
+        .expect("Creating target file should succeed");
+
+    // Rename /source to /source2
+    fs.tx(|tx| tx.rename_node(root, "source", root, "source2"))
+        .expect("Renaming existing 'source' to non-existing 'source2' should succeed");
+    let source2_file = fs
+        .tx(|tx| tx.find_node(root, "source2"))
+        .expect("'source2' should exist because we just renamed 'source' to 'source2'");
+    assert_eq!(source_file.id(), source2_file.id());
+    let err = fs
+        .tx(|tx| tx.find_node(root, "source"))
+        .expect_err("'source' should not exist because it was moved");
+    assert_eq!(syscall::ENOENT, err.errno);
+
+    // Rename /source2 to /target
+    fs.tx(|tx| tx.rename_node(root, "source2", root, "target"))
+        .expect("Renaming existing 'source2' to existing 'target' should succeed");
+    let target_file_mv = fs
+        .tx(|tx| tx.find_node(root, "target"))
+        .expect("'target' should exist because the rename succeeded");
+    assert_ne!(
+        target_file_orig.id(),
+        target_file_mv.id(),
+        "Move failed because 'target' is still the same"
+    );
+    assert_eq!(
+        source2_file.id(),
+        target_file_mv.id(),
+        "Move failed because 'source2' != 'target'"
+    );
+
+    // Don't rename /target to /dir
+    // XXX: A similar test fails on Linux using rename(). Not sure if the discrepancy matters.
+    // let err = fs
+    //     .tx(|tx| tx.rename_node(root, "target", root, "dir"))
+    //     .expect_err("Renaming 'target' to existing directory 'dir' should fail");
+    // assert_eq!(
+    //     syscall::EEXIST,
+    //     err.errno,
+    //     "Renaming to existing file should fail with EEXIST"
+    // );
+    // assert_ne!(
+    //     dir.id(),
+    //     target_file_mv.id(),
+    //     "'target' and 'dir' should be distinct nodes"
+    // );
+
+    // Don't rename /dir to /target
+    // XXX: A similar test fails on Linux using rename().
+    // let err = fs
+    //     .tx(|tx| tx.rename_node(root, "dir", root, "target"))
+    //     .expect_err("Renaming 'dir' to existing file 'target' should fail");
+    // assert_eq!(
+    //     syscall::EEXIST,
+    //     err.errno,
+    //     "Renaming to existing file should fail with EEXIST"
+    // );
+    // assert_ne!(
+    //     target_file_mv.id(),
+    //     dir.id(),
+    //     "'dir' and 'target' should be distinct nodes"
+    // );
+
+    // Rename /target to /target
+    fs.tx(|tx| tx.rename_node(root, "target", root, "target"))
+        .expect("Renaming 'target' to itself should succeed");
+    let target_self_mv = fs
+        .tx(|tx| tx.find_node(root, "target"))
+        .expect("'target' should exist because rename succeeded");
+    assert_eq!(
+        target_file_mv.id(),
+        target_self_mv.id(),
+        "'target' shouldn't have changed during a move to self"
+    );
+
+    // Rename /target to /dir/target
+    fs.tx(|tx| tx.rename_node(root, "target", dir.ptr(), "target"))
+        .expect("Renaming /target to /dir/target should succeed");
+    let moved_target = fs
+        .tx(|tx| tx.find_node(dir.ptr(), "target"))
+        .expect("'target' should have moved to /dir/target");
+    assert_eq!(target_file_mv.id(), moved_target.id());
+
+    // Rename /dir to /newdir
+    fs.tx(|tx| tx.rename_node(root, "dir", root, "newdir"))
         .expect("Renaming 'dir' to 'newdir' should succeed");
 }
