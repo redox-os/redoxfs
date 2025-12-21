@@ -1,5 +1,5 @@
-use crate::htree::{HTreeHash, HTreeNode, HTreePtr, HTREE_IDX_ENTRIES};
 use crate::{
+    htree::{HTreeHash, HTreeNode, HTreePtr, HTREE_IDX_ENTRIES},
     transaction::{level_data, level_data_mut, FsCtx},
     BlockAddr, BlockData, BlockMeta, BlockPtr, DirEntry, DirList, DiskMemory, DiskSparse,
     FileSystem, Node, TreePtr, ALLOC_GC_THRESHOLD, BLOCK_SIZE,
@@ -49,7 +49,7 @@ fn many_create_remove_should_not_increase_size() {
                     tx.create_node(
                         tree_ptr,
                         &format!("{}{}", name, i),
-                        Node::MODE_FILE | 0644,
+                        Node::MODE_FILE | 0o644,
                         1,
                         0,
                     )?;
@@ -78,7 +78,7 @@ fn many_create_then_many_remove_should_not_increase_size() {
                     tx.create_node(
                         tree_ptr,
                         &format!("test{}", i),
-                        Node::MODE_FILE | 0644,
+                        Node::MODE_FILE | 0o644,
                         1,
                         0,
                     )
@@ -115,8 +115,7 @@ fn empty_dir() {
 
         // List
         let mut children = Vec::<DirEntry>::new();
-        let _ = fs
-            .tx(|tx| tx.child_nodes(empty_dir.ptr(), &mut children))
+        fs.tx(|tx| tx.child_nodes(empty_dir.ptr(), &mut children))
             .unwrap();
         assert_eq!(children.len(), 0);
 
@@ -151,7 +150,7 @@ fn many_create_write_list_find_read_delete() {
             tx.create_node(
                 tree_ptr,
                 &format!("file{i:05}"),
-                Node::MODE_FILE | 0644,
+                Node::MODE_FILE | 0o644,
                 1,
                 0,
             )
@@ -179,7 +178,7 @@ fn many_create_write_list_find_read_delete() {
     // Confirm that they can be listed
     {
         let mut children = Vec::<DirEntry>::with_capacity(total_count);
-        let _ = fs.tx(|tx| tx.child_nodes(tree_ptr, &mut children)).unwrap();
+        fs.tx(|tx| tx.child_nodes(tree_ptr, &mut children)).unwrap();
         assert_eq!(
             children.len(),
             total_count,
@@ -228,15 +227,14 @@ fn many_create_write_list_find_read_delete() {
     // Delete all the files
     for i in 0..total_count {
         let file_name = format!("file{i:05}");
-        let result = fs.tx(|tx| tx.remove_node(tree_ptr, &file_name, Node::MODE_FILE));
-        if result.is_err() {
+        if let Err(e) = fs.tx(|tx| tx.remove_node(tree_ptr, &file_name, Node::MODE_FILE)) {
             println!("Failure on delete iteration {i}");
-            result.unwrap();
+            panic!("{e}");
         }
         let result = fs.tx(|tx| tx.find_node(tree_ptr, &file_name));
-        if !result.is_err() || result.err().unwrap().errno != syscall::error::ENOENT {
+        if result.is_ok() || result.unwrap_err().errno != syscall::error::ENOENT {
             println!("Failure on delete verification iteration {i}");
-            assert!(false, "Deletion appears to ahve failred");
+            panic!("Deletion appears to have failed");
         }
     }
 }
@@ -678,14 +676,13 @@ fn split_htree_level0_to_level1() {
             for i in 8..17 {
                 let name = format!("child__{i:0243}");
                 let result = tx.remove_node(parent_ptr, name.as_str(), Node::MODE_FILE);
-                if result.is_err() {
-                    assert!(
-                        false,
+                result.unwrap_or_else(|e| {
+                    panic!(
                         "Failed to remove file {name} with hash {:?} error {:?}",
                         HTreeHash::from_name(&name),
-                        result.err()
-                    );
-                }
+                        e
+                    )
+                });
             }
             Ok(())
         })
@@ -929,7 +926,7 @@ fn split_htree_with_multiple_levels() {
     });
 }
 
-/// Test a pathalogical case of many HTreeHash collisions. This should never happen in reality,
+/// Test a pathological case of many HTreeHash collisions. This should never happen in reality,
 /// but the system can support it.
 #[test]
 fn split_htree_with_multiple_levels_using_duplicates() {
