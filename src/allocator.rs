@@ -2,10 +2,13 @@ use alloc::{collections::BTreeSet, vec::Vec};
 use core::{fmt, mem, ops, slice};
 use endian_num::Le;
 
-use crate::{BlockAddr, BlockLevel, BlockMeta, BlockPtr, BlockTrait, BLOCK_SIZE};
+use crate::{BlockAddr, BlockLevel, BlockMeta, BlockPtr, BlockTrait, Node, TreePtr, BLOCK_SIZE};
 
 pub const ALLOC_LIST_ENTRIES: usize =
     (BLOCK_SIZE as usize - mem::size_of::<BlockPtr<AllocList>>()) / mem::size_of::<AllocEntry>();
+pub const RELEASE_LIST_ENTRIES: usize = (BLOCK_SIZE as usize
+    - mem::size_of::<BlockPtr<ReleaseList>>())
+    / mem::size_of::<TreePtr<Node>>();
 
 /// The RedoxFS block allocator. This struct manages all "data" blocks in RedoxFS
 /// (i.e, all blocks that aren't reserved or part of the header chain).
@@ -275,9 +278,77 @@ impl ops::DerefMut for AllocList {
     }
 }
 
+/// A list of nodes pending release.
+#[repr(C, packed)]
+pub struct ReleaseList {
+    /// A pointer to the previous ReleaseList.
+    /// If this is the null pointer, this is the first element of the chain.
+    pub prev: BlockPtr<ReleaseList>,
+
+    /// Allocation entries.
+    pub entries: [TreePtr<Node>; RELEASE_LIST_ENTRIES],
+}
+
+unsafe impl BlockTrait for ReleaseList {
+    fn empty(level: BlockLevel) -> Option<Self> {
+        if level.0 == 0 {
+            Some(Self {
+                prev: BlockPtr::default(),
+                entries: [TreePtr::<Node>::default(); RELEASE_LIST_ENTRIES],
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl fmt::Debug for ReleaseList {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let prev = self.prev;
+        let entries: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.is_null())
+            .map(|entry| entry.id())
+            .collect();
+        f.debug_struct("ReleaseList")
+            .field("prev", &prev)
+            .field("entries", &entries)
+            .finish()
+    }
+}
+
+impl ops::Deref for ReleaseList {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        unsafe {
+            slice::from_raw_parts(
+                self as *const ReleaseList as *const u8,
+                mem::size_of::<ReleaseList>(),
+            ) as &[u8]
+        }
+    }
+}
+
+impl ops::DerefMut for ReleaseList {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        unsafe {
+            slice::from_raw_parts_mut(
+                self as *mut ReleaseList as *mut u8,
+                mem::size_of::<ReleaseList>(),
+            ) as &mut [u8]
+        }
+    }
+}
+
 #[test]
 fn alloc_node_size_test() {
     assert_eq!(mem::size_of::<AllocList>(), crate::BLOCK_SIZE as usize);
+}
+
+#[test]
+fn release_node_size_test() {
+    assert_eq!(mem::size_of::<ReleaseList>(), crate::BLOCK_SIZE as usize);
 }
 
 #[test]

@@ -479,13 +479,21 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                         return Err(Error::new(EACCES));
                     }
 
-                    if child.data().is_symlink() {
-                        tx.remove_node(parent.ptr(), &child_name, Node::MODE_SYMLINK)
+                    let mode = if child.data().is_symlink() {
+                        Node::MODE_SYMLINK
                     } else if child.data().is_sock() {
-                        tx.remove_node(parent.ptr(), &child_name, Node::MODE_SOCK)
+                        Node::MODE_SOCK
                     } else {
-                        tx.remove_node(parent.ptr(), &child_name, Node::MODE_FILE)
-                    }
+                        Node::MODE_FILE
+                    };
+
+                    let in_use = if let Some(file_info) = self.fmap.get(&child.id()) {
+                        file_info.in_use()
+                    } else {
+                        false
+                    };
+
+                    tx.remove_node_in_use(parent.ptr(), &child_name, mode, in_use)
                 } else {
                     Err(Error::new(EISDIR))
                 }

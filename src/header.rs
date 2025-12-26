@@ -5,7 +5,7 @@ use endian_num::Le;
 use aes::Aes128;
 use xts_mode::{get_tweak_default, Xts128};
 
-use crate::{AllocList, BlockPtr, KeySlot, Tree, BLOCK_SIZE, SIGNATURE, VERSION};
+use crate::{AllocList, BlockPtr, KeySlot, ReleaseList, Tree, BLOCK_SIZE, SIGNATURE, VERSION};
 
 pub const HEADER_RING: u64 = 256;
 
@@ -29,8 +29,10 @@ pub struct Header {
     pub alloc: BlockPtr<AllocList>,
     /// Key slots
     pub key_slots: [KeySlot; 64],
+    /// Nodes pending release, may be null
+    pub release: BlockPtr<ReleaseList>,
     /// Padding
-    pub padding: [u8; BLOCK_SIZE as usize - 3176],
+    pub padding: [u8; BLOCK_SIZE as usize - 3192],
     /// encrypted hash of header data without hash, set to hash and padded if disk is not encrypted
     pub encrypted_hash: [u8; 16],
     /// hash of header data without hash
@@ -159,7 +161,8 @@ impl Default for Header {
             tree: BlockPtr::<Tree>::default(),
             alloc: BlockPtr::<AllocList>::default(),
             key_slots: [KeySlot::default(); 64],
-            padding: [0; BLOCK_SIZE as usize - 3176],
+            release: BlockPtr::<ReleaseList>::default(),
+            padding: [0; BLOCK_SIZE as usize - 3192],
             encrypted_hash: [0; 16],
             hash: 0.into(),
         }
@@ -175,6 +178,7 @@ impl fmt::Debug for Header {
         let generation = self.generation;
         let tree = self.tree;
         let alloc = self.alloc;
+        let release = self.release;
         let hash = self.hash;
         f.debug_struct("Header")
             .field("signature", &signature)
@@ -184,6 +188,7 @@ impl fmt::Debug for Header {
             .field("generation", &generation)
             .field("tree", &tree)
             .field("alloc", &alloc)
+            .field("release", &release)
             .field("hash", &hash)
             .finish()
     }
