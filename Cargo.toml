@@ -56,7 +56,7 @@ log = { version = "0.4.14", default-features = false, optional = true }
 lz4_flex = { version = "0.11", default-features = false, features = ["checked-decode"] }
 parse-size = { version = "1", optional = true }
 range-tree = { version = "0.1", optional = true }
-redox_syscall = "0.6.0"
+redox_syscall = { git = "https://gitlab.redox-os.org/Ibuki.O/syscall.git", branch = "namespace-improvement" }
 seahash = { version = "4.1.0", default-features = false }
 termion = { version = "4", optional = true }
 uuid = { version = "1.4", default-features = false }
@@ -85,12 +85,16 @@ std = [
 fuser = { version = "0.14", optional = true }
 
 [target.'cfg(target_os = "redox")'.dependencies]
-libredox = { version = "0.1.11", features = ["call"], optional = true }
+libredox = { git = "https://gitlab.redox-os.org/Ibuki.O/libredox.git", branch = "nsmgr", features = ["call"], optional = true }
 redox-path = "0.3.0"
-redox-scheme = { version = "0.8.3", optional = true }
+redox-scheme = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-scheme.git", branch = "scheme-creation", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [dev-dependencies]
 assert_cmd = "2.0.17"
+
+[patch.crates-io]
+redox_syscall = { git = "https://gitlab.redox-os.org/Ibuki.O/syscall.git", branch = "namespace-improvement" }
+libredox = { git = "https://gitlab.redox-os.org/Ibuki.O/libredox.git", branch = "nsmgr" }
