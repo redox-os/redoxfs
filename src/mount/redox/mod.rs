@@ -20,13 +20,21 @@ where
     F: FnOnce(&Path) -> T,
 {
     let mountpoint = mountpoint.as_ref();
-    let scheme_name = format!("{}", mountpoint.display());
-    let socket = Socket::create(&scheme_name)?;
+    let socket = Socket::create()?;
 
+    let scheme_name = format!("{}", mountpoint.display());
     let mounted_path = format!("/scheme/{}", mountpoint.display());
+
+    let mut scheme = FileScheme::new(scheme_name, mounted_path.clone(), filesystem, &socket);
+
+    redox_scheme::scheme::register_sync_scheme(
+        &socket,
+        &format!("{}", mountpoint.display()),
+        &mut scheme,
+    )?;
+
     let res = callback(Path::new(&mounted_path));
 
-    let mut scheme = FileScheme::new(scheme_name, mounted_path, filesystem, &socket);
     while IS_UMT.load(Ordering::SeqCst) == 0 {
         let req = match socket.next_request(SignalBehavior::Restart)? {
             None => break,
