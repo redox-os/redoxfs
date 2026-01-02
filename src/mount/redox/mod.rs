@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use crate::{Disk, FileSystem, Transaction, IS_UMT};
+use crate::{Disk, FileSystem, IS_UMT};
 
 use self::scheme::FileScheme;
 
@@ -42,6 +42,10 @@ where
                         }
                         continue;
                     }
+                    RequestKind::OnClose { id } => {
+                        scheme.on_close(id);
+                        continue;
+                    }
                     _ => {
                         // TODO: Redoxfs does not yet support asynchronous file IO. It might still make
                         // sense to implement cancellation for huge buffers, e.g. dd bs=1G
@@ -57,8 +61,8 @@ where
         }
     }
 
-    // Squash allocations and sync on unmount
-    let _ = Transaction::new(&mut scheme.fs).commit(true);
+    // Cleanup on unmount
+    fs.cleanup()?;
 
     Ok(res)
 }

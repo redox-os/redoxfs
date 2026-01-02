@@ -99,7 +99,7 @@ enum Operation {
 /// Parameters for mounting the file system and operations to be performed afterwards.
 #[derive(Arbitrary, Clone, Debug)]
 struct MountSequence {
-    squash: bool,
+    cleanup: bool,
     operations: Vec<Operation>,
 }
 
@@ -133,13 +133,13 @@ fn create_redoxfs(disk: DiskSparse, reserved_size: u64) -> bool {
 }
 
 /// Mounts an existing Redoxfs, runs the callback and performs the unmount.
-fn with_redoxfs_mount<F>(temp_path: &Path, disk: DiskSparse, squash: bool, callback: F)
+fn with_redoxfs_mount<F>(temp_path: &Path, disk: DiskSparse, cleanup: bool, callback: F)
 where
     F: FnOnce(&Path) + Send + 'static,
 {
     let password = None;
     let block = None;
-    let mut fs = FileSystem::open(disk, password, block, squash).unwrap();
+    let mut fs = FileSystem::open(disk, password, block, cleanup).unwrap();
 
     let mount_path = temp_path.join("mount");
     fs::create_dir_all(&mount_path).unwrap();
@@ -319,7 +319,7 @@ fuzz_target!(|test_case: TestCase| -> Corpus {
 
         let disk = create_disk(temp_dir.path(), test_case.disk_size);
         let operations = mount_seq.operations.clone();
-        with_redoxfs_mount(temp_dir.path(), disk, mount_seq.squash, move |fs_path| {
+        with_redoxfs_mount(temp_dir.path(), disk, mount_seq.cleanup, move |fs_path| {
             for operation in operations.iter() {
                 #[cfg(feature = "log")]
                 eprintln!("do operation {operation:?}");

@@ -16,8 +16,8 @@ use crate::{
     htree::{self, HTreeHash, HTreeNode, HTreePtr},
     AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockMeta, BlockPtr,
     BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeFlags, NodeLevel,
-    NodeLevelData, RecordRaw, TreeData, TreePtr, ALLOC_GC_THRESHOLD, ALLOC_LIST_ENTRIES,
-    DIR_ENTRY_MAX_LENGTH, HEADER_RING,
+    NodeLevelData, RecordRaw, ReleaseList, TreeData, TreePtr, ALLOC_GC_THRESHOLD,
+    ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
 };
 
 pub(crate) fn level_data(node: &TreeData<Node>) -> Result<&NodeLevelData> {
@@ -1087,16 +1087,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
         name: &str,
         mode: u16,
     ) -> Result<Option<u32>> {
-        self.remove_node_in_use(parent_ptr, name, mode, false)
-    }
-
-    pub fn remove_node_in_use(
-        &mut self,
-        parent_ptr: TreePtr<Node>,
-        name: &str,
-        mode: u16,
-        in_use: bool,
-    ) -> Result<Option<u32>> {
         #[cfg(feature = "log")]
         log::debug!(
             "REMOVE_NODE: name: {}, mode: {:x}, parent_ptr: {:?}",
@@ -1201,7 +1191,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         if remove_node {
             self.sync_tree(parent)?;
-            self.release_node(node.ptr(), in_use)?;
+            self.release_node(node.ptr())?;
             Ok(Some(node_id))
         } else {
             // Sync both parent and node at the same time
@@ -1210,12 +1200,143 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
     }
 
-    pub fn release_node(&mut self, node_ptr: TreePtr<Node>, in_use: bool) -> Result<()> {
-        if in_use {
-            eprintln!(
-                "LEAKING NODE {}, TODO PUT IT IN RELEASE LIST",
-                node_ptr.id()
-            );
+    /// Notify of node open, for tracking node usage
+    pub fn on_open_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
+        let entry = self.fs.node_usages.entry(node_ptr.id()).or_insert(0);
+        *entry = entry.checked_add(1).ok_or_else(|| {
+            log::error!("node {} usage overflow", node_ptr.id());
+            Error::new(EINVAL)
+        })?;
+        Ok(())
+    }
+
+    /// Notify of node close, for tracking node usage. Delete node if it is in
+    /// the release list.
+    ///
+    /// Returns `Ok(true)` if the node was deleted
+    pub fn on_close_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
+        // Subtract from usages and return if not zero
+        match self.fs.node_usages.get_mut(&node_ptr.id()) {
+            Some(entry) => {
+                *entry = entry.checked_sub(1).ok_or_else(|| {
+                    log::error!("node {} usage underflow", node_ptr.id());
+                    Error::new(EINVAL)
+                })?;
+                if *entry > 0 {
+                    // Node still in use
+                    return Ok(());
+                }
+            }
+            None => {
+                log::error!(
+                    "tried to close node {} that is not already open",
+                    node_ptr.id()
+                );
+                return Ok(());
+            }
+        }
+
+        // Remove node usages entry
+        self.fs.node_usages.remove(&node_ptr.id());
+
+        // Check for node in release list and delete it
+        self.release_unused_nodes()
+    }
+
+    /// Check for unused nodes in release list and delete them
+    pub fn release_unused_nodes(&mut self) -> Result<()> {
+        // Read current release lists (going forward through list)
+        let mut releases = VecDeque::<BlockData<ReleaseList>>::new();
+        {
+            let mut release_ptr = self.header.release;
+            while !release_ptr.is_null() {
+                let release = self.read_block(release_ptr)?;
+                release_ptr = release.data().prev;
+                releases.push_front(release);
+            }
+        }
+
+        // Find unused nodes and remove them (going backwards through list)
+        let mut update_prev = None;
+        let mut release_nodes = Vec::new();
+        while let Some(mut release) = releases.pop_back() {
+            if let Some(prev_ptr) = update_prev.take() {
+                release.data_mut().prev = prev_ptr;
+            }
+
+            let mut changed = false;
+            let mut empty = true;
+            for entry in release.data_mut().entries.iter_mut() {
+                if !entry.is_null() {
+                    let usages = self.fs.node_usages.get(&entry.id()).copied().unwrap_or(0);
+                    if usages == 0 {
+                        release_nodes.push(*entry);
+                        *entry = TreePtr::default();
+                        changed = true;
+                    } else {
+                        empty = false;
+                    }
+                }
+            }
+
+            if empty {
+                // Deallocate this release list block
+                unsafe {
+                    self.deallocate(&mut FsCtx, release.addr());
+                }
+                // Skip this block in the list
+                update_prev = Some(release.data().prev);
+            } else if changed {
+                // Update this block
+                update_prev = Some(self.sync_block(&mut FsCtx, release)?);
+            } else {
+                update_prev = None;
+            }
+        }
+        if let Some(prev_ptr) = update_prev.take() {
+            self.header.release = prev_ptr;
+            self.header_changed = true;
+        }
+
+        for node_ptr in release_nodes {
+            self.release_node(node_ptr)?;
+        }
+
+        Ok(())
+    }
+
+    /// Removes node if usages are zero, adds it to release list if usages are
+    /// greater than zero.
+    pub fn release_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
+        let usages = self
+            .fs
+            .node_usages
+            .get(&node_ptr.id())
+            .copied()
+            .unwrap_or(0);
+        if usages > 0 {
+            let mut release = unsafe { self.read_block_or_empty(self.header.release)? };
+
+            // Try to insert into current release block
+            let mut inserted = false;
+            for entry in release.data_mut().entries.iter_mut() {
+                if entry.is_null() {
+                    *entry = node_ptr;
+                    inserted = true;
+                    break;
+                }
+            }
+
+            // If not inserted, try to add another release block
+            if !inserted {
+                release = BlockData::empty(BlockAddr::null(BlockMeta::default())).unwrap();
+                release.data_mut().prev = self.header.release;
+                release.data_mut().entries[0] = node_ptr;
+            }
+
+            // Update header
+            self.header.release = self.sync_block(&mut FsCtx, release)?;
+            self.header_changed = true;
         } else {
             let (mut node, node_addr) = self.read_tree_and_addr(node_ptr)?;
             self.truncate_node_inner(&mut node, 0)?;

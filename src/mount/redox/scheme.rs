@@ -26,7 +26,7 @@ use redox_path::{
 
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
-use super::resource::{DirResource, Entry, FileResource, Resource};
+use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, Resource};
 
 pub struct FileScheme<'sock, D: Disk> {
     scheme_name: String,
@@ -333,9 +333,15 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 }
             }
         };
+
+        let node_ptr = resource.node_ptr();
         self.fmap
-            .entry(resource.node_ptr().id())
-            .or_insert_with(Default::default)
+            .entry(node_ptr.id())
+            .or_insert_with(|| {
+                // Notify filesystem of open
+                self.fs.tx(|tx| tx.on_open_node(node_ptr)).unwrap();
+                FileMmapInfo::new()
+            })
             .open_fds += 1;
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -487,13 +493,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                         Node::MODE_FILE
                     };
 
-                    let in_use = if let Some(file_info) = self.fmap.get(&child.id()) {
-                        file_info.in_use()
-                    } else {
-                        false
-                    };
-
-                    tx.remove_node_in_use(parent.ptr(), &child_name, mode, in_use)
+                    tx.remove_node(parent.ptr(), &child_name, mode)
                 } else {
                     Err(Error::new(EISDIR))
                 }
@@ -912,7 +912,8 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let Some(file) = self.files.remove(&id) else {
             return;
         };
-        let Some(file_info) = self.fmap.get_mut(&file.node_ptr().id()) else {
+        let node_ptr = file.node_ptr();
+        let Some(file_info) = self.fmap.get_mut(&node_ptr.id()) else {
             return;
         };
 
@@ -921,8 +922,16 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             .checked_sub(1)
             .expect("open_fds not tracked correctly");
 
-        // TODO: If open_fds reaches zero and there are no hardlinks (directory entries) to any
-        // particular inode, remove that inode here.
+        // Check if node no longer in use
+        if !file_info.in_use() {
+            // Notify filesystem of close
+            if let Err(err) = self.fs.tx(|tx| tx.on_close_node(node_ptr)) {
+                log::error!("failed to close node {}: {}", node_ptr.id(), err);
+            }
+
+            // Remove from fmap list
+            self.fmap.remove(&node_ptr.id());
+        }
     }
 
     fn on_sendfd(&mut self, sendfd_request: &SendFdRequest) -> Result<usize> {
@@ -1016,9 +1025,14 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             return Err(Error::new(EINVAL));
         };
 
+        let node_ptr = resource.node_ptr();
         self.fmap
-            .entry(resource.node_ptr().id())
-            .or_insert_with(Default::default)
+            .entry(node_ptr.id())
+            .or_insert_with(|| {
+                // Notify filesystem of open
+                self.fs.tx(|tx| tx.on_open_node(node_ptr)).unwrap();
+                FileMmapInfo::new()
+            })
             .open_fds += 1;
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
