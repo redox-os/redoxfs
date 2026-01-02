@@ -62,7 +62,7 @@ where
     }
 
     // Cleanup on unmount
-    fs.cleanup()?;
+    scheme.fs.cleanup()?;
 
     Ok(res)
 }
