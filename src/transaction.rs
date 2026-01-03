@@ -1204,6 +1204,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     pub fn on_open_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
         let entry = self.fs.node_usages.entry(node_ptr.id()).or_insert(0);
         *entry = entry.checked_add(1).ok_or_else(|| {
+            #[cfg(feature = "log")]
             log::error!("node {} usage overflow", node_ptr.id());
             Error::new(EINVAL)
         })?;
@@ -1219,6 +1220,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         match self.fs.node_usages.get_mut(&node_ptr.id()) {
             Some(entry) => {
                 *entry = entry.checked_sub(1).ok_or_else(|| {
+                    #[cfg(feature = "log")]
                     log::error!("node {} usage underflow", node_ptr.id());
                     Error::new(EINVAL)
                 })?;
@@ -1228,6 +1230,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
             }
             None => {
+                #[cfg(feature = "log")]
                 log::error!(
                     "tried to close node {} that is not already open",
                     node_ptr.id()
