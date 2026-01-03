@@ -335,14 +335,16 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         };
 
         let node_ptr = resource.node_ptr();
-        self.fmap
-            .entry(node_ptr.id())
-            .or_insert_with(|| {
+        {
+            let fmap_info = self.fmap
+                .entry(node_ptr.id())
+                .or_insert_with(FileMmapInfo::new);
+            if !fmap_info.in_use() {
                 // Notify filesystem of open
-                self.fs.tx(|tx| tx.on_open_node(node_ptr)).unwrap();
-                FileMmapInfo::new()
-            })
-            .open_fds += 1;
+                self.fs.tx(|tx| tx.on_open_node(node_ptr))?;
+            }
+            fmap_info.open_fds += 1;
+        }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.files.insert(id, resource);
@@ -929,8 +931,10 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 log::error!("failed to close node {}: {}", node_ptr.id(), err);
             }
 
+            /*TODO: leaks memory, but why?
             // Remove from fmap list
             self.fmap.remove(&node_ptr.id());
+            */
         }
     }
 
@@ -1026,14 +1030,16 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         };
 
         let node_ptr = resource.node_ptr();
-        self.fmap
-            .entry(node_ptr.id())
-            .or_insert_with(|| {
+        {
+            let fmap_info = self.fmap
+                .entry(node_ptr.id())
+                .or_insert_with(FileMmapInfo::new);
+            if !fmap_info.in_use() {
                 // Notify filesystem of open
-                self.fs.tx(|tx| tx.on_open_node(node_ptr)).unwrap();
-                FileMmapInfo::new()
-            })
-            .open_fds += 1;
+                self.fs.tx(|tx| tx.on_open_node(node_ptr))?;
+            }
+            fmap_info.open_fds += 1;
+        }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.files.insert(id, resource);

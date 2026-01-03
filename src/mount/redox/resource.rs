@@ -493,6 +493,11 @@ impl<D: Disk> Resource<D> for FileResource {
         let fmap_info = fmaps
             .get_mut(&self.node_ptr.id())
             .ok_or(Error::new(EBADFD))?;
+        
+        if !fmap_info.in_use() {
+            // Notify filesystem of open
+            tx.on_open_node(self.node_ptr)?;
+        }
 
         let new_size = (offset as usize + aligned_size).next_multiple_of(PAGE_SIZE);
         if new_size > fmap_info.size {
@@ -602,8 +607,10 @@ impl<D: Disk> Resource<D> for FileResource {
             // Notify filesystem of close
             tx.on_close_node(self.node_ptr)?;
 
+            /*TODO: leaks memory, but why?
             // Remove from fmaps list
             fmaps.remove(&self.node_ptr.id());
+            */
         }
 
         Ok(())
