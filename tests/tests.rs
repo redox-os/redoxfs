@@ -1,6 +1,7 @@
 use core::panic::AssertUnwindSafe;
 use redoxfs::{unmount_path, DirEntry, DiskMemory, DiskSparse, FileSystem, Node, TreePtr};
 
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::panic::catch_unwind;
 use std::path::Path;
 use std::process::Command;
@@ -613,4 +614,26 @@ fn rename_works() {
     // Rename /dir to /newdir
     fs.tx(|tx| tx.rename_node(root, "dir", root, "newdir"))
         .expect("Renaming 'dir' to 'newdir' should succeed");
+}
+
+#[test]
+fn temporary_file() {
+    with_mounted(|path| {
+        let file_path = path.join("temp");
+        let mut file = fs::File::create_new(&file_path).expect("failed to create temp file");
+
+        fs::remove_file(&file_path).expect("failed to unlink temp file");
+
+        let write_data = "Test\n";
+        file.write_all(write_data.as_bytes())
+            .expect("failed to write temp file");
+
+        let mut read_data = String::new();
+        file.seek(SeekFrom::Start(0))
+            .expect("failed to seek temp file");
+        file.read_to_string(&mut read_data)
+            .expect("failed to read temp file");
+
+        assert_eq!(read_data, write_data);
+    });
 }

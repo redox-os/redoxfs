@@ -12,11 +12,11 @@ use self::fuser::TimeOrNow;
 use crate::mount::fuse::TimeOrNow::Now;
 use crate::mount::fuse::TimeOrNow::SpecificTime;
 
-use crate::{filesystem, Disk, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
+use crate::{filesystem, Disk, Node, TreeData, TreePtr, BLOCK_SIZE};
 
 use self::fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyStatfs, ReplyWrite, Request, Session,
+    ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, Session,
 };
 use std::time::Duration;
 
@@ -62,8 +62,8 @@ where
         res
     };
 
-    // Squash allocations and sync on unmount
-    let _ = Transaction::new(&mut filesystem).commit(true);
+    // Cleanup on unmount
+    filesystem.cleanup()?;
 
     Ok(res)
 }
@@ -115,7 +115,7 @@ impl<D: Disk> Filesystem for Fuse<'_, D> {
         }
     }
 
-    fn getattr(&mut self, _req: &Request, node_id: u64, reply: ReplyAttr) {
+    fn getattr(&mut self, _req: &Request, node_id: u64, _fh: Option<u64>, reply: ReplyAttr) {
         let node_ptr = TreePtr::<Node>::new(node_id as u32);
         match self.fs.tx(|tx| tx.read_tree(node_ptr)) {
             Ok(node) => {
@@ -225,6 +225,14 @@ impl<D: Disk> Filesystem for Fuse<'_, D> {
         reply.attr(&TTL, &attr);
     }
 
+    fn open(&mut self, _req: &Request<'_>, node_id: u64, _flags: i32, reply: ReplyOpen) {
+        let node_ptr = TreePtr::<Node>::new(node_id as u32);
+        match self.fs.tx(|tx| tx.on_open_node(node_ptr)) {
+            Ok(()) => reply.opened(0, 0),
+            Err(err) => reply.error(err.errno),
+        }
+    }
+
     fn read(
         &mut self,
         _req: &Request,
@@ -293,6 +301,23 @@ impl<D: Disk> Filesystem for Fuse<'_, D> {
 
     fn flush(&mut self, _req: &Request, _ino: u64, _fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
         reply.ok();
+    }
+
+    fn release(
+        &mut self,
+        _req: &Request,
+        node_id: u64,
+        _fh: u64,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        _flush: bool,
+        reply: ReplyEmpty,
+    ) {
+        let node_ptr = TreePtr::new(node_id as u32);
+        match self.fs.tx(|tx| tx.on_close_node(node_ptr)) {
+            Ok(()) => reply.ok(),
+            Err(err) => reply.error(err.errno),
+        }
     }
 
     fn fsync(&mut self, _req: &Request, _ino: u64, _fh: u64, _datasync: bool, reply: ReplyEmpty) {
@@ -380,13 +405,15 @@ impl<D: Disk> Filesystem for Fuse<'_, D> {
         let parent_ptr = TreePtr::<Node>::new(parent_id as u32);
         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         match self.fs.tx(|tx| {
-            tx.create_node(
+            let node = tx.create_node(
                 parent_ptr,
                 name.to_str().unwrap(),
                 Node::MODE_FILE | (mode as u16 & Node::MODE_PERM),
                 ctime.as_secs(),
                 ctime.subsec_nanos(),
-            )
+            )?;
+            tx.on_open_node(node.ptr())?;
+            Ok(node)
         }) {
             Ok(node) => {
                 // println!("Create {:?}:{:o}:{:o}", node.1.name(), node.1.mode, mode);

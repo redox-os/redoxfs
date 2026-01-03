@@ -1,6 +1,6 @@
 use std::{io, path::Path};
 
-use crate::{Disk, filesystem};
+use crate::{filesystem, Disk};
 
 pub fn mount<D, P, T, F>(
     mut _filesystem: filesystem::FileSystem<D>,
@@ -12,5 +12,8 @@ where
     P: AsRef<Path>,
     F: FnOnce(&Path) -> T,
 {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "FUSE mount feature is disabled"))
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "FUSE mount feature is disabled",
+    ))
 }

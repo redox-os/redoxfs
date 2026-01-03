@@ -359,20 +359,34 @@ pub struct FileResource {
     flags: usize,
     uid: u32,
 }
+
 #[derive(Debug)]
 pub struct FileMmapInfo {
     base: *mut u8,
     size: usize,
-    ranges: RangeTree<Fmap>,
+    pub ranges: RangeTree<Fmap>,
     pub open_fds: usize,
 }
-impl Default for FileMmapInfo {
-    fn default() -> Self {
+
+impl FileMmapInfo {
+    pub fn new() -> Self {
         Self {
             base: core::ptr::null_mut(),
             size: 0,
             ranges: RangeTree::new(),
             open_fds: 0,
+        }
+    }
+
+    pub fn in_use(&self) -> bool {
+        self.open_fds > 0 || !self.ranges.is_empty()
+    }
+}
+
+impl Drop for FileMmapInfo {
+    fn drop(&mut self) {
+        if self.in_use() {
+            log::error!("FileMmapInfo dropped while in use");
         }
     }
 }
@@ -582,6 +596,15 @@ impl<D: Disk> Resource<D> for FileResource {
             }
         }
         //dbg!(&self.fmaps);
+
+        // Allow release of node if not in use anymore
+        if !fmap_info.in_use() {
+            // Notify filesystem of close
+            tx.on_close_node(self.node_ptr)?;
+
+            // Remove from fmaps list
+            fmaps.remove(&self.node_ptr.id());
+        }
 
         Ok(())
     }
