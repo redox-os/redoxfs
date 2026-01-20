@@ -14,7 +14,7 @@ cargo-fuzz = true
 [dependencies]
 anyhow = "1.0.86"
 arbitrary = { version = "1.3.2", features = ["derive"] }
-fuser = { version = "0.14" }
+fuser = { version = "0.16" }
 libfuzzer-sys = "0.4"
 nix = { version = "0.29.0", features = ["fs"] }
 tempfile = "3.10.1"

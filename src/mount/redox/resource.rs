@@ -359,20 +359,34 @@ pub struct FileResource {
     flags: usize,
     uid: u32,
 }
+
 #[derive(Debug)]
 pub struct FileMmapInfo {
     base: *mut u8,
     size: usize,
-    ranges: RangeTree<Fmap>,
+    pub ranges: RangeTree<Fmap>,
     pub open_fds: usize,
 }
-impl Default for FileMmapInfo {
-    fn default() -> Self {
+
+impl FileMmapInfo {
+    pub fn new() -> Self {
         Self {
             base: core::ptr::null_mut(),
             size: 0,
             ranges: RangeTree::new(),
             open_fds: 0,
+        }
+    }
+
+    pub fn in_use(&self) -> bool {
+        self.open_fds > 0 || !self.ranges.is_empty()
+    }
+}
+
+impl Drop for FileMmapInfo {
+    fn drop(&mut self) {
+        if self.in_use() {
+            log::error!("FileMmapInfo dropped while in use");
         }
     }
 }
@@ -479,6 +493,11 @@ impl<D: Disk> Resource<D> for FileResource {
         let fmap_info = fmaps
             .get_mut(&self.node_ptr.id())
             .ok_or(Error::new(EBADFD))?;
+        
+        if !fmap_info.in_use() {
+            // Notify filesystem of open
+            tx.on_open_node(self.node_ptr)?;
+        }
 
         let new_size = (offset as usize + aligned_size).next_multiple_of(PAGE_SIZE);
         if new_size > fmap_info.size {
@@ -582,6 +601,17 @@ impl<D: Disk> Resource<D> for FileResource {
             }
         }
         //dbg!(&self.fmaps);
+
+        // Allow release of node if not in use anymore
+        if !fmap_info.in_use() {
+            // Notify filesystem of close
+            tx.on_close_node(self.node_ptr)?;
+
+            /*TODO: leaks memory, but why?
+            // Remove from fmaps list
+            fmaps.remove(&self.node_ptr.id());
+            */
+        }
 
         Ok(())
     }

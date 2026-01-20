@@ -1,5 +1,9 @@
 use aes::Aes128;
-use alloc::{boxed::Box, collections::VecDeque, vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, VecDeque},
+    vec,
+};
 use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 use xts_mode::{get_tweak_default, Xts128};
 
@@ -25,6 +29,7 @@ pub struct FileSystem<D: Disk> {
     pub(crate) allocator: Allocator,
     pub(crate) cipher_opt: Option<Xts128<Aes128>>,
     pub(crate) compress_cache: Box<[u8]>,
+    pub node_usages: BTreeMap<u32, u64>,
 }
 
 impl<D: Disk> FileSystem<D> {
@@ -33,7 +38,7 @@ impl<D: Disk> FileSystem<D> {
         mut disk: D,
         password_opt: Option<&[u8]>,
         block_opt: Option<u64>,
-        squash: bool,
+        cleanup: bool,
     ) -> Result<Self> {
         for ring_block in block_opt.map_or(0..65536, |x| x..x + 1) {
             let mut header = Header::default();
@@ -90,12 +95,14 @@ impl<D: Disk> FileSystem<D> {
                 allocator: Allocator::default(),
                 cipher_opt,
                 compress_cache: compress_cache(),
+                node_usages: BTreeMap::new(),
             };
 
             unsafe { fs.reset_allocator()? };
 
-            // Squash allocations and sync
-            Transaction::new(&mut fs).commit(squash)?;
+            if cleanup {
+                fs.cleanup()?
+            }
 
             return Ok(fs);
         }
@@ -171,6 +178,7 @@ impl<D: Disk> FileSystem<D> {
             allocator: Allocator::default(),
             cipher_opt,
             compress_cache: compress_cache(),
+            node_usages: BTreeMap::new(),
         };
 
         // Write header generation zero
@@ -219,10 +227,16 @@ impl<D: Disk> FileSystem<D> {
             Ok(())
         })?;
 
-        // Make sure everything is synced and squash allocations
-        Transaction::new(&mut fs).commit(true)?;
+        fs.cleanup()?;
 
         Ok(fs)
+    }
+
+    /// Release unused nodes and squash allocation log, happens on mount (with cleanup) and unmount
+    pub fn cleanup(&mut self) -> Result<()> {
+        let mut tx = Transaction::new(self);
+        tx.release_unused_nodes()?;
+        tx.commit(true)
     }
 
     /// start a filesystem transaction, required for making any changes
