@@ -28,13 +28,18 @@ use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
 use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, Resource};
 
+enum Handle<D: Disk> {
+    Resource(Box<dyn Resource<D>>),
+    SchemeRoot,
+}
+
 pub struct FileScheme<'sock, D: Disk> {
     scheme_name: String,
     mounted_path: String,
     pub(crate) fs: FileSystem<D>,
     socket: &'sock Socket,
     next_id: AtomicUsize,
-    files: BTreeMap<usize, Box<dyn Resource<D>>>,
+    handles: BTreeMap<usize, Handle<D>>,
     fmap: super::resource::Fmaps,
 
     // Map of file id to other scheme's file descriptor.
@@ -54,7 +59,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             fs,
             socket,
             next_id: AtomicUsize::new(1),
-            files: BTreeMap::new(),
+            handles: BTreeMap::new(),
             fmap: BTreeMap::new(),
             other_scheme_fd_map: BTreeMap::new(),
         }
@@ -126,7 +131,9 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     }
 
     fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
-        let resource = self.files.get(&id).ok_or(Error::new(EBADF))?;
+        let Some(Handle::Resource(resource)) = self.handles.get(&id) else {
+            return Err(Error::new(EBADF));
+        };
         let inode_id = resource.node_ptr().id();
         let target_fd = self
             .other_scheme_fd_map
@@ -134,6 +141,10 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             .ok_or(Error::new(EBADF))?;
         let len = libredox::call::get_socket_token(*target_fd, payload)?;
         return Ok(len);
+    }
+
+    fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
+        self.open_internal(TreePtr::root(), url, flags, ctx)
     }
 
     fn open_internal(
@@ -347,7 +358,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.files.insert(id, resource);
+        self.handles.insert(id, Handle::Resource(resource));
 
         Ok(OpenResult::ThisScheme {
             number: id,
@@ -418,8 +429,10 @@ fn dirname(path: &str) -> Option<String> {
 }
 
 impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
-    fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
-        self.open_internal(TreePtr::root(), url, flags, ctx)
+    fn scheme_root(&mut self) -> Result<usize> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.handles.insert(id, Handle::SchemeRoot);
+        Ok(id)
     }
 
     fn openat(
@@ -430,13 +443,14 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         _fcntl_flags: u32,
         ctx: &CallerCtx,
     ) -> Result<OpenResult> {
-        // If pathname is absolute, then dirfd is ignored.
-        if path.starts_with('/') {
-            return self.open_internal(TreePtr::root(), path, flags, ctx);
-        }
-        let dir_resource = self.files.get(&dirfd).ok_or(Error::new(EBADF))?;
-        // Only allow DirResource as base for openat
-        let dir_node_ptr = dir_resource.node_ptr();
+        let dir_node_ptr = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
+            // If pathname is absolute, then dirfd is ignored.
+            Handle::Resource(dir_resource) if !path.starts_with('/') => {
+                // only allow dirresource as base for openat
+                dir_resource.node_ptr()
+            }
+            _ => TreePtr::root(),
+        };
         self.open_internal(dir_node_ptr, path, flags, ctx)
     }
 
@@ -445,8 +459,12 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let uid = ctx.uid;
         let gid = ctx.gid;
 
-        let start_ptr = self.files.get(&dirfd).ok_or(Error::new(EBADF))?.node_ptr();
-        // println!("Unlinkat '{}' flags: {:X}", path, flags);+
+        let start_ptr = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
+            Handle::Resource(dir_resource) => dir_resource.node_ptr(),
+            Handle::SchemeRoot => TreePtr::root(),
+        };
+
+        // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
         let scheme_name = &self.scheme_name;
 
@@ -505,9 +523,11 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let Some(node_id) = unlink_result? else {
             return Ok(());
         };
+
         if let Some(fd) = self.other_scheme_fd_map.remove(&node_id) {
             let _ = syscall::close(fd);
         }
+
         Ok(())
     }
 
@@ -521,7 +541,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
+            return Err(Error::new(EBADF));
+        };
         self.fs.tx(|tx| file.read(buf, offset, tx))
     }
 
@@ -534,18 +556,22 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
+            return Err(Error::new(EBADF));
+        };
         self.fs.tx(|tx| file.write(buf, offset, tx))
     }
 
     fn fsize(&mut self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
         // println!("Seek {}, {} {}", id, pos, whence);
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
+            return Err(Error::new(EBADF));
+        };
         self.fs.tx(|tx| file.fsize(tx))
     }
 
     fn fchmod(&mut self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
-        if let Some(file) = self.files.get_mut(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
             self.fs.tx(|tx| file.fchmod(mode, tx))
         } else {
             Err(Error::new(EBADF))
@@ -553,7 +579,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn fchown(&mut self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
-        if let Some(file) = self.files.get_mut(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
             self.fs.tx(|tx| file.fchown(new_uid, new_gid, tx))
         } else {
             Err(Error::new(EBADF))
@@ -561,7 +587,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn fcntl(&mut self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
-        if let Some(file) = self.files.get_mut(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
             file.fcntl(cmd, arg)
         } else {
             Err(Error::new(EBADF))
@@ -569,8 +595,8 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn fevent(&mut self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
-        if let Some(_file) = self.files.get(&id) {
-            // EPERM is returned for files that are always readable or writable
+        if let Some(Handle::Resource(_file)) = self.handles.get(&id) {
+            // EPERM is returned for handles that are always readable or writable
             Err(Error::new(EPERM))
         } else {
             Err(Error::new(EBADF))
@@ -579,7 +605,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn fpath(&mut self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        if let Some(file) = self.files.get(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get(&id) {
             let mounted_path = self.mounted_path.as_bytes();
 
             let mut i = 0;
@@ -614,7 +640,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         // println!("Flink {}, {} from {}, {}", id, new_path, uid, gid);
 
-        if let Some(file) = self.files.get_mut(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
             //TODO: Check for EINVAL
             // The new pathname contained a path prefix of the old, or, more generally,
             // an attempt was made to make a directory a subdirectory of itself.
@@ -721,7 +747,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
 
-        if let Some(file) = self.files.get_mut(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
             //TODO: Check for EINVAL
             // The new pathname contained a path prefix of the old, or, more generally,
             // an attempt was made to make a directory a subdirectory of itself.
@@ -822,7 +848,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn fstat(&mut self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
-        if let Some(file) = self.files.get(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get(&id) {
             self.fs.tx(|tx| file.stat(stat, tx))
         } else {
             Err(Error::new(EBADF))
@@ -830,7 +856,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn fstatvfs(&mut self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
-        if let Some(_file) = self.files.get(&id) {
+        if let Some(Handle::Resource(_file)) = self.handles.get(&id) {
             stat.f_bsize = BLOCK_SIZE as u32;
             stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
             stat.f_bfree = self.fs.allocator().free();
@@ -844,7 +870,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn fsync(&mut self, id: usize, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fsync {}", id);
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
+            return Err(Error::new(EBADF));
+        };
         let fmaps = &mut self.fmap;
 
         self.fs.tx(|tx| file.sync(fmaps, tx))
@@ -852,7 +880,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn ftruncate(&mut self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
         // println!("Ftruncate {}, {}", id, len);
-        if let Some(file) = self.files.get_mut(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
             self.fs.tx(|tx| file.truncate(len, tx))
         } else {
             Err(Error::new(EBADF))
@@ -861,7 +889,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn futimens(&mut self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
         // println!("Futimens {}, {}", id, times.len());
-        if let Some(file) = self.files.get_mut(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
             self.fs.tx(|tx| file.utimens(times, tx))
         } else {
             Err(Error::new(EBADF))
@@ -874,7 +902,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         buf: DirentBuf<&'buf mut [u8]>,
         opaque_offset: u64,
     ) -> Result<DirentBuf<&'buf mut [u8]>> {
-        if let Some(file) = self.files.get_mut(&id) {
+        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
             self.fs.tx(|tx| file.getdents(buf, opaque_offset, tx))
         } else {
             Err(Error::new(EBADF))
@@ -889,7 +917,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         flags: MapFlags,
         _ctx: &CallerCtx,
     ) -> Result<usize> {
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
+            return Err(Error::new(EBADF));
+        };
         let fmaps = &mut self.fmap;
 
         self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
@@ -903,7 +933,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         flags: MunmapFlags,
         _ctx: &CallerCtx,
     ) -> Result<()> {
-        let file = self.files.get_mut(&id).ok_or(Error::new(EBADF))?;
+        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
+            return Err(Error::new(EBADF));
+        };
         let fmaps = &mut self.fmap;
 
         self.fs.tx(|tx| file.funmap(fmaps, offset, size, tx))
@@ -911,7 +943,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn on_close(&mut self, id: usize) {
         // println!("Close {}", id);
-        let Some(file) = self.files.remove(&id) else {
+        let Some(Handle::Resource(file)) = self.handles.remove(&id) else {
             return;
         };
         let node_ptr = file.node_ptr();
@@ -943,10 +975,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let uid = ctx.uid;
         let gid = ctx.gid;
 
-        let parent_resource = self
-            .files
-            .get(&sendfd_request.id())
-            .ok_or(Error::new(EBADF))?;
+        let Some(Handle::Resource(parent_resource)) = self.handles.get(&sendfd_request.id()) else {
+            return Err(Error::new(EBADF));
+        };
 
         let mut new_fd = usize::MAX;
         if let Err(e) = sendfd_request.obtain_fd(
@@ -1042,7 +1073,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.files.insert(id, resource);
+        self.handles.insert(id, Handle::Resource(resource));
         self.other_scheme_fd_map.insert(node_id, new_fd);
         Ok(new_fd)
     }
