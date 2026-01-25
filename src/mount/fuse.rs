@@ -5,20 +5,19 @@ use std::ffi::OsStr;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use self::fuser::MountOption;
-use self::fuser::TimeOrNow;
+use syscall::flag::O_NOATIME;
+
 use crate::mount::fuse::TimeOrNow::Now;
 use crate::mount::fuse::TimeOrNow::SpecificTime;
 
-use crate::{filesystem, Disk, Node, TreeData, TreePtr, BLOCK_SIZE};
+use crate::{BLOCK_SIZE, Disk, Node, TreeData, TreePtr, filesystem};
 
 use self::fuser::{
-    FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, Session,
+    FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, Session, TimeOrNow,
 };
-use std::time::Duration;
 
 const TTL: Duration = Duration::new(1, 0); // 1 second
 
@@ -240,23 +239,20 @@ impl<D: Disk> Filesystem for Fuse<'_, D> {
         _fh: u64,
         offset: i64,
         size: u32,
-        _flags: i32,
+        flags: i32,
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
         let node_ptr = TreePtr::<Node>::new(node_id as u32);
 
-        let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let atime_opt = (flags & O_NOATIME == O_NOATIME)
+            .then(|| SystemTime::now().duration_since(UNIX_EPOCH).ok())
+            .flatten();
         let mut data = vec![0; size as usize];
-        match self.fs.tx(|tx| {
-            tx.read_node(
-                node_ptr,
-                cmp::max(0, offset) as u64,
-                &mut data,
-                atime.as_secs(),
-                atime.subsec_nanos(),
-            )
-        }) {
+        match self
+            .fs
+            .tx(|tx| tx.read_node(node_ptr, cmp::max(0, offset) as u64, &mut data, atime_opt))
+        {
             Ok(count) => {
                 reply.data(&data[..count]);
             }
@@ -533,17 +529,13 @@ impl<D: Disk> Filesystem for Fuse<'_, D> {
 
     fn readlink(&mut self, _req: &Request, node_id: u64, reply: ReplyData) {
         let node_ptr = TreePtr::<Node>::new(node_id as u32);
+        // TODO: Need mount options for noatime.
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let mut data = vec![0; 4096];
-        match self.fs.tx(|tx| {
-            tx.read_node(
-                node_ptr,
-                0,
-                &mut data,
-                atime.as_secs(),
-                atime.subsec_nanos(),
-            )
-        }) {
+        match self
+            .fs
+            .tx(|tx| tx.read_node(node_ptr, 0, &mut data, Some(atime)))
+        {
             Ok(count) => {
                 reply.data(&data[..count]);
             }

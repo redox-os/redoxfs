@@ -6,7 +6,7 @@ version = "0.9.0"
 license-file = "LICENSE"
 readme = "README.md"
 authors = ["Jeremy Soller <jackpot51@gmail.com>"]
-edition = "2021"
+edition = "2024"
 
 [lib]
 name = "redoxfs"

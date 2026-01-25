@@ -7,6 +7,7 @@ use core::{
     cmp::min,
     mem,
     ops::{Deref, DerefMut},
+    time::Duration,
 };
 use syscall::error::{
     Error, Result, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, ERANGE,
@@ -1788,14 +1789,17 @@ impl<'a, D: Disk> Transaction<'a, D> {
         node_ptr: TreePtr<Node>,
         offset: u64,
         buf: &mut [u8],
-        atime: u64,
-        atime_nsec: u32,
+        atime: Option<Duration>,
     ) -> Result<usize> {
         let mut node = self.read_tree(node_ptr)?;
         let mut node_changed = false;
 
         let i = self.read_node_inner(&node, offset, buf)?;
-        if i > 0 {
+        if i > 0
+            && let Some(atime) = atime
+        {
+            let (atime, atime_nsec) = (atime.as_secs(), atime.subsec_nanos());
+
             let node_atime = node.data().atime();
             if atime > node_atime.0 || (atime == node_atime.0 && atime_nsec > node_atime.1) {
                 let is_old = atime - node_atime.0 > 3600; // Last read was more than a day ago
