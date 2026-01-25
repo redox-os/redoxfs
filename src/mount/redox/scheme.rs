@@ -3,28 +3,28 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult, SendFdRequest, Socket};
-use syscall::data::{Stat, StatVfs, TimeSpec};
-use syscall::dirent::DirentBuf;
-use syscall::error::{
-    Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
-    EOPNOTSUPP, EPERM, EXDEV,
-};
-use syscall::flag::{
-    EventFlags, MapFlags, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
-    O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
-};
-use syscall::schemev2::NewFdFlags;
+use redox_scheme::{CallerCtx, OpenResult, SendFdRequest, Socket, scheme::SchemeSync};
 use syscall::FobtainFdFlags;
 use syscall::FsCall;
 use syscall::MunmapFlags;
+use syscall::data::{Stat, StatVfs, TimeSpec};
+use syscall::dirent::DirentBuf;
+use syscall::error::{
+    EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY, EOPNOTSUPP,
+    EPERM, EXDEV, Error, Result,
+};
+use syscall::flag::{
+    EventFlags, MapFlags, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOATIME, O_NOFOLLOW, O_RDONLY,
+    O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
+};
+use syscall::schemev2::NewFdFlags;
 
 use redox_path::{
-    canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path,
-    RedoxPath,
+    RedoxPath, canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme,
+    scheme_path,
 };
 
-use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
+use crate::{BLOCK_SIZE, Disk, FileSystem, Node, Transaction, TreeData, TreePtr};
 
 use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, Resource};
 
@@ -265,6 +265,13 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         })?;
                     }
 
+                    if flags & O_NOATIME != O_NOATIME
+                        && let Some(atime) = SystemTime::now().duration_since(UNIX_EPOCH).ok()
+                    {
+                        node.data_mut()
+                            .set_atime(atime.as_secs(), atime.subsecs_nanos());
+                    }
+
                     Box::new(FileResource::new(
                         path.to_string(),
                         parent_ptr_opt,
@@ -347,7 +354,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
 
         let node_ptr = resource.node_ptr();
         {
-            let fmap_info = self.fmap
+            let fmap_info = self
+                .fmap
                 .entry(node_ptr.id())
                 .or_insert_with(FileMmapInfo::new);
             if !fmap_info.in_use() {
@@ -1062,7 +1070,8 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         let node_ptr = resource.node_ptr();
         {
-            let fmap_info = self.fmap
+            let fmap_info = self
+                .fmap
                 .entry(node_ptr.id())
                 .or_insert_with(FileMmapInfo::new);
             if !fmap_info.in_use() {

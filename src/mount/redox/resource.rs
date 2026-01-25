@@ -9,8 +9,8 @@ use syscall::data::{Stat, TimeSpec};
 use syscall::dirent::{DirEntry, DirentBuf, DirentKind};
 use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, ENOTDIR, EPERM};
 use syscall::flag::{
-    MapFlags, F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY,
-    PROT_READ, PROT_WRITE,
+    MapFlags, F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_NOATIME, O_RDONLY, O_RDWR,
+    O_WRONLY, PROT_READ, PROT_WRITE,
 };
 use syscall::{EBADFD, PAGE_SIZE};
 
@@ -430,7 +430,9 @@ impl<D: Disk> Resource<D> for FileResource {
         if self.flags & O_ACCMODE != O_RDWR && self.flags & O_ACCMODE != O_RDONLY {
             return Err(Error::new(EBADF));
         }
-        let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        if self.flags & O_NOATIME != O_NOATIME {
+            let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        }
         tx.read_node(
             self.node_ptr,
             offset,
@@ -493,7 +495,7 @@ impl<D: Disk> Resource<D> for FileResource {
         let fmap_info = fmaps
             .get_mut(&self.node_ptr.id())
             .ok_or(Error::new(EBADFD))?;
-        
+
         if !fmap_info.in_use() {
             // Notify filesystem of open
             tx.on_open_node(self.node_ptr)?;
@@ -673,11 +675,13 @@ impl<D: Disk> Resource<D> for FileResource {
                     node_changed = true;
                 }
 
-                let old_atime = node.data().atime();
-                let new_atime = (atime.tv_sec as u64, atime.tv_nsec as u32);
-                if old_atime != new_atime {
-                    node.data_mut().set_atime(new_atime.0, new_atime.1);
-                    node_changed = true;
+                if self.flags & O_NOATIME != O_NOATIME {
+                    let old_atime = node.data().atime();
+                    let new_atime = (atime.tv_sec as u64, atime.tv_nsec as u32);
+                    if old_atime != new_atime {
+                        node.data_mut().set_atime(new_atime.0, new_atime.1);
+                        node_changed = true;
+                    }
                 }
 
                 if node_changed {
