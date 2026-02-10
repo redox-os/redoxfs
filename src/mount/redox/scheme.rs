@@ -347,7 +347,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
 
         let node_ptr = resource.node_ptr();
         {
-            let fmap_info = self.fmap
+            let fmap_info = self
+                .fmap
                 .entry(node_ptr.id())
                 .or_insert_with(FileMmapInfo::new);
             if !fmap_info.in_use() {
@@ -1062,7 +1063,8 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         let node_ptr = resource.node_ptr();
         {
-            let fmap_info = self.fmap
+            let fmap_info = self
+                .fmap
                 .entry(node_ptr.id())
                 .or_insert_with(FileMmapInfo::new);
             if !fmap_info.in_use() {
