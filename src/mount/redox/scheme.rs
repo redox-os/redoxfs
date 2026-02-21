@@ -347,7 +347,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
 
         let node_ptr = resource.node_ptr();
         {
-            let fmap_info = self.fmap
+            let fmap_info = self
+                .fmap
                 .entry(node_ptr.id())
                 .or_insert_with(FileMmapInfo::new);
             if !fmap_info.in_use() {
@@ -375,7 +376,9 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         gid: u32,
         nodes: &mut Vec<(TreeData<Node>, String)>,
     ) -> Result<Option<(TreeData<Node>, String)>> {
-        let mut parts = path.split('/').filter(|part| !part.is_empty());
+        let mut parts = path
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != ".");
         let mut part_opt: Option<&str> = None;
         let mut node_ptr = start_ptr;
         let mut node_name = String::new();
@@ -428,6 +431,68 @@ fn dirname(path: &str) -> Option<String> {
     canonicalize_using_cwd(Some(path), "..")
 }
 
+// TODO: Reimplement these using the scheme common path related crate
+pub fn resolve_start_and_path<D: Disk>(
+    dir: &Box<dyn Resource<D>>,
+    path: String,
+) -> (TreePtr<Node>, String) {
+    let max_upward_depth = usize::MAX;
+    let Some((canon, depth)) =
+        canonicalize_using_cwd_with_max_upward_depth(dir.path(), &path, max_upward_depth)
+    else {
+        return (dir.node_ptr(), path);
+    };
+
+    if depth > 0 {
+        (TreePtr::root(), canon)
+    } else {
+        (dir.node_ptr(), path)
+    }
+}
+pub fn canonicalize_using_cwd_with_max_upward_depth(
+    cwd: &str,
+    path: &str,
+    max_upward_depth: usize,
+) -> Option<(String, usize)> {
+    let (canonical, upward_depth) =
+        canonicalize_with_max_upward_depth(&format!("{}/{}", cwd, path), max_upward_depth)?;
+    Some((canonical, upward_depth))
+}
+pub fn canonicalize_with_max_upward_depth(
+    path: &str,
+    max_upward_depth: usize,
+) -> Option<(String, usize)> {
+    let mut nskip = 0;
+    let mut parts = Vec::new();
+    let mut upward_depth = 0;
+
+    for part in path.split('/').rev() {
+        if part == "." || part.is_empty() {
+            continue;
+        } else if part == ".." {
+            nskip += 1;
+            upward_depth += 1;
+            if upward_depth > max_upward_depth {
+                return None;
+            }
+        } else if nskip > 0 {
+            nskip -= 1;
+        } else {
+            parts.push(part);
+        }
+    }
+
+    let canonical = parts.iter().rev().fold(String::new(), |mut string, &part| {
+        if !string.is_empty() && !string.ends_with('/') {
+            string.push('/');
+        }
+        string.push_str(part);
+        string
+    });
+
+    Some((canonical, upward_depth))
+}
+
 impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     fn scheme_root(&mut self) -> Result<usize> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -443,26 +508,28 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         _fcntl_flags: u32,
         ctx: &CallerCtx,
     ) -> Result<OpenResult> {
-        let dir_node_ptr = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
-            // If pathname is absolute, then dirfd is ignored.
-            Handle::Resource(dir_resource) if !path.starts_with('/') => {
-                // only allow dirresource as base for openat
-                dir_resource.node_ptr()
-            }
-            _ => TreePtr::root(),
-        };
-        self.open_internal(dir_node_ptr, path, flags, ctx)
+        let path = path.to_string();
+        let (dir_node_ptr, path_to_open) =
+            match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
+                // If pathname is absolute, then dirfd is ignored.
+                Handle::Resource(dir_resource) if !path.starts_with('/') => {
+                    resolve_start_and_path(&dir_resource, path)
+                }
+                _ => (TreePtr::root(), path),
+            };
+        self.open_internal(dir_node_ptr, &path_to_open, flags, ctx)
     }
 
     fn unlinkat(&mut self, dirfd: usize, url: &str, flags: usize, ctx: &CallerCtx) -> Result<()> {
-        let path = url.trim_matches('/');
         let uid = ctx.uid;
         let gid = ctx.gid;
+        let url = url.to_string();
 
-        let start_ptr = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
-            Handle::Resource(dir_resource) => dir_resource.node_ptr(),
-            Handle::SchemeRoot => TreePtr::root(),
+        let (start_ptr, path) = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
+            Handle::Resource(dir_resource) => resolve_start_and_path(&dir_resource, url),
+            Handle::SchemeRoot => (TreePtr::root(), url),
         };
+        let path = path.trim_matches('/');
 
         // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
@@ -1062,7 +1129,8 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         let node_ptr = resource.node_ptr();
         {
-            let fmap_info = self.fmap
+            let fmap_info = self
+                .fmap
                 .entry(node_ptr.id())
                 .or_insert_with(FileMmapInfo::new);
             if !fmap_info.in_use() {
