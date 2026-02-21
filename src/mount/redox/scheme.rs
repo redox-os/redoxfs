@@ -432,22 +432,12 @@ fn dirname(path: &str) -> Option<String> {
 }
 
 // TODO: Reimplement these using the scheme common path related crate
-pub fn resolve_start_and_path<D: Disk>(
-    dir: &Box<dyn Resource<D>>,
-    path: String,
-) -> (TreePtr<Node>, String) {
+pub fn resolve_path<D: Disk>(dir: &Box<dyn Resource<D>>, path: String) -> Option<String> {
     let max_upward_depth = 64; // Same value as MAX_LEVEL of sym loops in relibc
-    let Some((canon, depth)) =
-        canonicalize_using_cwd_with_max_upward_depth(dir.path(), &path, max_upward_depth)
-    else {
-        return (dir.node_ptr(), path);
-    };
+    let (canon, depth) =
+        canonicalize_using_cwd_with_max_upward_depth(dir.path(), &path, max_upward_depth)?;
 
-    if depth > 0 {
-        (TreePtr::root(), canon)
-    } else {
-        (dir.node_ptr(), path)
-    }
+    Some(canon)
 }
 pub fn canonicalize_using_cwd_with_max_upward_depth(
     cwd: &str,
@@ -509,15 +499,14 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         ctx: &CallerCtx,
     ) -> Result<OpenResult> {
         let path = path.to_string();
-        let (dir_node_ptr, path_to_open) =
-            match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
-                // If pathname is absolute, then dirfd is ignored.
-                Handle::Resource(dir_resource) if !path.starts_with('/') => {
-                    resolve_start_and_path(&dir_resource, path)
-                }
-                _ => (TreePtr::root(), path),
-            };
-        self.open_internal(dir_node_ptr, &path_to_open, flags, ctx)
+        let path_to_open = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
+            // If pathname is absolute, then dirfd is ignored.
+            Handle::Resource(dir_resource) if !path.starts_with('/') => {
+                resolve_path(&dir_resource, path).ok_or(Error::new(ENOENT))?
+            }
+            _ => path.to_string(),
+        };
+        self.open_internal(TreePtr::root(), &path_to_open, flags, ctx)
     }
 
     fn unlinkat(&mut self, dirfd: usize, url: &str, flags: usize, ctx: &CallerCtx) -> Result<()> {
@@ -525,11 +514,14 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let gid = ctx.gid;
         let url = url.to_string();
 
-        let (start_ptr, path) = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
-            Handle::Resource(dir_resource) => resolve_start_and_path(&dir_resource, url),
-            Handle::SchemeRoot => (TreePtr::root(), url),
+        let path = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
+            Handle::Resource(dir_resource) => {
+                resolve_path(&dir_resource, url).ok_or(Error::new(ENOENT))?
+            }
+            Handle::SchemeRoot => url,
         };
         let path = path.trim_matches('/');
+        let start_ptr = TreePtr::root();
 
         // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
