@@ -436,7 +436,7 @@ pub fn resolve_start_and_path<D: Disk>(
     dir: &Box<dyn Resource<D>>,
     path: String,
 ) -> (TreePtr<Node>, String) {
-    let max_upward_depth = usize::MAX;
+    let max_upward_depth = 64; // Same value as MAX_LEVEL of sym loops in relibc
     let Some((canon, depth)) =
         canonicalize_using_cwd_with_max_upward_depth(dir.path(), &path, max_upward_depth)
     else {
