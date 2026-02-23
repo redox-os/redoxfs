@@ -1,4 +1,7 @@
-use redox_scheme::{scheme::SchemeSync, RequestKind, Response, SignalBehavior, Socket};
+use redox_scheme::{
+    scheme::{SchemeState, SchemeSync},
+    RequestKind, Response, SignalBehavior, Socket,
+};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -25,6 +28,7 @@ where
     let scheme_name = format!("{}", mountpoint.display());
     let mounted_path = format!("/scheme/{}", mountpoint.display());
 
+    let mut state = SchemeState::new();
     let mut scheme = FileScheme::new(scheme_name, mounted_path.clone(), filesystem, &socket);
 
     redox_scheme::scheme::register_sync_scheme(
@@ -52,6 +56,11 @@ where
                     }
                     RequestKind::OnClose { id } => {
                         scheme.on_close(id);
+                        state.on_close(id);
+                        continue;
+                    }
+                    RequestKind::OnDetach { id, pid } => {
+                        state.on_detach(id, pid);
                         continue;
                     }
                     _ => {
@@ -62,7 +71,7 @@ where
                 }
             }
         };
-        let response = req.handle_sync(&mut scheme);
+        let response = req.handle_sync(&mut scheme, &mut state);
 
         if !socket.write_response(response, SignalBehavior::Restart)? {
             break;
