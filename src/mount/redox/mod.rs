@@ -60,7 +60,11 @@ where
                         continue;
                     }
                     RequestKind::OnDetach { id, pid } => {
-                        state.on_detach(id, pid);
+                        let Ok(inode) = scheme.inode(id) else {
+                            log::warn!("RequestKind::OnDetach with invalid `id`");
+                            continue;
+                        };
+                        state.on_detach(id, inode, pid);
                         continue;
                     }
                     _ => {
