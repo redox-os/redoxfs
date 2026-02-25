@@ -493,7 +493,7 @@ impl<D: Disk> Resource<D> for FileResource {
         let fmap_info = fmaps
             .get_mut(&self.node_ptr.id())
             .ok_or(Error::new(EBADFD))?;
-        
+
         if !fmap_info.in_use() {
             // Notify filesystem of open
             tx.on_open_node(self.node_ptr)?;
