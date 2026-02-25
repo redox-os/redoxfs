@@ -1153,4 +1153,11 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             _ => Err(Error::new(EOPNOTSUPP)),
         }
     }
+
+    fn inode(&self, id: usize) -> Result<usize> {
+        let Some(Handle::Resource(resource)) = self.handles.get(&id) else {
+            return Err(Error::new(EBADF));
+        };
+        Ok(resource.node_ptr().id() as usize)
+    }
 }
