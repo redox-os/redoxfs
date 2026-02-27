@@ -241,8 +241,35 @@ impl<D: Disk> Resource<D> for DirResource {
         Err(Error::new(EBADF))
     }
 
-    fn utimens(&mut self, _times: &[TimeSpec], _tx: &mut Transaction<D>) -> Result<()> {
-        Err(Error::new(EBADF))
+    fn utimens(&mut self, times: &[TimeSpec], tx: &mut Transaction<D>) -> Result<()> {
+        let mut node = tx.read_tree(self.node_ptr)?;
+
+        if node.data().uid() == self.uid || self.uid == 0 {
+            if let &[atime, mtime] = times {
+                let mut node_changed = false;
+
+                let old_mtime = node.data().mtime();
+                let new_mtime = (mtime.tv_sec as u64, mtime.tv_nsec as u32);
+                if old_mtime != new_mtime {
+                    node.data_mut().set_mtime(new_mtime.0, new_mtime.1);
+                    node_changed = true;
+                }
+
+                let old_atime = node.data().atime();
+                let new_atime = (atime.tv_sec as u64, atime.tv_nsec as u32);
+                if old_atime != new_atime {
+                    node.data_mut().set_atime(new_atime.0, new_atime.1);
+                    node_changed = true;
+                }
+
+                if node_changed {
+                    tx.sync_tree(node)?;
+                }
+            }
+            Ok(())
+        } else {
+            Err(Error::new(EPERM))
+        }
     }
 
     fn getdents<'buf>(
