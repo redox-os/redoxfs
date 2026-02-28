@@ -29,7 +29,7 @@ where
     let mounted_path = format!("/scheme/{}", mountpoint.display());
 
     let mut state = SchemeState::new();
-    let mut scheme = FileScheme::new(scheme_name, mounted_path.clone(), filesystem, &socket);
+    let mut scheme = FileScheme::new(scheme_name, mounted_path.clone(), filesystem, &socket)?;
 
     redox_scheme::scheme::register_sync_scheme(
         &socket,

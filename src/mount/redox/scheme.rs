@@ -1,18 +1,20 @@
 use std::collections::BTreeMap;
+use std::mem;
 use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use libredox::Fd;
 use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult, SendFdRequest, Socket};
-use syscall::data::{Stat, StatVfs, TimeSpec};
+use syscall::data::{Stat, StatVfs, StdFsCallMeta, TimeSpec};
 use syscall::dirent::DirentBuf;
 use syscall::error::{
     Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
     EOPNOTSUPP, EPERM, EXDEV,
 };
 use syscall::flag::{
-    EventFlags, MapFlags, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR,
-    O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
+    EventFlags, MapFlags, StdFsCallKind, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW,
+    O_RDONLY, O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
 use syscall::FobtainFdFlags;
@@ -43,7 +45,9 @@ pub struct FileScheme<'sock, D: Disk> {
     fmap: super::resource::Fmaps,
 
     // Map of file id to other scheme's file descriptor.
-    other_scheme_fd_map: BTreeMap<u32, usize>,
+    other_scheme_fd_map: BTreeMap<u32, Fd>,
+
+    proc_creds_capability: Fd,
 }
 
 impl<'sock, D: Disk> FileScheme<'sock, D> {
@@ -52,8 +56,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         mounted_path: String,
         fs: FileSystem<D>,
         socket: &'sock Socket,
-    ) -> FileScheme<'sock, D> {
-        FileScheme {
+    ) -> Result<FileScheme<'sock, D>> {
+        Ok(FileScheme {
             scheme_name,
             mounted_path,
             fs,
@@ -62,7 +66,14 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             handles: BTreeMap::new(),
             fmap: BTreeMap::new(),
             other_scheme_fd_map: BTreeMap::new(),
-        }
+            proc_creds_capability: {
+                libredox::Fd::open(
+                    "/scheme/proc/proc-creds-capability",
+                    libredox::flag::O_RDONLY,
+                    0,
+                )?
+            },
+        })
     }
 
     fn resolve_symlink(
@@ -139,7 +150,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             .other_scheme_fd_map
             .get(&inode_id)
             .ok_or(Error::new(EBADF))?;
-        let len = libredox::call::get_socket_token(*target_fd, payload)?;
+        let len = libredox::call::get_socket_token(target_fd.raw(), payload)?;
         return Ok(len);
     }
 
@@ -303,7 +314,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                                 let mut node = tx.create_node(
                                     parent.ptr(),
                                     &last_part,
-                                    mode_type | (flags as u16 & Node::MODE_PERM),
+                                    mode_type as u16 | (flags as u16 & Node::MODE_PERM),
                                     ctime.as_secs(),
                                     ctime.subsec_nanos(),
                                 )?;
@@ -365,6 +376,77 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             number: id,
             flags: NewFdFlags::POSITIONED,
         })
+    }
+
+    fn unlink_internal(
+        &mut self,
+        start_ptr: TreePtr<Node>,
+        path: &str,
+        flags: usize,
+        uid: u32,
+        gid: u32,
+    ) -> Result<()> {
+        let scheme_name = &self.scheme_name;
+
+        let unlink_result = self.fs.tx(|tx| {
+            let mut nodes = Vec::new();
+
+            let Some((child, child_name)) =
+                Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes)?
+            else {
+                return Err(Error::new(ENOENT));
+            };
+
+            let Some((parent, _parent_name)) = nodes.last() else {
+                return Err(Error::new(EPERM));
+            };
+
+            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                // println!("dir not writable {:o}", parent.1.mode);
+                return Err(Error::new(EACCES));
+            }
+
+            // Check AT_REMOVEDIR
+            if flags & syscall::AT_REMOVEDIR == syscall::AT_REMOVEDIR {
+                // --- rmdir ---
+                if child.data().is_dir() {
+                    if !child.data().permission(uid, gid, Node::MODE_WRITE) {
+                        return Err(Error::new(EACCES));
+                    }
+                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
+                } else {
+                    Err(Error::new(ENOTDIR))
+                }
+            } else {
+                // --- unlink ---
+                if !child.data().is_dir() {
+                    if child.data().uid() != uid && uid != 0 {
+                        // println!("file not owned by current user {}", parent.1.uid);
+                        return Err(Error::new(EACCES));
+                    }
+
+                    let mode = if child.data().is_symlink() {
+                        Node::MODE_SYMLINK
+                    } else if child.data().is_sock() {
+                        Node::MODE_SOCK
+                    } else {
+                        Node::MODE_FILE
+                    };
+
+                    tx.remove_node(parent.ptr(), &child_name, mode)
+                } else {
+                    Err(Error::new(EISDIR))
+                }
+            }
+        });
+
+        let Some(node_id) = unlink_result? else {
+            return Ok(());
+        };
+
+        let _ = self.other_scheme_fd_map.remove(&node_id);
+
+        Ok(())
     }
 
     fn path_nodes(
@@ -434,7 +516,7 @@ fn dirname(path: &str) -> Option<String> {
 // TODO: Reimplement these using the scheme common path related crate
 pub fn resolve_path<D: Disk>(dir: &Box<dyn Resource<D>>, path: String) -> Option<String> {
     let max_upward_depth = 64; // Same value as MAX_LEVEL of sym loops in relibc
-    let (canon, depth) =
+    let (canon, _depth) =
         canonicalize_using_cwd_with_max_upward_depth(dir.path(), &path, max_upward_depth)?;
 
     Some(canon)
@@ -525,69 +607,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
-        let scheme_name = &self.scheme_name;
-
-        let unlink_result = self.fs.tx(|tx| {
-            let mut nodes = Vec::new();
-
-            let Some((child, child_name)) =
-                Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes)?
-            else {
-                return Err(Error::new(ENOENT));
-            };
-
-            let Some((parent, _parent_name)) = nodes.last() else {
-                return Err(Error::new(EPERM));
-            };
-
-            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                // println!("dir not writable {:o}", parent.1.mode);
-                return Err(Error::new(EACCES));
-            }
-
-            // Check AT_REMOVEDIR
-            if flags & syscall::AT_REMOVEDIR == syscall::AT_REMOVEDIR {
-                // --- rmdir ---
-                if child.data().is_dir() {
-                    if !child.data().permission(uid, gid, Node::MODE_WRITE) {
-                        return Err(Error::new(EACCES));
-                    }
-                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
-                } else {
-                    Err(Error::new(ENOTDIR))
-                }
-            } else {
-                // --- unlink ---
-                if !child.data().is_dir() {
-                    if child.data().uid() != uid && uid != 0 {
-                        // println!("file not owned by current user {}", parent.1.uid);
-                        return Err(Error::new(EACCES));
-                    }
-
-                    let mode = if child.data().is_symlink() {
-                        Node::MODE_SYMLINK
-                    } else if child.data().is_sock() {
-                        Node::MODE_SOCK
-                    } else {
-                        Node::MODE_FILE
-                    };
-
-                    tx.remove_node(parent.ptr(), &child_name, mode)
-                } else {
-                    Err(Error::new(EISDIR))
-                }
-            }
-        });
-
-        let Some(node_id) = unlink_result? else {
-            return Ok(());
-        };
-
-        if let Some(fd) = self.other_scheme_fd_map.remove(&node_id) {
-            let _ = syscall::close(fd);
-        }
-
-        Ok(())
+        self.unlink_internal(start_ptr, path, flags, uid, gid)
     }
 
     /* Resource operations */
@@ -1046,6 +1066,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         ) {
             return Err(e);
         }
+        let other_scheme_fd = Fd::new(new_fd);
 
         let parent_resource_ptr = parent_resource.node_ptr();
 
@@ -1061,7 +1082,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         // TODO: Move the PATH_MAX definition to a more appropriate place.
         const PATH_MAX: usize = 4096;
         let mut url_buf = [0u8; PATH_MAX];
-        let url_len = syscall::fpath(new_fd, &mut url_buf)?;
+        let url_len = other_scheme_fd.fpath(&mut url_buf)?;
         let url_str = str::from_utf8(&url_buf[..url_len]).map_err(|_| Error::new(EINVAL))?;
         let redox_path = RedoxPath::from_absolute(url_str).ok_or(Error::new(EINVAL))?;
         let (_, path) = redox_path.as_parts().ok_or(Error::new(EINVAL))?;
@@ -1074,9 +1095,8 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         }
 
         let (resource, node_id): (Box<dyn Resource<D>>, u32) = if !last_part.is_empty() {
-            let mut stat = Stat::default();
-            syscall::fstat(new_fd, &mut stat)?;
-            let mode_type = stat.st_mode & Node::MODE_TYPE;
+            let stat = other_scheme_fd.stat()?;
+            let mode_type = stat.st_mode as u16 & Node::MODE_TYPE;
 
             let flags = 0o777;
             let node_ptr = self.fs.tx(|tx| {
@@ -1134,7 +1154,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.handles.insert(id, Handle::Resource(resource));
-        self.other_scheme_fd_map.insert(node_id, new_fd);
+        self.other_scheme_fd_map.insert(node_id, other_scheme_fd);
         Ok(new_fd)
     }
 
@@ -1154,10 +1174,77 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         }
     }
 
+    fn std_fs_call(
+        &mut self,
+        id: usize,
+        kind: StdFsCallKind,
+        payload: &mut [u8],
+        metadata: StdFsCallMeta,
+        ctx: &CallerCtx,
+    ) -> Result<usize> {
+        match kind {
+            StdFsCallKind::Fchown => {
+                let (new_uid, new_gid) = (metadata.arg1 as u32, metadata.arg2 >> 32 as u32);
+                let (_pid, uid, gid) = get_uid_gid_from_pid(&self.proc_creds_capability, ctx.pid)?;
+                if uid != 0 && (uid != ctx.uid || gid != ctx.gid) {
+                    return Err(Error::new(EPERM));
+                }
+                self.fchown(id, new_uid, new_gid as u32, ctx).map(|_| 0)
+            }
+            /* TODO: Support Unlinkat using std_fs_call
+            Unlinkat => {
+                let path = unsafe { str::from_utf8_unchecked(payload) };
+                let flags = metadata.arg1;
+                let dir_node_ptr = match self.handles.get(&id).ok_or(Error::new(EBADF))? {
+                    // If pathname is absolute, then dirfd is ignored.
+                    Handle::Resource(dir_resource) if !path.starts_with('/') => {
+                        // only allow dirresource as base for openat
+                        dir_resource.node_ptr()
+                    }
+                    _ => TreePtr::root(),
+                };
+                let (_pid, uid, gid) = get_uid_gid_from_pid(&self.proc_creds_capability, ctx.pid)?;
+                self.unlink_internal(dir_node_ptr, path, *flags as usize, uid, gid)
+                    .map(|_| 0)
+            }
+            */
+            _ => Err(Error::new(EOPNOTSUPP)),
+        }
+    }
+
     fn inode(&self, id: usize) -> Result<usize> {
         let Some(Handle::Resource(resource)) = self.handles.get(&id) else {
             return Err(Error::new(EBADF));
         };
         Ok(resource.node_ptr().id() as usize)
     }
+}
+
+fn get_uid_gid_from_pid(cap_fd: &Fd, target_pid: usize) -> Result<(u32, u32, u32)> {
+    let mut buffer = [0u8; mem::size_of::<libredox::protocol::ProcMeta>()];
+    let _ = libredox::call::get_proc_credentials(cap_fd.raw(), target_pid, &mut buffer).map_err(
+        |e| {
+            eprintln!(
+                "Failed to get process credentials for pid {}: {:?}",
+                target_pid, e
+            );
+            Error::new(EINVAL)
+        },
+    )?;
+    let mut cursor = 0;
+    let pid = read_u32(&buffer, cursor)?;
+    cursor += mem::size_of::<u32>() * 3;
+    let uid = read_u32(&buffer, cursor)?;
+    cursor += mem::size_of::<u32>() * 3;
+    let gid = read_u32(&buffer, cursor)?;
+    Ok((pid, uid, gid))
+}
+
+fn read_u32(buffer: &[u8], offset: usize) -> Result<u32> {
+    let bytes = buffer
+        .get(offset..offset + 4)
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or_else(|| Error::new(EINVAL))?;
+
+    Ok(u32::from_le_bytes(bytes))
 }
