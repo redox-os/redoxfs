@@ -56,7 +56,7 @@ log = { version = "0.4.14", default-features = false, optional = true }
 lz4_flex = { version = "0.11", default-features = false, features = ["checked-decode"] }
 parse-size = { version = "1", optional = true }
 range-tree = { version = "0.1", optional = true }
-redox_syscall = { git = "https://gitlab.redox-os.org/redox-os/syscall.git" }
+redox_syscall = "0.7.3"
 seahash = { version = "4.1.0", default-features = false }
 termion = { version = "4", optional = true }
 uuid = { version = "1.4", default-features = false }
@@ -85,16 +85,12 @@ std = [
 fuser = { version = "0.16", optional = true }
 
 [target.'cfg(target_os = "redox")'.dependencies]
-libredox = { git = "https://gitlab.redox-os.org/Ibuki.O/libredox.git", branch = "protocol", optional = true }
+libredox = { version = "0.1.13", optional = true }
 redox-path = "0.3.0"
-redox-scheme = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-scheme.git", branch = "convert-std_fs_call", optional = true }
+redox-scheme = { version = "0.11.0", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [dev-dependencies]
 assert_cmd = "2.0.17"
-
-[patch.crates-io]
-libredox = { git = "https://gitlab.redox-os.org/Ibuki.O/libredox.git", branch = "protocol" }
-redox_syscall = { git = "https://gitlab.redox-os.org/redox-os/syscall.git" }
