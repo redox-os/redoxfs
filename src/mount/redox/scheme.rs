@@ -692,17 +692,20 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 buf[i] = mounted_path[i];
                 i += 1;
             }
-            if i < buf.len() {
-                buf[i] = b'/';
-                i += 1;
-            }
 
             let path = file.path().as_bytes();
-            let mut j = 0;
-            while i < buf.len() && j < path.len() {
-                buf[i] = path[j];
-                i += 1;
-                j += 1;
+            if !path.is_empty() {
+                if i < buf.len() {
+                    buf[i] = b'/';
+                    i += 1;
+                }
+
+                let mut j = 0;
+                while i < buf.len() && j < path.len() {
+                    buf[i] = path[j];
+                    i += 1;
+                    j += 1;
+                }
             }
 
             Ok(i)
