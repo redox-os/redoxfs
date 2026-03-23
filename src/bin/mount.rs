@@ -13,7 +13,9 @@ use std::process;
 #[cfg(target_os = "redox")]
 use std::{mem::MaybeUninit, ptr::addr_of_mut, sync::atomic::Ordering};
 
-use redoxfs::{mount, DiskCache, DiskFile, FileSystem};
+#[cfg(target_os = "redox")]
+use redoxfs::ring::DiskRing;
+use redoxfs::{mount, Disk, DiskCache, DiskFile, FileSystem};
 use termion::input::TermRead;
 use uuid::Uuid;
 
@@ -141,7 +143,7 @@ fn filesystem_by_path(
     path: &str,
     block_opt: Option<u64>,
     log_errors: bool,
-) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
+) -> Option<(String, FileSystem<DiskCache<Box<dyn Disk>>>)> {
     log::debug!("opening {}", path);
     let attempts = 10;
     for attempt in 0..=attempts {
@@ -167,31 +169,16 @@ fn filesystem_by_path(
             bootloader_password()
         };
 
-        match DiskFile::open(path).map(DiskCache::new) {
-            Ok(disk) => {
-                match redoxfs::FileSystem::open(disk, password_opt.as_deref(), block_opt, true) {
-                    Ok(filesystem) => {
-                        log::debug!(
-                            "opened filesystem on {} with uuid {}",
-                            path,
-                            Uuid::from_bytes(filesystem.header.uuid()).hyphenated()
-                        );
-
-                        return Some((path.to_string(), filesystem));
+        #[cfg(target_os = "redox")]
+        let disk: Box<dyn Disk> = match DiskFile::open(path) {
+            Ok(mut df) => {
+                let size = df.size().unwrap_or(0);
+                match DiskRing::from_fd(&df.file, size) {
+                    Ok(dr) => Box::new(dr),
+                    Err(_) => {
+                        log::debug!("Ring communication not supported {}", path);
+                        Box::new(df)
                     }
-                    Err(err) => match err.errno {
-                        syscall::ENOKEY => {
-                            if password_opt.is_some() {
-                                eprintln!("redoxfs: incorrect password ({}/{})", attempt, attempts);
-                            }
-                        }
-                        _ => {
-                            if log_errors {
-                                log::error!("failed to open filesystem {}: {}", path, err);
-                            }
-                            break;
-                        }
-                    },
                 }
             }
             Err(err) => {
@@ -200,6 +187,43 @@ fn filesystem_by_path(
                 }
                 break;
             }
+        };
+
+        #[cfg(not(target_os = "redox"))]
+        let disk: Box<dyn Disk> = match DiskFile::open(path) {
+            Ok(disk) => Box::new(disk),
+            Err(err) => {
+                if log_errors {
+                    log::error!("failed to open image {}: {}", path, err);
+                }
+                break;
+            }
+        };
+
+        let disk = DiskCache::new(disk);
+        match redoxfs::FileSystem::open(disk, password_opt.as_deref(), block_opt, true) {
+            Ok(filesystem) => {
+                log::debug!(
+                    "opened filesystem on {} with uuid {}",
+                    path,
+                    Uuid::from_bytes(filesystem.header.uuid()).hyphenated()
+                );
+
+                return Some((path.to_string(), filesystem));
+            }
+            Err(err) => match err.errno {
+                syscall::ENOKEY => {
+                    if password_opt.is_some() {
+                        eprintln!("redoxfs: incorrect password ({}/{})", attempt, attempts);
+                    }
+                }
+                _ => {
+                    if log_errors {
+                        log::error!("failed to open filesystem {}: {}", path, err);
+                    }
+                    break;
+                }
+            },
         }
     }
     None
@@ -209,7 +233,7 @@ fn filesystem_by_path(
 fn filesystem_by_uuid(
     _uuid: &Uuid,
     _block_opt: Option<u64>,
-) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
+) -> Option<(String, FileSystem<DiskCache<Box<dyn Disk>>>)> {
     None
 }
 
@@ -217,7 +241,7 @@ fn filesystem_by_uuid(
 fn filesystem_by_uuid(
     uuid: &Uuid,
     block_opt: Option<u64>,
-) -> Option<(String, FileSystem<DiskCache<DiskFile>>)> {
+) -> Option<(String, FileSystem<DiskCache<Box<dyn Disk>>>)> {
     use std::fs;
 
     use redox_path::RedoxPath;
@@ -241,7 +265,7 @@ fn filesystem_by_uuid(
                                             {
                                                 log::debug!("found path {}", path);
                                                 if let Some((path, filesystem)) =
-                                                    filesystem_by_path(&path, block_opt, false)
+                                                    filesystem_by_path(&path, block_opt, true)
                                                 {
                                                     if &filesystem.header.uuid() == uuid.as_bytes()
                                                     {

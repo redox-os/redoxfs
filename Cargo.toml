@@ -87,9 +87,10 @@ std = [
 fuser = { version = "0.16", optional = true }
 
 [target.'cfg(target_os = "redox")'.dependencies]
-libredox = { version = "0.1.18", optional = true }
-redox-path = "0.4.0"
-redox-scheme = { version = "0.11.2", optional = true }
+libredox = { version = "0.1.13", optional = true }
+redox-path = "0.3.0"
+redox-scheme = { version = "0.11.0", optional = true }
+redox-rings = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-rings.git", branch = "u2u", features = ["userspace", "sync"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

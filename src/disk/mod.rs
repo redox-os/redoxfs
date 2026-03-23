@@ -19,6 +19,8 @@ mod file;
 mod io;
 #[cfg(feature = "std")]
 mod memory;
+#[cfg(all(feature = "std", target_os = "redox"))]
+pub mod ring;
 #[cfg(feature = "std")]
 mod sparse;
 
@@ -38,4 +40,20 @@ pub trait Disk {
 
     /// Get size of disk in bytes
     fn size(&mut self) -> Result<u64>;
+}
+
+impl Disk for Box<dyn Disk> {
+    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+        unsafe { (**self).read_at(block, buffer) }
+    }
+
+    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+        unsafe { (**self).write_at(block, buffer) }
+    }
+
+    fn size(&mut self) -> Result<u64> {
+        {
+            (**self).size()
+        }
+    }
 }
