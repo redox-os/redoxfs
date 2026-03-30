@@ -357,6 +357,7 @@ fn daemon(
 }
 
 fn main() {
+    unsafe { env::set_var("RUST_LOG", "debug") };
     env_logger::init();
 
     let mut args = env::args().skip(1);
