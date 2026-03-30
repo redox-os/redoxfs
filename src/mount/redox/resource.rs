@@ -12,7 +12,7 @@ use syscall::flag::{
     MapFlags, F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY,
     PROT_READ, PROT_WRITE,
 };
-use syscall::{EBADFD, PAGE_SIZE};
+use syscall::{EBADFD, ENOENT, PAGE_SIZE};
 
 use crate::{Disk, Node, Transaction, TreePtr, BLOCK_SIZE};
 
@@ -282,7 +282,11 @@ impl<D: Disk> Resource<D> for DirResource {
             Some(data) => {
                 let opaque_offset = opaque_offset as usize;
                 for (idx, entry) in data.iter().enumerate().skip(opaque_offset) {
-                    let child = tx.read_tree(entry.node_ptr)?;
+                    let child = match tx.read_tree(entry.node_ptr) {
+                        Ok(r) => r,
+                        Err(Error { errno: ENOENT }) => continue,
+                        Err(err) => return Err(err),
+                    };
                     let result = buf.entry(DirEntry {
                         inode: child.id() as u64,
                         next_opaque_id: idx as u64 + 1,
