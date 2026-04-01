@@ -362,6 +362,13 @@ fn daemon(
 fn main() {
     unsafe { env::set_var("RUST_LOG", "debug") };
     env_logger::init();
+    unsafe {
+        if libc::setpriority(libc::PRIO_PROCESS, 0, -10) == -1 {
+            log::error!("nvmed: Failed to set nice value");
+        } else {
+            log::debug!("nvmed: Successfully set process priority to 10");
+        }
+    }
 
     let mut args = env::args().skip(1);
 
