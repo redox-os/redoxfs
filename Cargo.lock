@@ -562,7 +562,7 @@ checksum = "54ec1b67c01c63545205ea6d218b336751399f0d8974c1a635c28604bedb81bc"
 [[package]]
 name = "redox-rings"
 version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-rings.git?branch=u2u#bc3dbc10f7d88f955df4c0f17c13178df0df6df5"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-rings.git?branch=u2u#77f526b81075df9cf79ce589b8b3a1f8359b14fb"
 dependencies = [
  "libredox",
  "redox_syscall",

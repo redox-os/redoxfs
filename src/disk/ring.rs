@@ -7,9 +7,10 @@ use std::sync::Mutex;
 use libredox::flag;
 use libredox::Fd;
 use redox_rings::raw::RingPopError;
-use redox_rings::sync::{BlockingConsumer, BlockingProducer};
+use redox_rings::sync::{BlockingConsumer, BlockingProducer, FutexWaitResult, WaitNotify};
 use syscall::error::{Error, Result};
 use syscall::CallFlags;
+use syscall::TimeSpec;
 use syscall::EIO;
 
 use super::Disk;
@@ -88,11 +89,29 @@ pub struct DiskRing {
     next_id: u64,
     disk_size: u64,
     offset: u64,
+    pipe: Pipe,
+}
+
+struct Pipe(Fd);
+
+impl WaitNotify for Pipe {
+    fn wait_on_tail(&self, expected_tail: u32, deadline_opt: Option<&TimeSpec>) -> FutexWaitResult {
+        unimplemented!("notify_on_tail is not implemented for Pipe")
+    }
+    fn notify_on_tail(&self) {
+        let _ = self.0.write(&[0]);
+    }
+    fn wait_on_head(&self, expected_head: u32, deadline_opt: Option<&TimeSpec>) -> FutexWaitResult {
+        unimplemented!("wait_on_head is not implemented for Pipe")
+    }
+    fn notify_on_head(&self) {
+        unimplemented!("notify_on_head is not implemented for Pipe")
+    }
 }
 
 impl DiskRing {
     pub fn from_fd(df: &File, disk_size: u64) -> Result<Self> {
-        let mut fd_buf = [usize::MAX; 3]; // [pool_shm_fd, sq_shm_fd, cq_shm_fd]
+        let mut fd_buf = [usize::MAX; 4]; // [pool_shm_fd, sq_shm_fd, cq_shm_fd, pipe_fd]
         let fd_bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 fd_buf.as_mut_ptr() as *mut u8,
@@ -107,8 +126,12 @@ impl DiskRing {
         )
         .map_err(|_| Error::new(EIO))?;
 
-        let (pool_fd, sq_shm_fd, cq_shm_fd) =
-            (Fd::new(fd_buf[0]), Fd::new(fd_buf[1]), Fd::new(fd_buf[2]));
+        let (pool_fd, sq_shm_fd, cq_shm_fd, pipe) = (
+            Fd::new(fd_buf[0]),
+            Fd::new(fd_buf[1]),
+            Fd::new(fd_buf[2]),
+            Fd::new(fd_buf[3]),
+        );
 
         let shm_ptr = unsafe {
             libredox::call::mmap(libredox::call::MmapArgs {
@@ -135,6 +158,7 @@ impl DiskRing {
             next_id: 0,
             disk_size,
             offset: 0,
+            pipe: Pipe(pipe),
         };
 
         // Scan for RedoxFS signature
@@ -208,7 +232,7 @@ impl DiskRing {
                 );
 
                 loop {
-                    match self.sq.try_push(sqe) {
+                    match self.sq.inner.try_push_notify(sqe, &self.pipe) {
                         Ok(_) => break,
                         Err(_) => match self.cq.try_pop() {
                             Ok(cqe) => Self::process_cqe(
