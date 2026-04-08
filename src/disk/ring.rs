@@ -130,7 +130,7 @@ impl DiskRing {
             Fd::new(fd_buf[0]),
             Fd::new(fd_buf[1]),
             Fd::new(fd_buf[2]),
-            Fd::new(fd_buf[3]),
+            Fd::new(fd_buf[3]).openat("write", 0, 0)?,
         );
 
         let shm_ptr = unsafe {
