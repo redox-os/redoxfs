@@ -264,9 +264,6 @@ fn filesystem_by_uuid(
                                                 entry.path().into_os_string().into_string()
                                             {
                                                 log::debug!("found path {}", path);
-                                                if path.contains("nvme") {
-                                                    continue;
-                                                }
                                                 if let Some((path, filesystem)) =
                                                     filesystem_by_path(&path, block_opt, true)
                                                 {
