@@ -16,7 +16,7 @@ use syscall::EIO;
 use super::Disk;
 use crate::SIGNATURE;
 
-const POOL_SIZE: usize = 16 * 1024 * 1024; // 16 MB pool
+const POOL_SIZE: usize = 4 * 1024 * 1024; // 4 MB pool
 const CHUNK_SIZE: usize = 256 * 1024;
 const RING_SIZE: usize = 65536; // 64 KB rings
 
@@ -111,7 +111,20 @@ impl WaitNotify for Pipe {
 
 impl DiskRing {
     pub fn from_fd(df: &File, disk_size: u64) -> Result<Self> {
-        let mut fd_buf = [usize::MAX; 4]; // [pool_shm_fd, sq_shm_fd, cq_shm_fd, pipe_fd]
+        // mmap the shared DMA/shm pool
+        let shm_ptr = unsafe {
+            libredox::call::mmap(libredox::call::MmapArgs {
+                addr: std::ptr::null_mut(),
+                length: POOL_SIZE,
+                prot: flag::PROT_READ | flag::PROT_WRITE,
+                flags: flag::MAP_SHARED,
+                fd: df.as_raw_fd() as usize,
+                offset: 0,
+            })
+            .map_err(|_| Error::new(EIO))? as *mut u8
+        };
+
+        let mut fd_buf = [usize::MAX; 3]; // [sq_shm_fd, cq_shm_fd, pipe_fd]
         let fd_bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 fd_buf.as_mut_ptr() as *mut u8,
@@ -126,24 +139,11 @@ impl DiskRing {
         )
         .map_err(|_| Error::new(EIO))?;
 
-        let (pool_fd, sq_shm_fd, cq_shm_fd, pipe) = (
+        let (sq_shm_fd, cq_shm_fd, pipe) = (
             Fd::new(fd_buf[0]),
             Fd::new(fd_buf[1]),
-            Fd::new(fd_buf[2]),
-            Fd::new(fd_buf[3]).openat("write", 0, 0)?,
+            Fd::new(fd_buf[2]).openat("write", 0, 0)?,
         );
-
-        let shm_ptr = unsafe {
-            libredox::call::mmap(libredox::call::MmapArgs {
-                addr: std::ptr::null_mut(),
-                length: POOL_SIZE,
-                prot: flag::PROT_READ | flag::PROT_WRITE,
-                flags: flag::MAP_SHARED,
-                fd: pool_fd.raw(),
-                offset: 0,
-            })
-            .map_err(|_| Error::new(EIO))? as *mut u8
-        };
 
         let sq = BlockingProducer::<DiskOpSqe>::from_fd(sq_shm_fd, false, Some(RING_SIZE))
             .map_err(|_| Error::new(EIO))?;
