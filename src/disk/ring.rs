@@ -300,3 +300,11 @@ impl Disk for DiskRing {
         Ok(self.disk_size)
     }
 }
+
+impl Drop for DiskRing {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = libredox::call::munmap(self.shm_base.cast(), POOL_SIZE);
+        }
+    }
+}
