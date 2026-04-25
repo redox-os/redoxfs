@@ -174,7 +174,7 @@ fn filesystem_by_path(
             Ok(mut df) => {
                 let disk_size = df.size().unwrap_or(0);
 
-                match libredox::call::openat(df.as_raw_fd() as usize, "ring", 0, 0) {
+                match libredox::call::openat(df.file.as_raw_fd() as usize, "ring", 0, 0) {
                     Ok(ring_file) => {
                         match DiskRing::from_fd(libredox::Fd::new(ring_file), disk_size) {
                             Ok(dr) => {
@@ -182,7 +182,7 @@ fn filesystem_by_path(
                                 Box::new(dr)
                             }
                             Err(e) => {
-                                log::debug!("DiskRing init failed for {}: {}", ring_path, e);
+                                log::debug!("DiskRing init failed for {}: {}", path, e);
                                 Box::new(df)
                             }
                         }
