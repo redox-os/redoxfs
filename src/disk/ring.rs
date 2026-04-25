@@ -110,7 +110,7 @@ impl WaitNotify for Pipe {
 }
 
 impl DiskRing {
-    pub fn from_fd(df: &File, disk_size: u64) -> Result<Self> {
+    pub fn from_fd(df: libredox::Fd, disk_size: u64) -> Result<Self> {
         // mmap the shared DMA/shm pool
         let shm_ptr = unsafe {
             libredox::call::mmap(libredox::call::MmapArgs {
@@ -118,7 +118,7 @@ impl DiskRing {
                 length: POOL_SIZE,
                 prot: flag::PROT_READ | flag::PROT_WRITE,
                 flags: flag::MAP_SHARED,
-                fd: df.as_raw_fd() as usize,
+                fd: df.raw(),
                 offset: 0,
             })
             .map_err(|_| Error::new(EIO))? as *mut u8
@@ -131,13 +131,8 @@ impl DiskRing {
                 fd_buf.len() * std::mem::size_of::<usize>(),
             )
         };
-        libredox::call::call_ro(
-            df.as_raw_fd() as usize,
-            fd_bytes,
-            CallFlags::FD | CallFlags::FD_UPPER,
-            &[],
-        )
-        .map_err(|_| Error::new(EIO))?;
+        libredox::call::call_ro(df.raw(), fd_bytes, CallFlags::FD | CallFlags::FD_UPPER, &[])
+            .map_err(|_| Error::new(EIO))?;
 
         let (sq_shm_fd, cq_shm_fd, pipe) = (
             Fd::new(fd_buf[0]),
