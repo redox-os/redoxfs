@@ -26,7 +26,7 @@ use redox_path::{
     RedoxPath,
 };
 
-use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
+use crate::{mount::TxWrapper, Disk, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
 use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, Resource};
 
@@ -35,10 +35,10 @@ enum Handle<D: Disk> {
     SchemeRoot,
 }
 
-pub struct FileScheme<'sock, D: Disk> {
+pub struct FileScheme<'fs, 'sock, D: Disk> {
     scheme_name: String,
     mounted_path: String,
-    pub(crate) fs: FileSystem<D>,
+    pub(crate) fs: TxWrapper<'fs, D>,
     socket: &'sock Socket,
     next_id: AtomicUsize,
     handles: BTreeMap<usize, Handle<D>>,
@@ -50,13 +50,13 @@ pub struct FileScheme<'sock, D: Disk> {
     proc_creds_capability: Fd,
 }
 
-impl<'sock, D: Disk> FileScheme<'sock, D> {
+impl<'fs, 'sock, D: Disk> FileScheme<'fs, 'sock, D> {
     pub fn new(
         scheme_name: String,
         mounted_path: String,
-        fs: FileSystem<D>,
+        fs: TxWrapper<'fs, D>,
         socket: &'sock Socket,
-    ) -> Result<FileScheme<'sock, D>> {
+    ) -> Result<FileScheme<'fs, 'sock, D>> {
         Ok(FileScheme {
             scheme_name,
             mounted_path,
@@ -565,7 +565,7 @@ pub fn canonicalize_with_max_upward_depth(
     Some((canonical, upward_depth))
 }
 
-impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
+impl<'fs, 'sock, D: Disk> SchemeSync for FileScheme<'fs, 'sock, D> {
     fn scheme_root(&mut self) -> Result<usize> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.handles.insert(id, Handle::SchemeRoot);
@@ -939,12 +939,13 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn fstatvfs(&mut self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
         if let Some(Handle::Resource(_file)) = self.handles.get(&id) {
-            stat.f_bsize = BLOCK_SIZE as u32;
-            stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
-            stat.f_bfree = self.fs.allocator().free();
-            stat.f_bavail = stat.f_bfree;
-
-            Ok(())
+            self.fs.tx(|tx| {
+                stat.f_bsize = BLOCK_SIZE as u32;
+                stat.f_blocks = tx.header.size() / (stat.f_bsize as u64);
+                stat.f_bfree = tx.allocator.free();
+                stat.f_bavail = stat.f_bfree;
+                Ok(())
+            })
         } else {
             Err(Error::new(EBADF))
         }
@@ -1181,7 +1182,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         &mut self,
         id: usize,
         kind: StdFsCallKind,
-        payload: &mut [u8],
+        _payload: &mut [u8],
         metadata: StdFsCallMeta,
         ctx: &CallerCtx,
     ) -> Result<usize> {
