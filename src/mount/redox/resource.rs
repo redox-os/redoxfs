@@ -27,7 +27,13 @@ pub trait Resource<D: Disk> {
 
     fn set_path(&mut self, path: &str);
 
-    fn read(&mut self, buf: &mut [u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize>;
+    fn read(
+        &mut self,
+        fmaps: &mut Fmaps,
+        buf: &mut [u8],
+        offset: u64,
+        tx: &mut Transaction<D>,
+    ) -> Result<usize>;
 
     fn write(&mut self, buf: &[u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize>;
 
@@ -193,7 +199,13 @@ impl<D: Disk> Resource<D> for DirResource {
         self.path = path.to_string();
     }
 
-    fn read(&mut self, _buf: &mut [u8], _offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
+    fn read(
+        &mut self,
+        _fmaps: &mut Fmaps,
+        _buf: &mut [u8],
+        _offset: u64,
+        _tx: &mut Transaction<D>,
+    ) -> Result<usize> {
         Err(Error::new(EISDIR))
     }
 
@@ -410,7 +422,7 @@ impl FileMmapInfo {
     }
 
     pub fn in_use(&self) -> bool {
-        self.open_fds > 0 || !self.ranges.is_empty()
+        self.open_fds > 0 || self.ranges.iter().any(|(_, fmap)| fmap.rc > 0)
     }
 }
 
@@ -457,10 +469,44 @@ impl<D: Disk> Resource<D> for FileResource {
         self.path = path.to_string();
     }
 
-    fn read(&mut self, buf: &mut [u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize> {
+    fn read(
+        &mut self,
+        fmaps: &mut Fmaps,
+        buf: &mut [u8],
+        offset: u64,
+        tx: &mut Transaction<D>,
+    ) -> Result<usize> {
         if self.flags & O_ACCMODE != O_RDWR && self.flags & O_ACCMODE != O_RDONLY {
             return Err(Error::new(EBADF));
         }
+        if let Some(fmap_info) = fmaps.get_mut(&self.node_ptr.id()) {
+            if !fmap_info.base.is_null() {
+                let requested_end = offset + buf.len() as u64;
+                let mut next_offset = offset;
+                let mut cacheable = true;
+
+                for (range, _fmap) in fmap_info.ranges.conflicts(offset..requested_end) {
+                    if range.start > next_offset {
+                        // there's a hole
+                        cacheable = false;
+                        break;
+                    }
+                    next_offset = next_offset.max(range.end);
+                }
+
+                if cacheable && next_offset >= requested_end {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            fmap_info.base.add(offset as usize),
+                            buf.as_mut_ptr(),
+                            buf.len(),
+                        );
+                    }
+                    return Ok(buf.len());
+                }
+            }
+        }
+
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         tx.read_node(
             self.node_ptr,
@@ -567,26 +613,26 @@ impl<D: Disk> Resource<D> for FileResource {
 
         for (range, v_opt) in affected_fmaps {
             //dbg!(&range);
+            let range_size = range.end - range.start;
             if let Some(mut fmap) = v_opt {
                 fmap.rc += 1;
                 fmap.flags |= flags;
                 //FIXME: Use result?
-                let _ = fmap_info
-                    .ranges
-                    .insert(range.start, range.end - range.start, fmap);
+                let _ = fmap_info.ranges.insert(range.start, range_size, fmap);
             } else {
                 let map = unsafe {
                     Fmap::new(
                         self.node_ptr,
                         flags,
-                        unaligned_size,
-                        offset,
+                        range_size as usize,
+                        range.start,
                         fmap_info.base,
                         tx,
                     )?
                 };
                 //FIXME: Use result?
-                let _ = fmap_info.ranges.insert(offset, aligned_size as u64, map);
+                //TODO: Save aligned size for unmap
+                let _ = fmap_info.ranges.insert(range.start, range_size, map);
             }
         }
         //dbg!(&self.fmaps);
@@ -624,12 +670,10 @@ impl<D: Disk> Resource<D> for FileResource {
                 )?;
             }
 
-            if fmap.rc > 0 {
-                //FIXME: Use result?
-                let _ = fmap_info
-                    .ranges
-                    .insert(range.start, range.end - range.start, fmap);
-            }
+            //FIXME: Use result?
+            let _ = fmap_info
+                .ranges
+                .insert(range.start, range.end - range.start, fmap);
         }
         //dbg!(&self.fmaps);
 
