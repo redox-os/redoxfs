@@ -638,7 +638,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
             return Err(Error::new(EBADF));
         };
-        self.fs.tx(|tx| file.write(buf, offset, tx))
+        self.fs.tx(|tx| file.write(&mut self.fmap, buf, offset, tx))
     }
 
     fn fsize(&mut self, id: usize, _ctx: &CallerCtx) -> Result<u64> {

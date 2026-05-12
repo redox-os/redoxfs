@@ -35,7 +35,13 @@ pub trait Resource<D: Disk> {
         tx: &mut Transaction<D>,
     ) -> Result<usize>;
 
-    fn write(&mut self, buf: &[u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize>;
+    fn write(
+        &mut self,
+        fmaps: &mut Fmaps,
+        buf: &[u8],
+        offset: u64,
+        tx: &mut Transaction<D>,
+    ) -> Result<usize>;
 
     fn fsize(&mut self, tx: &mut Transaction<D>) -> Result<u64>;
 
@@ -209,7 +215,13 @@ impl<D: Disk> Resource<D> for DirResource {
         Err(Error::new(EISDIR))
     }
 
-    fn write(&mut self, _buf: &[u8], _offset: u64, _tx: &mut Transaction<D>) -> Result<usize> {
+    fn write(
+        &mut self,
+        _fmaps: &mut Fmaps,
+        _buf: &[u8],
+        _offset: u64,
+        _tx: &mut Transaction<D>,
+    ) -> Result<usize> {
         Err(Error::new(EBADF))
     }
 
@@ -332,6 +344,7 @@ pub struct Fmap {
     rc: usize,
     flags: MapFlags,
     last_page_tail: u16,
+    version: u64,
 }
 
 impl Fmap {
@@ -370,6 +383,7 @@ impl Fmap {
             rc: 1,
             flags,
             last_page_tail: (unaligned_size % PAGE_SIZE) as u16,
+            version: 0,
         })
     }
 
@@ -409,6 +423,7 @@ pub struct FileMmapInfo {
     size: usize,
     pub ranges: RangeTree<Fmap>,
     pub open_fds: usize,
+    pub version: u64,
 }
 
 impl FileMmapInfo {
@@ -418,6 +433,7 @@ impl FileMmapInfo {
             size: 0,
             ranges: RangeTree::new(),
             open_fds: 0,
+            version: 0,
         }
     }
 
@@ -485,8 +501,8 @@ impl<D: Disk> Resource<D> for FileResource {
                 let mut next_offset = offset;
                 let mut cacheable = true;
 
-                for (range, _fmap) in fmap_info.ranges.conflicts(offset..requested_end) {
-                    if range.start > next_offset {
+                for (range, fmap) in fmap_info.ranges.conflicts(offset..requested_end) {
+                    if range.start > next_offset || fmap.version != fmap_info.version {
                         // there's a hole
                         cacheable = false;
                         break;
@@ -517,7 +533,13 @@ impl<D: Disk> Resource<D> for FileResource {
         )
     }
 
-    fn write(&mut self, buf: &[u8], offset: u64, tx: &mut Transaction<D>) -> Result<usize> {
+    fn write(
+        &mut self,
+        fmaps: &mut Fmaps,
+        buf: &[u8],
+        offset: u64,
+        tx: &mut Transaction<D>,
+    ) -> Result<usize> {
         if self.flags & O_ACCMODE != O_RDWR && self.flags & O_ACCMODE != O_WRONLY {
             return Err(Error::new(EBADF));
         }
@@ -527,6 +549,9 @@ impl<D: Disk> Resource<D> for FileResource {
         } else {
             offset
         };
+        if let Some(fmap_info) = fmaps.get_mut(&self.node_ptr.id()) {
+            fmap_info.version += 1;
+        }
         let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         tx.write_node(
             self.node_ptr,
@@ -617,6 +642,7 @@ impl<D: Disk> Resource<D> for FileResource {
             if let Some(mut fmap) = v_opt {
                 fmap.rc += 1;
                 fmap.flags |= flags;
+                fmap.version = fmap_info.version;
                 //FIXME: Use result?
                 let _ = fmap_info.ranges.insert(range.start, range_size, fmap);
             } else {
@@ -818,6 +844,7 @@ impl range_tree::Value for Fmap {
                 rc: self.rc,
                 flags: self.flags,
                 last_page_tail: 0,
+                version: self.version,
             }),
             Fmap {
                 rc: self.rc,
@@ -827,11 +854,13 @@ impl range_tree::Value for Fmap {
                 } else {
                     0
                 },
+                version: self.version,
             },
             next_range.map(|_range| Fmap {
                 rc: self.rc,
                 flags: self.flags,
                 last_page_tail: self.last_page_tail,
+                version: self.version,
             }),
         )
     }
