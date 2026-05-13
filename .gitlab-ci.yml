@@ -1,12 +1,13 @@
 image: "redoxos/redoxer"
 
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master" && $CI_PROJECT_NAMESPACE == "redox-os"'
+    - if: '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"'
+
 stages:
     - build
     - test
-
-cache:
-    paths:
-        - target/
 
 build:linux:
     stage: build

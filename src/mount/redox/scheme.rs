@@ -623,7 +623,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
             return Err(Error::new(EBADF));
         };
-        self.fs.tx(|tx| file.read(buf, offset, tx))
+        self.fs.tx(|tx| file.read(&mut self.fmap, buf, offset, tx))
     }
 
     fn write(
@@ -638,7 +638,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
             return Err(Error::new(EBADF));
         };
-        self.fs.tx(|tx| file.write(buf, offset, tx))
+        self.fs.tx(|tx| file.write(&mut self.fmap, buf, offset, tx))
     }
 
     fn fsize(&mut self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
@@ -1006,13 +1006,12 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
     }
-    #[allow(unused_variables)]
     fn munmap(
         &mut self,
         id: usize,
         offset: u64,
         size: usize,
-        flags: MunmapFlags,
+        _flags: MunmapFlags,
         _ctx: &CallerCtx,
     ) -> Result<()> {
         let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
@@ -1181,7 +1180,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         &mut self,
         id: usize,
         kind: StdFsCallKind,
-        payload: &mut [u8],
+        _payload: &mut [u8],
         metadata: StdFsCallMeta,
         ctx: &CallerCtx,
     ) -> Result<usize> {
