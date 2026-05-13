@@ -440,6 +440,14 @@ impl FileMmapInfo {
     pub fn in_use(&self) -> bool {
         self.open_fds > 0 || self.ranges.iter().any(|(_, fmap)| fmap.rc > 0)
     }
+
+    pub fn stale(&self) -> bool {
+        // TODO: should this be any?
+        // TODO: stale by duration/memory pressure
+        self.ranges
+            .iter()
+            .all(|(_, fmap)| fmap.version != self.version)
+    }
 }
 
 impl Drop for FileMmapInfo {
@@ -708,10 +716,16 @@ impl<D: Disk> Resource<D> for FileResource {
             // Notify filesystem of close
             tx.on_close_node(self.node_ptr)?;
 
-            /*TODO: leaks memory, but why?
-            // Remove from fmaps list
-            fmaps.remove(&self.node_ptr.id());
-            */
+            // if this fmap version is outdated it's no use
+            if fmap_info.stale() {
+                let fmap = fmaps
+                    .remove(&self.node_ptr.id())
+                    .expect("fmap_info must exist");
+
+                if let Err(e) = unsafe { libredox::call::munmap(fmap.base as *mut _, fmap.size) } {
+                    log::error!("Munmap error {e}");
+                }
+            }
         }
 
         Ok(())
