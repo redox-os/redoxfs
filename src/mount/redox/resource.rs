@@ -1,10 +1,11 @@
+use std::cell::RefCell;
 use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloc::collections::BTreeMap;
 use libredox::call::MmapArgs;
-use range_tree::RangeTree;
 
+use rangemap::RangeMap;
 use syscall::data::{Stat, TimeSpec};
 use syscall::dirent::{DirEntry, DirentBuf, DirentKind};
 use syscall::error::{Error, Result, EBADF, EINVAL, EISDIR, ENOTDIR, EPERM};
@@ -12,7 +13,7 @@ use syscall::flag::{
     MapFlags, F_GETFL, F_SETFL, MODE_PERM, O_ACCMODE, O_APPEND, O_RDONLY, O_RDWR, O_WRONLY,
     PROT_READ, PROT_WRITE,
 };
-use syscall::{EBADFD, ENOENT, PAGE_SIZE};
+use syscall::{EBADFD, EIO, ENOENT, PAGE_SIZE};
 
 use crate::{Disk, Node, Transaction, TreePtr, BLOCK_SIZE};
 
@@ -145,7 +146,7 @@ pub trait Resource<D: Disk> {
 
     fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<()>;
 
-    fn truncate(&mut self, len: u64, tx: &mut Transaction<D>) -> Result<()>;
+    fn truncate(&mut self, fmaps: &mut Fmaps, len: u64, tx: &mut Transaction<D>) -> Result<()>;
 
     fn utimens(&mut self, times: &[TimeSpec], tx: &mut Transaction<D>) -> Result<()>;
 
@@ -261,7 +262,7 @@ impl<D: Disk> Resource<D> for DirResource {
         Err(Error::new(EBADF))
     }
 
-    fn truncate(&mut self, _len: u64, _tx: &mut Transaction<D>) -> Result<()> {
+    fn truncate(&mut self, _fmaps: &mut Fmaps, _len: u64, _tx: &mut Transaction<D>) -> Result<()> {
         Err(Error::new(EBADF))
     }
 
@@ -339,11 +340,10 @@ impl<D: Disk> Resource<D> for DirResource {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fmap {
     rc: usize,
     flags: MapFlags,
-    last_page_tail: u16,
     version: u64,
 }
 
@@ -353,9 +353,11 @@ impl Fmap {
         flags: MapFlags,
         unaligned_size: usize,
         offset: u64,
+        rc: usize,
+        version: u64,
         base: *mut u8,
         tx: &mut Transaction<D>,
-    ) -> Result<Self> {
+    ) -> Result<(Self, Option<usize>)> {
         // Memory provided to fmap must be page aligned and sized
         let aligned_size = unaligned_size.next_multiple_of(syscall::PAGE_SIZE);
 
@@ -379,16 +381,14 @@ impl Fmap {
         // Make sure remaining data is zeroed
         buf[count..].fill(0_u8);
 
-        Ok(Self {
-            rc: 1,
-            flags,
-            last_page_tail: (unaligned_size % PAGE_SIZE) as u16,
-            version: 0,
-        })
+        Ok((
+            Self { rc, flags, version },
+            if count < buf.len() { Some(count) } else { None },
+        ))
     }
 
     pub unsafe fn sync<D: Disk>(
-        &mut self,
+        &self,
         node_ptr: TreePtr<Node>,
         base: *mut u8,
         offset: u64,
@@ -411,6 +411,7 @@ impl Fmap {
 
 pub struct FileResource {
     path: String,
+    cacheable: bool,
     parent_ptr_opt: Option<TreePtr<Node>>,
     node_ptr: TreePtr<Node>,
     flags: usize,
@@ -421,7 +422,9 @@ pub struct FileResource {
 pub struct FileMmapInfo {
     base: *mut u8,
     size: usize,
-    pub ranges: RangeTree<Fmap>,
+    // check whether the file size is known on this version
+    exact_size: Option<usize>,
+    pub ranges: RangeMap<u64, RefCell<Fmap>>,
     pub open_fds: usize,
     pub version: u64,
 }
@@ -431,14 +434,15 @@ impl FileMmapInfo {
         Self {
             base: core::ptr::null_mut(),
             size: 0,
-            ranges: RangeTree::new(),
+            exact_size: None,
+            ranges: RangeMap::new(),
             open_fds: 0,
             version: 0,
         }
     }
 
     pub fn in_use(&self) -> bool {
-        self.open_fds > 0 || self.ranges.iter().any(|(_, fmap)| fmap.rc > 0)
+        self.open_fds > 0 || self.ranges.iter().any(|(_, fmap)| fmap.borrow().rc > 0)
     }
 
     pub fn stale(&self) -> bool {
@@ -446,7 +450,58 @@ impl FileMmapInfo {
         // TODO: stale by duration/memory pressure
         self.ranges
             .iter()
-            .all(|(_, fmap)| fmap.version != self.version)
+            .all(|(_, fmap)| fmap.borrow().version != self.version)
+    }
+
+    pub fn get_cache_readable_count(&self, offset: u64, requested_end: u64) -> Option<usize> {
+        let mut next_offset = offset;
+        let mut eof = false;
+        for (range, fmap) in self.ranges.overlapping(&(offset..requested_end)) {
+            let fmap = fmap.borrow();
+            if range.start > next_offset || fmap.version != self.version {
+                break;
+            }
+            next_offset = range.end;
+        }
+        if let Some(end) = self.exact_size.as_ref() {
+            next_offset = core::cmp::min(next_offset, *end as u64);
+            eof = true;
+        }
+
+        if next_offset > offset || (eof && offset == next_offset) {
+            usize::try_from(core::cmp::min(next_offset - offset, requested_end - offset)).ok()
+        } else {
+            None
+        }
+    }
+
+    pub unsafe fn ensure_capacity(&mut self, required_size: usize) -> Result<usize> {
+        let aligned_size = required_size.next_multiple_of(PAGE_SIZE);
+        if aligned_size <= self.size {
+            return Ok(aligned_size);
+        }
+
+        self.base = if self.base.is_null() {
+            libredox::call::mmap(MmapArgs {
+                length: aligned_size,
+                prot: libredox::flag::PROT_READ | libredox::flag::PROT_WRITE,
+                flags: libredox::flag::MAP_PRIVATE,
+                offset: 0,
+                fd: !0,
+                addr: core::ptr::null_mut(),
+            })? as *mut u8
+        } else {
+            syscall::syscall5(
+                syscall::SYS_MREMAP,
+                self.base as usize,
+                self.size,
+                0,
+                aligned_size,
+                (PROT_READ | PROT_WRITE).bits(),
+            )? as *mut u8
+        };
+        self.size = aligned_size;
+        Ok(aligned_size)
     }
 }
 
@@ -466,12 +521,31 @@ impl FileResource {
         flags: usize,
         uid: u32,
     ) -> FileResource {
+        let cacheable = Self::is_cacheable(&path);
         FileResource {
             path,
+            cacheable,
             parent_ptr_opt,
             node_ptr,
             flags,
             uid,
+        }
+    }
+    pub fn is_cacheable(path: &str) -> bool {
+        if path.len() == 0 {
+            false
+        } else {
+            match path.as_bytes()[0] {
+                b'u' => {
+                    path.starts_with("usr/lib/")
+                        || path.starts_with("usr/bin/")
+                        || path.starts_with("usr/include/")
+                }
+                b'b' => path.starts_with("bin/"),
+                b'l' => path.starts_with("lib/"),
+                b'e' => path.starts_with("etc/"),
+                _ => false,
+            }
         }
     }
 }
@@ -506,39 +580,56 @@ impl<D: Disk> Resource<D> for FileResource {
         if let Some(fmap_info) = fmaps.get_mut(&self.node_ptr.id()) {
             if !fmap_info.base.is_null() {
                 let requested_end = offset + buf.len() as u64;
-                let mut next_offset = offset;
-                let mut cacheable = true;
-
-                for (range, fmap) in fmap_info.ranges.conflicts(offset..requested_end) {
-                    if range.start > next_offset || fmap.version != fmap_info.version {
-                        // there's a hole
-                        cacheable = false;
-                        break;
-                    }
-                    next_offset = next_offset.max(range.end);
-                }
-
-                if cacheable && next_offset >= requested_end {
+                if let Some(count) = fmap_info.get_cache_readable_count(offset, requested_end) {
+                    // println!(
+                    //     "MMAP READ {} {:x}-{:x} ({:x})",
+                    //     self.path,
+                    //     offset,
+                    //     offset + buf.len() as u64,
+                    //     offset + (count as u64)
+                    // );
                     unsafe {
                         core::ptr::copy_nonoverlapping(
                             fmap_info.base.add(offset as usize),
                             buf.as_mut_ptr(),
-                            buf.len(),
+                            count,
                         );
                     }
-                    return Ok(buf.len());
+                    return Ok(count);
                 }
             }
         }
 
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        tx.read_node(
+        let len = tx.read_node(
             self.node_ptr,
             offset,
             buf,
             atime.as_secs(),
             atime.subsec_nanos(),
-        )
+        )?;
+
+        if self.cacheable {
+            // TODO: out of bound offset can trigger oom, rearrange fmap to avoid such thing
+            // println!(
+            //     "MMAP WRITE {} {:x}-{:x}",
+            //     self.path,
+            //     offset,
+            //     offset + len as u64
+            // );
+            self.fmap(fmaps, MapFlags::PROT_READ, len, offset, tx)?;
+            self.funmap(fmaps, offset, len, tx)?;
+        }
+
+        // println!(
+        //     "read disk {} {:x}-{:x} ({:x})",
+        //     self.path,
+        //     offset,
+        //     offset + buf.len() as u64,
+        //     offset + len as u64,
+        // );
+
+        Ok(len)
     }
 
     fn write(
@@ -592,8 +683,6 @@ impl<D: Disk> Resource<D> for FileResource {
             return Err(Error::new(EBADF));
         }
 
-        let aligned_size = unaligned_size.next_multiple_of(PAGE_SIZE);
-
         // TODO: PROT_EXEC? It is however unenforcable without restricting anonymous mmap, since a
         // program can always map anonymous RW-, read from a file, then remap as R-E. But it might
         // be usable as a hint, prohibiting direct executable mmaps at least.
@@ -609,67 +698,62 @@ impl<D: Disk> Resource<D> for FileResource {
             tx.on_open_node(self.node_ptr)?;
         }
 
-        let new_size = (offset as usize + aligned_size).next_multiple_of(PAGE_SIZE);
-        if new_size > fmap_info.size {
-            fmap_info.base = if fmap_info.base.is_null() {
-                unsafe {
-                    libredox::call::mmap(MmapArgs {
-                        length: new_size,
-                        // PRIVATE/SHARED doesn't matter once the pages are passed in the fmap
-                        // handler.
-                        prot: libredox::flag::PROT_READ | libredox::flag::PROT_WRITE,
-                        flags: libredox::flag::MAP_PRIVATE,
-
-                        offset: 0,
-                        fd: !0,
-                        addr: core::ptr::null_mut(),
-                    })? as *mut u8
-                }
-            } else {
-                unsafe {
-                    syscall::syscall5(
-                        syscall::SYS_MREMAP,
-                        fmap_info.base as usize,
-                        fmap_info.size,
-                        0,
-                        new_size,
-                        syscall::MremapFlags::empty().bits() | (PROT_READ | PROT_WRITE).bits(),
-                    )? as *mut u8
-                }
-            };
-            fmap_info.size = new_size;
-        }
-
-        let affected_fmaps = fmap_info
-            .ranges
-            .remove_and_unused(offset..offset + aligned_size as u64);
-
-        for (range, v_opt) in affected_fmaps {
-            //dbg!(&range);
-            let range_size = range.end - range.start;
-            if let Some(mut fmap) = v_opt {
-                fmap.rc += 1;
-                fmap.flags |= flags;
-                fmap.version = fmap_info.version;
-                //FIXME: Use result?
-                let _ = fmap_info.ranges.insert(range.start, range_size, fmap);
-            } else {
-                let map = unsafe {
+        let aligned_end = unsafe {
+            fmap_info.ensure_capacity(
+                (offset as usize)
+                    .checked_add(unaligned_size)
+                    .ok_or(Error::new(EIO))?,
+            )?
+        } as u64;
+        let aligned_start = offset / (PAGE_SIZE as u64) * (PAGE_SIZE as u64);
+        let range_to_map = aligned_start..aligned_end;
+        for (range, overlap) in fmap_info.ranges.overlapping(&range_to_map) {
+            let mut map = overlap.borrow_mut();
+            if map.version != fmap_info.version {
+                let (fmap, count) = unsafe {
+                    // println!("update cache {:x}-{:x}", range.start, range.end);
                     Fmap::new(
                         self.node_ptr,
                         flags,
-                        range_size as usize,
+                        (range.end - range.start) as usize,
                         range.start,
+                        map.rc,
+                        fmap_info.version,
                         fmap_info.base,
                         tx,
                     )?
                 };
-                //FIXME: Use result?
-                //TODO: Save aligned size for unmap
-                let _ = fmap_info.ranges.insert(range.start, range_size, map);
+                *map = fmap;
+                if let Some(count) = count {
+                    if let Some(old_count) = fmap_info.exact_size.replace(count) {
+                        assert_eq!(count, old_count);
+                    }
+                }
+            }
+            map.rc += 1;
+        }
+        for gap in fmap_info.ranges.gaps(&range_to_map).collect::<Vec<_>>() {
+            let (fmap, count) = unsafe {
+                Fmap::new(
+                    self.node_ptr,
+                    flags,
+                    (gap.end - gap.start) as usize,
+                    gap.start,
+                    1,
+                    fmap_info.version,
+                    fmap_info.base,
+                    tx,
+                )?
+            };
+            // println!("write cache {:x}-{:x}", gap.start, gap.end);
+            fmap_info.ranges.insert(gap.clone(), RefCell::new(fmap));
+            if let Some(count) = count {
+                // println!("write cache cap {:x}", gap.start + count as u64);
+                if let Some(old_count) = fmap_info.exact_size.replace(gap.start as usize + count) {
+                    assert_eq!(count, old_count);
+                }
             }
         }
-        //dbg!(&self.fmaps);
 
         Ok(fmap_info.base as usize + offset as usize)
     }
@@ -685,17 +769,16 @@ impl<D: Disk> Resource<D> for FileResource {
             .get_mut(&self.node_ptr.id())
             .ok_or(Error::new(EBADFD))?;
 
-        //dbg!(&self.fmaps);
-        //dbg!(self.fmaps.conflicts(offset..offset + size as u64).collect::<Vec<_>>());
-        #[allow(unused_mut)]
-        let mut affected_fmaps = fmap_info.ranges.remove(offset..offset + size as u64);
+        let aligned_start = offset / (PAGE_SIZE as u64) * (PAGE_SIZE as u64);
+        let aligned_end = (offset + size as u64).next_multiple_of(PAGE_SIZE as u64);
+        let range_to_map = aligned_start..aligned_end;
+        let affected_fmaps = fmap_info.ranges.overlapping(range_to_map);
 
-        for (range, mut fmap) in affected_fmaps {
-            fmap.rc = fmap.rc.checked_sub(1).unwrap();
-
-            //log::info!("SYNCING {}..{}", range.start, range.end);
+        for (range, fmap) in affected_fmaps {
+            let mut map = fmap.borrow_mut();
+            map.rc = map.rc.checked_sub(1).unwrap();
             unsafe {
-                fmap.sync(
+                map.sync(
                     self.node_ptr,
                     fmap_info.base,
                     range.start,
@@ -703,11 +786,6 @@ impl<D: Disk> Resource<D> for FileResource {
                     tx,
                 )?;
             }
-
-            //FIXME: Use result?
-            let _ = fmap_info
-                .ranges
-                .insert(range.start, range.end - range.start, fmap);
         }
         //dbg!(&self.fmaps);
 
@@ -748,9 +826,9 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<()> {
         if let Some(fmap_info) = fmaps.get_mut(&self.node_ptr.id()) {
-            for (range, fmap) in fmap_info.ranges.iter_mut() {
+            for (range, fmap) in fmap_info.ranges.iter() {
                 unsafe {
-                    fmap.sync(
+                    fmap.borrow().sync(
                         self.node_ptr,
                         fmap_info.base,
                         range.start,
@@ -764,10 +842,13 @@ impl<D: Disk> Resource<D> for FileResource {
         Ok(())
     }
 
-    fn truncate(&mut self, len: u64, tx: &mut Transaction<D>) -> Result<()> {
+    fn truncate(&mut self, fmaps: &mut Fmaps, len: u64, tx: &mut Transaction<D>) -> Result<()> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
             let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
             tx.truncate_node(self.node_ptr, len, mtime.as_secs(), mtime.subsec_nanos())?;
+            if let Some(fmap_info) = fmaps.get_mut(&self.node_ptr.id()) {
+                fmap_info.exact_size = usize::try_from(len).ok();
+            }
             Ok(())
         } else {
             Err(Error::new(EBADF))
@@ -826,56 +907,5 @@ impl Drop for FileResource {
             );
         }
         */
-    }
-}
-
-impl range_tree::Value for Fmap {
-    type K = u64;
-
-    fn try_merge_forward(self, other: &Self) -> core::result::Result<Self, Self> {
-        if self.rc == other.rc && self.flags == other.flags && self.last_page_tail == 0 {
-            Ok(self)
-        } else {
-            Err(self)
-        }
-    }
-    fn try_merge_backwards(self, other: &Self) -> core::result::Result<Self, Self> {
-        if self.rc == other.rc && self.flags == other.flags && other.last_page_tail == 0 {
-            Ok(self)
-        } else {
-            Err(self)
-        }
-    }
-    #[allow(unused_variables)]
-    fn split(
-        self,
-        prev_range: Option<core::ops::Range<Self::K>>,
-        range: core::ops::Range<Self::K>,
-        next_range: Option<core::ops::Range<Self::K>>,
-    ) -> (Option<Self>, Self, Option<Self>) {
-        (
-            prev_range.map(|_range| Fmap {
-                rc: self.rc,
-                flags: self.flags,
-                last_page_tail: 0,
-                version: self.version,
-            }),
-            Fmap {
-                rc: self.rc,
-                flags: self.flags,
-                last_page_tail: if next_range.is_none() {
-                    self.last_page_tail
-                } else {
-                    0
-                },
-                version: self.version,
-            },
-            next_range.map(|_range| Fmap {
-                rc: self.rc,
-                flags: self.flags,
-                last_page_tail: self.last_page_tail,
-                version: self.version,
-            }),
-        )
     }
 }
