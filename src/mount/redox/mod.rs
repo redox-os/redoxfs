@@ -6,7 +6,7 @@ use std::io;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use crate::{Disk, FileSystem, IS_UMT};
+use crate::{mount::TxWrapper, Disk, FileSystem, IS_UMT};
 
 use self::scheme::FileScheme;
 
@@ -16,7 +16,11 @@ pub mod scheme;
 //FIXME: mut callback is not mut
 #[allow(unused_mut)]
 
-pub fn mount<D, P, T, F>(filesystem: FileSystem<D>, mountpoint: P, mut callback: F) -> io::Result<T>
+pub fn mount<D, P, T, F>(
+    mut filesystem: FileSystem<D>,
+    mountpoint: P,
+    mut callback: F,
+) -> io::Result<T>
 where
     D: Disk,
     P: AsRef<Path>,
@@ -29,7 +33,12 @@ where
     let mounted_path = format!("/scheme/{}", mountpoint.display());
 
     let mut state = SchemeState::new();
-    let mut scheme = FileScheme::new(scheme_name, mounted_path.clone(), filesystem, &socket)?;
+    let mut scheme = FileScheme::new(
+        scheme_name,
+        mounted_path.clone(),
+        TxWrapper::new(&mut filesystem),
+        &socket,
+    )?;
 
     redox_scheme::scheme::register_sync_scheme(
         &socket,
