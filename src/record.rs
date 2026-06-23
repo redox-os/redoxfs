@@ -1,16 +1,15 @@
-use alloc::{boxed::Box, vec};
+use alloc::vec;
 use core::ops;
 
 use crate::{BlockLevel, BlockTrait, RECORD_LEVEL};
 
-//TODO: this is a box to prevent stack overflows
 #[derive(Clone)]
-pub struct RecordRaw(pub(crate) Box<[u8]>);
+pub struct RecordRaw(pub(crate) Vec<u8>);
 
 unsafe impl BlockTrait for RecordRaw {
     fn empty(level: BlockLevel) -> Option<Self> {
         if level.0 <= RECORD_LEVEL {
-            Some(Self(vec![0; level.bytes() as usize].into_boxed_slice()))
+            Some(Self(vec![0; level.bytes() as usize]))
         } else {
             None
         }
