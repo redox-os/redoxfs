@@ -1,5 +1,4 @@
 use alloc::{
-    boxed::Box,
     collections::{BTreeMap, VecDeque},
     vec::Vec,
 };
@@ -73,7 +72,7 @@ pub struct Transaction<'a, D: Disk> {
     pub(crate) allocator: Allocator,
     allocator_log: VecDeque<AllocEntry>,
     deallocate: Vec<BlockAddr>,
-    pub(crate) write_cache: BTreeMap<BlockAddr, Box<[u8]>>,
+    pub(crate) write_cache: BTreeMap<BlockAddr, Vec<u8>>,
 }
 
 impl<'a, D: Disk> Transaction<'a, D> {
@@ -484,11 +483,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
             return Err(Error::new(ENOENT));
         }
 
-        //TODO: do not convert to boxed slice if it already is one
-        self.write_cache.insert(
-            block.addr(),
-            block.data().deref().to_vec().into_boxed_slice(),
-        );
+        self.write_cache
+            .insert(block.addr(), block.data().deref().to_vec());
 
         Ok(block.create_ptr())
     }
