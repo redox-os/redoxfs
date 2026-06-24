@@ -36,7 +36,8 @@ fn setsig() {
             0
         );
         addr_of_mut!((*action.as_mut_ptr()).sa_flags).write(0);
-        addr_of_mut!((*action.as_mut_ptr()).sa_sigaction).write(unmount_handler as usize);
+        addr_of_mut!((*action.as_mut_ptr()).sa_sigaction)
+            .write(unmount_handler as *const () as usize);
 
         assert_eq!(
             libc::sigaction(libc::SIGTERM, action.as_ptr(), core::ptr::null_mut()),

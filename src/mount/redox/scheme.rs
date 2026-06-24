@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::mem;
 use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,8 +32,35 @@ use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, Resource};
 
 enum Handle<D: Disk> {
-    Resource(Box<dyn Resource<D>>),
+    ResourceDir((DirResource, PhantomData<D>)),
+    ResourceFile((FileResource, PhantomData<D>)),
     SchemeRoot,
+}
+
+impl<D: Disk> Handle<D> {
+    pub fn resource(&self) -> Result<&dyn Resource<D>> {
+        match self {
+            Handle::ResourceDir((dir_resource, _)) => Ok(dir_resource as &dyn Resource<D>),
+            Handle::ResourceFile((file_resource, _)) => Ok(file_resource),
+            Handle::SchemeRoot => Err(Error::new(EBADF)),
+        }
+    }
+    pub fn resource_mut(&mut self) -> Result<&mut dyn Resource<D>> {
+        match self {
+            Handle::ResourceDir((dir_resource, _)) => Ok(dir_resource as &mut dyn Resource<D>),
+            Handle::ResourceFile((file_resource, _)) => Ok(file_resource),
+            Handle::SchemeRoot => Err(Error::new(EBADF)),
+        }
+    }
+    pub fn get_resource(res: Option<&Self>) -> Result<&dyn Resource<D>> {
+        res.ok_or(Error::new(EBADF)).and_then(|s| s.resource())
+    }
+    pub fn get_resource_mut(res: Option<&mut Self>) -> Result<&mut dyn Resource<D>> {
+        res.ok_or(Error::new(EBADF)).and_then(|s| s.resource_mut())
+    }
+    pub fn get_resource_or(res: Option<&Self>) -> Result<Option<&dyn Resource<D>>> {
+        res.ok_or(Error::new(EBADF)).map(|s| s.resource().ok())
+    }
 }
 
 pub struct FileScheme<'sock, D: Disk> {
@@ -142,9 +170,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     }
 
     fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
-        let Some(Handle::Resource(resource)) = self.handles.get(&id) else {
-            return Err(Error::new(EBADF));
-        };
+        let resource = Handle::get_resource(self.handles.get(&id))?;
         let inode_id = resource.node_ptr().id();
         let target_fd = self
             .other_scheme_fd_map
@@ -178,7 +204,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             .fs
             .tx(|tx| Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes))?;
         let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
-        let resource: Box<dyn Resource<D>> = match node_opt {
+        let handle: Handle<D> = match node_opt {
             Some((node, _node_name)) => {
                 if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
                     return Err(Error::new(EEXIST));
@@ -202,23 +228,29 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                             }
                         }
 
-                        Box::new(DirResource::new(
-                            path.to_string(),
-                            parent_ptr_opt,
-                            node.ptr(),
-                            Some(data),
-                            uid,
+                        Handle::ResourceDir((
+                            DirResource::new(
+                                path.to_string(),
+                                parent_ptr_opt,
+                                node.ptr(),
+                                Some(data),
+                                uid,
+                            ),
+                            PhantomData,
                         ))
                     } else if flags & O_WRONLY == O_WRONLY {
                         // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
                         return Err(Error::new(EISDIR));
                     } else {
-                        Box::new(DirResource::new(
-                            path.to_string(),
-                            parent_ptr_opt,
-                            node.ptr(),
-                            None,
-                            uid,
+                        Handle::ResourceDir((
+                            DirResource::new(
+                                path.to_string(),
+                                parent_ptr_opt,
+                                node.ptr(),
+                                None,
+                                uid,
+                            ),
+                            PhantomData,
                         ))
                     }
                 } else if node.data().is_symlink()
@@ -276,12 +308,9 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         })?;
                     }
 
-                    Box::new(FileResource::new(
-                        path.to_string(),
-                        parent_ptr_opt,
-                        node_ptr,
-                        flags,
-                        uid,
+                    Handle::ResourceFile((
+                        FileResource::new(path.to_string(), parent_ptr_opt, node_ptr, flags, uid),
+                        PhantomData,
                     ))
                 }
             }
@@ -328,20 +357,26 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                             })?;
 
                             if dir {
-                                Box::new(DirResource::new(
-                                    path.to_string(),
-                                    parent_ptr_opt,
-                                    node_ptr,
-                                    None,
-                                    uid,
+                                Handle::ResourceDir((
+                                    DirResource::new(
+                                        path.to_string(),
+                                        parent_ptr_opt,
+                                        node_ptr,
+                                        None,
+                                        uid,
+                                    ),
+                                    PhantomData,
                                 ))
                             } else {
-                                Box::new(FileResource::new(
-                                    path.to_string(),
-                                    parent_ptr_opt,
-                                    node_ptr,
-                                    flags,
-                                    uid,
+                                Handle::ResourceFile((
+                                    FileResource::new(
+                                        path.to_string(),
+                                        parent_ptr_opt,
+                                        node_ptr,
+                                        flags,
+                                        uid,
+                                    ),
+                                    PhantomData,
                                 ))
                             }
                         } else {
@@ -356,7 +391,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             }
         };
 
-        let node_ptr = resource.node_ptr();
+        let node_ptr = handle.resource().unwrap().node_ptr();
         {
             let fmap_info = self
                 .fmap
@@ -370,7 +405,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.handles.insert(id, Handle::Resource(resource));
+        self.handles.insert(id, handle);
 
         Ok(OpenResult::ThisScheme {
             number: id,
@@ -514,7 +549,7 @@ fn dirname(path: &str) -> Option<String> {
 }
 
 // TODO: Reimplement these using the scheme common path related crate
-pub fn resolve_path<D: Disk>(dir: &Box<dyn Resource<D>>, path: String) -> Option<String> {
+pub fn resolve_path<D: Disk>(dir: &dyn Resource<D>, path: String) -> Option<String> {
     let max_upward_depth = 64; // Same value as MAX_LEVEL of sym loops in relibc
     let (canon, _depth) =
         canonicalize_using_cwd_with_max_upward_depth(dir.path(), &path, max_upward_depth)?;
@@ -581,10 +616,10 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         ctx: &CallerCtx,
     ) -> Result<OpenResult> {
         let path = path.to_string();
-        let path_to_open = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
+        let path_to_open = match Handle::get_resource_or(self.handles.get(&dirfd))? {
             // If pathname is absolute, then dirfd is ignored.
-            Handle::Resource(dir_resource) if !path.starts_with('/') => {
-                resolve_path(&dir_resource, path).ok_or(Error::new(ENOENT))?
+            Some(res) if !path.starts_with('/') => {
+                resolve_path(res, path).ok_or(Error::new(ENOENT))?
             }
             _ => path.to_string(),
         };
@@ -595,12 +630,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let uid = ctx.uid;
         let gid = ctx.gid;
         let url = url.to_string();
-
-        let path = match self.handles.get(&dirfd).ok_or(Error::new(EBADF))? {
-            Handle::Resource(dir_resource) => {
-                resolve_path(&dir_resource, url).ok_or(Error::new(ENOENT))?
-            }
-            Handle::SchemeRoot => url,
+        let path = match Handle::get_resource_or(self.handles.get(&dirfd))? {
+            Some(res) => resolve_path(res, url).ok_or(Error::new(ENOENT))?,
+            None => url,
         };
         let path = path.trim_matches('/');
         let start_ptr = TreePtr::root();
@@ -620,9 +652,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
-            return Err(Error::new(EBADF));
-        };
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         self.fs.tx(|tx| file.read(&mut self.fmap, buf, offset, tx))
     }
 
@@ -635,83 +665,64 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
-            return Err(Error::new(EBADF));
-        };
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         self.fs.tx(|tx| file.write(&mut self.fmap, buf, offset, tx))
     }
 
     fn fsize(&mut self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
         // println!("Seek {}, {} {}", id, pos, whence);
-        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
-            return Err(Error::new(EBADF));
-        };
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         self.fs.tx(|tx| file.fsize(tx))
     }
 
     fn fchmod(&mut self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
-        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
-            self.fs.tx(|tx| file.fchmod(mode, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        self.fs.tx(|tx| file.fchmod(mode, tx))
     }
 
     fn fchown(&mut self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
-        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
-            self.fs.tx(|tx| file.fchown(new_uid, new_gid, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        self.fs.tx(|tx| file.fchown(new_uid, new_gid, tx))
     }
 
     fn fcntl(&mut self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
-        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
-            file.fcntl(cmd, arg)
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        file.fcntl(cmd, arg)
     }
 
     fn fevent(&mut self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
-        if let Some(Handle::Resource(_file)) = self.handles.get(&id) {
-            // EPERM is returned for handles that are always readable or writable
-            Err(Error::new(EPERM))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let _file = Handle::get_resource(self.handles.get(&id))?;
+        // EPERM is returned for handles that are always readable or writable
+        Err(Error::new(EPERM))
     }
 
     fn fpath(&mut self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        if let Some(Handle::Resource(file)) = self.handles.get(&id) {
-            let mounted_path = self.mounted_path.as_bytes();
+        let file = Handle::get_resource(self.handles.get(&id))?;
+        let mounted_path = self.mounted_path.as_bytes();
 
-            let mut i = 0;
-            while i < buf.len() && i < mounted_path.len() {
-                buf[i] = mounted_path[i];
+        let mut i = 0;
+        while i < buf.len() && i < mounted_path.len() {
+            buf[i] = mounted_path[i];
+            i += 1;
+        }
+
+        let path = file.path().as_bytes();
+        if !path.is_empty() {
+            if i < buf.len() {
+                buf[i] = b'/';
                 i += 1;
             }
 
-            let path = file.path().as_bytes();
-            if !path.is_empty() {
-                if i < buf.len() {
-                    buf[i] = b'/';
-                    i += 1;
-                }
-
-                let mut j = 0;
-                while i < buf.len() && j < path.len() {
-                    buf[i] = path[j];
-                    i += 1;
-                    j += 1;
-                }
+            let mut j = 0;
+            while i < buf.len() && j < path.len() {
+                buf[i] = path[j];
+                i += 1;
+                j += 1;
             }
-
-            Ok(i)
-        } else {
-            Err(Error::new(EBADF))
         }
+
+        Ok(i)
     }
 
     //TODO: this function has too much code, try to simplify it
@@ -722,103 +733,100 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         // println!("Flink {}, {} from {}, {}", id, new_path, uid, gid);
 
-        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
-            //TODO: Check for EINVAL
-            // The new pathname contained a path prefix of the old, or, more generally,
-            // an attempt was made to make a directory a subdirectory of itself.
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        //TODO: Check for EINVAL
+        // The new pathname contained a path prefix of the old, or, more generally,
+        // an attempt was made to make a directory a subdirectory of itself.
 
-            let mut old_name = String::new();
-            for part in file.path().split('/') {
-                if !part.is_empty() {
-                    old_name = part.to_string();
+        let mut old_name = String::new();
+        for part in file.path().split('/') {
+            if !part.is_empty() {
+                old_name = part.to_string();
+            }
+        }
+        if old_name.is_empty() {
+            return Err(Error::new(EPERM));
+        }
+
+        let mut new_name = String::new();
+        for part in new_path.split('/') {
+            if !part.is_empty() {
+                new_name = part.to_string();
+            }
+        }
+        if new_name.is_empty() {
+            return Err(Error::new(EPERM));
+        }
+
+        let scheme_name = &self.scheme_name;
+        self.fs.tx(|tx| {
+            let _orig_parent_ptr = match file.parent_ptr_opt() {
+                Some(some) => some,
+                None => {
+                    // println!("orig is root");
+                    return Err(Error::new(EBUSY));
                 }
-            }
-            if old_name.is_empty() {
-                return Err(Error::new(EPERM));
-            }
+            };
 
-            let mut new_name = String::new();
-            for part in new_path.split('/') {
-                if !part.is_empty() {
-                    new_name = part.to_string();
-                }
-            }
-            if new_name.is_empty() {
-                return Err(Error::new(EPERM));
+            let orig_node = tx.read_tree(file.node_ptr())?;
+
+            if !orig_node.data().owner(uid) {
+                // println!("orig_node not owned by caller {}", uid);
+                return Err(Error::new(EACCES));
             }
 
-            let scheme_name = &self.scheme_name;
-            self.fs.tx(|tx| {
-                let _orig_parent_ptr = match file.parent_ptr_opt() {
-                    Some(some) => some,
-                    None => {
-                        // println!("orig is root");
-                        return Err(Error::new(EBUSY));
-                    }
-                };
+            let mut new_nodes = Vec::new();
+            let new_node_opt = Self::path_nodes(
+                scheme_name,
+                tx,
+                TreePtr::root(),
+                new_path,
+                uid,
+                gid,
+                &mut new_nodes,
+            )?;
 
-                let orig_node = tx.read_tree(file.node_ptr())?;
-
-                if !orig_node.data().owner(uid) {
-                    // println!("orig_node not owned by caller {}", uid);
+            if let Some((ref new_parent, _)) = new_nodes.last() {
+                if !new_parent.data().owner(uid) {
+                    // println!("new_parent not owned by caller {}", uid);
                     return Err(Error::new(EACCES));
                 }
 
-                let mut new_nodes = Vec::new();
-                let new_node_opt = Self::path_nodes(
-                    scheme_name,
-                    tx,
-                    TreePtr::root(),
-                    new_path,
-                    uid,
-                    gid,
-                    &mut new_nodes,
-                )?;
-
-                if let Some((ref new_parent, _)) = new_nodes.last() {
-                    if !new_parent.data().owner(uid) {
-                        // println!("new_parent not owned by caller {}", uid);
+                if let Some((ref new_node, _)) = new_node_opt {
+                    if !new_node.data().owner(uid) {
+                        // println!("new dir not owned by caller {}", uid);
                         return Err(Error::new(EACCES));
                     }
 
-                    if let Some((ref new_node, _)) = new_node_opt {
-                        if !new_node.data().owner(uid) {
-                            // println!("new dir not owned by caller {}", uid);
+                    if new_node.data().is_dir() {
+                        if !orig_node.data().is_dir() {
+                            // println!("orig_node is file, new is dir");
                             return Err(Error::new(EACCES));
                         }
 
-                        if new_node.data().is_dir() {
-                            if !orig_node.data().is_dir() {
-                                // println!("orig_node is file, new is dir");
-                                return Err(Error::new(EACCES));
-                            }
+                        let mut children = Vec::new();
+                        tx.child_nodes(new_node.ptr(), &mut children)?;
 
-                            let mut children = Vec::new();
-                            tx.child_nodes(new_node.ptr(), &mut children)?;
-
-                            if !children.is_empty() {
-                                // println!("new dir not empty");
-                                return Err(Error::new(ENOTEMPTY));
-                            }
-                        } else {
-                            if orig_node.data().is_dir() {
-                                // println!("orig_node is dir, new is file");
-                                return Err(Error::new(ENOTDIR));
-                            }
+                        if !children.is_empty() {
+                            // println!("new dir not empty");
+                            return Err(Error::new(ENOTEMPTY));
+                        }
+                    } else {
+                        if orig_node.data().is_dir() {
+                            // println!("orig_node is dir, new is file");
+                            return Err(Error::new(ENOTDIR));
                         }
                     }
-
-                    tx.link_node(new_parent.ptr(), &new_name, orig_node.ptr())?;
-
-                    file.set_path(new_path);
-                    Ok(0)
-                } else {
-                    Err(Error::new(EPERM))
                 }
-            })
-        } else {
-            Err(Error::new(EBADF))
-        }
+
+                tx.link_node(new_parent.ptr(), &new_name, orig_node.ptr())?;
+
+                file.set_path(new_path);
+                Ok(0)
+            } else {
+                Err(Error::new(EPERM))
+            }
+        })
     }
 
     //TODO: this function has too much code, try to simplify it
@@ -829,132 +837,121 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
         // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
 
-        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
-            //TODO: Check for EINVAL
-            // The new pathname contained a path prefix of the old, or, more generally,
-            // an attempt was made to make a directory a subdirectory of itself.
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        //TODO: Check for EINVAL
+        // The new pathname contained a path prefix of the old, or, more generally,
+        // an attempt was made to make a directory a subdirectory of itself.
 
-            let mut old_name = String::new();
-            for part in file.path().split('/') {
-                if !part.is_empty() {
-                    old_name = part.to_string();
+        let mut old_name = String::new();
+        for part in file.path().split('/') {
+            if !part.is_empty() {
+                old_name = part.to_string();
+            }
+        }
+        if old_name.is_empty() {
+            return Err(Error::new(EPERM));
+        }
+
+        let mut new_name = String::new();
+        for part in new_path.split('/') {
+            if !part.is_empty() {
+                new_name = part.to_string();
+            }
+        }
+        if new_name.is_empty() {
+            return Err(Error::new(EPERM));
+        }
+
+        let scheme_name = &self.scheme_name;
+        self.fs.tx(|tx| {
+            let orig_parent_ptr = match file.parent_ptr_opt() {
+                Some(some) => some,
+                None => {
+                    // println!("orig is root");
+                    return Err(Error::new(EBUSY));
                 }
-            }
-            if old_name.is_empty() {
-                return Err(Error::new(EPERM));
-            }
+            };
 
-            let mut new_name = String::new();
-            for part in new_path.split('/') {
-                if !part.is_empty() {
-                    new_name = part.to_string();
-                }
-            }
-            if new_name.is_empty() {
-                return Err(Error::new(EPERM));
+            let orig_node = tx.read_tree(file.node_ptr())?;
+
+            if !orig_node.data().owner(uid) {
+                // println!("orig_node not owned by caller {}", uid);
+                return Err(Error::new(EACCES));
             }
 
-            let scheme_name = &self.scheme_name;
-            self.fs.tx(|tx| {
-                let orig_parent_ptr = match file.parent_ptr_opt() {
-                    Some(some) => some,
-                    None => {
-                        // println!("orig is root");
-                        return Err(Error::new(EBUSY));
-                    }
-                };
+            let mut new_nodes = Vec::new();
+            let new_node_opt = Self::path_nodes(
+                scheme_name,
+                tx,
+                TreePtr::root(),
+                new_path,
+                uid,
+                gid,
+                &mut new_nodes,
+            )?;
 
-                let orig_node = tx.read_tree(file.node_ptr())?;
-
-                if !orig_node.data().owner(uid) {
-                    // println!("orig_node not owned by caller {}", uid);
+            if let Some((ref new_parent, _)) = new_nodes.last() {
+                if !new_parent.data().owner(uid) {
+                    // println!("new_parent not owned by caller {}", uid);
                     return Err(Error::new(EACCES));
                 }
 
-                let mut new_nodes = Vec::new();
-                let new_node_opt = Self::path_nodes(
-                    scheme_name,
-                    tx,
-                    TreePtr::root(),
-                    new_path,
-                    uid,
-                    gid,
-                    &mut new_nodes,
-                )?;
-
-                if let Some((ref new_parent, _)) = new_nodes.last() {
-                    if !new_parent.data().owner(uid) {
-                        // println!("new_parent not owned by caller {}", uid);
+                if let Some((ref new_node, _)) = new_node_opt {
+                    if !new_node.data().owner(uid) {
+                        // println!("new dir not owned by caller {}", uid);
                         return Err(Error::new(EACCES));
                     }
 
-                    if let Some((ref new_node, _)) = new_node_opt {
-                        if !new_node.data().owner(uid) {
-                            // println!("new dir not owned by caller {}", uid);
+                    if new_node.data().is_dir() {
+                        if !orig_node.data().is_dir() {
+                            // println!("orig_node is file, new is dir");
                             return Err(Error::new(EACCES));
                         }
 
-                        if new_node.data().is_dir() {
-                            if !orig_node.data().is_dir() {
-                                // println!("orig_node is file, new is dir");
-                                return Err(Error::new(EACCES));
-                            }
+                        let mut children = Vec::new();
+                        tx.child_nodes(new_node.ptr(), &mut children)?;
 
-                            let mut children = Vec::new();
-                            tx.child_nodes(new_node.ptr(), &mut children)?;
-
-                            if !children.is_empty() {
-                                // println!("new dir not empty");
-                                return Err(Error::new(ENOTEMPTY));
-                            }
-                        } else {
-                            if orig_node.data().is_dir() {
-                                // println!("orig_node is dir, new is file");
-                                return Err(Error::new(ENOTDIR));
-                            }
+                        if !children.is_empty() {
+                            // println!("new dir not empty");
+                            return Err(Error::new(ENOTEMPTY));
+                        }
+                    } else {
+                        if orig_node.data().is_dir() {
+                            // println!("orig_node is dir, new is file");
+                            return Err(Error::new(ENOTDIR));
                         }
                     }
-
-                    tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)?;
-
-                    file.set_path(new_path);
-                    Ok(0)
-                } else {
-                    Err(Error::new(EPERM))
                 }
-            })
-        } else {
-            Err(Error::new(EBADF))
-        }
+
+                tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)?;
+
+                file.set_path(new_path);
+                Ok(0)
+            } else {
+                Err(Error::new(EPERM))
+            }
+        })
     }
 
     fn fstat(&mut self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
-        if let Some(Handle::Resource(file)) = self.handles.get(&id) {
-            self.fs.tx(|tx| file.stat(stat, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = Handle::get_resource(self.handles.get(&id))?;
+        self.fs.tx(|tx| file.stat(stat, tx))
     }
 
     fn fstatvfs(&mut self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
-        if let Some(Handle::Resource(_file)) = self.handles.get(&id) {
-            stat.f_bsize = BLOCK_SIZE as u32;
-            stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
-            stat.f_bfree = self.fs.allocator().free();
-            stat.f_bavail = stat.f_bfree;
+        let _file = Handle::get_resource(self.handles.get(&id))?;
+        stat.f_bsize = BLOCK_SIZE as u32;
+        stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
+        stat.f_bfree = self.fs.allocator().free();
+        stat.f_bavail = stat.f_bfree;
 
-            Ok(())
-        } else {
-            Err(Error::new(EBADF))
-        }
+        Ok(())
     }
 
     fn fsync(&mut self, id: usize, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fsync {}", id);
-        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
-            return Err(Error::new(EBADF));
-        };
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         let fmaps = &mut self.fmap;
 
         self.fs.tx(|tx| file.sync(fmaps, tx))
@@ -962,20 +959,14 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn ftruncate(&mut self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
         // println!("Ftruncate {}, {}", id, len);
-        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
-            self.fs.tx(|tx| file.truncate(len, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        self.fs.tx(|tx| file.truncate(len, tx))
     }
 
     fn futimens(&mut self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
         // println!("Futimens {}, {}", id, times.len());
-        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
-            self.fs.tx(|tx| file.utimens(times, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        self.fs.tx(|tx| file.utimens(times, tx))
     }
 
     fn getdents<'buf>(
@@ -984,11 +975,8 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         buf: DirentBuf<&'buf mut [u8]>,
         opaque_offset: u64,
     ) -> Result<DirentBuf<&'buf mut [u8]>> {
-        if let Some(Handle::Resource(file)) = self.handles.get_mut(&id) {
-            self.fs.tx(|tx| file.getdents(buf, opaque_offset, tx))
-        } else {
-            Err(Error::new(EBADF))
-        }
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        self.fs.tx(|tx| file.getdents(buf, opaque_offset, tx))
     }
 
     fn mmap_prep(
@@ -999,9 +987,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         flags: MapFlags,
         _ctx: &CallerCtx,
     ) -> Result<usize> {
-        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
-            return Err(Error::new(EBADF));
-        };
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         let fmaps = &mut self.fmap;
 
         self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
@@ -1014,9 +1000,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         _flags: MunmapFlags,
         _ctx: &CallerCtx,
     ) -> Result<()> {
-        let Some(Handle::Resource(file)) = self.handles.get_mut(&id) else {
-            return Err(Error::new(EBADF));
-        };
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         let fmaps = &mut self.fmap;
 
         self.fs.tx(|tx| file.funmap(fmaps, offset, size, tx))
@@ -1024,10 +1008,13 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     fn on_close(&mut self, id: usize) {
         // println!("Close {}", id);
-        let Some(Handle::Resource(file)) = self.handles.remove(&id) else {
+        let Some(file) = self.handles.remove(&id) else {
             return;
         };
-        let node_ptr = file.node_ptr();
+        let Ok(resource) = file.resource() else {
+            return;
+        };
+        let node_ptr = resource.node_ptr();
         let Some(file_info) = self.fmap.get_mut(&node_ptr.id()) else {
             return;
         };
@@ -1056,9 +1043,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let uid = ctx.uid;
         let gid = ctx.gid;
 
-        let Some(Handle::Resource(parent_resource)) = self.handles.get(&sendfd_request.id()) else {
-            return Err(Error::new(EBADF));
-        };
+        let parent_resource = Handle::get_resource(self.handles.get(&sendfd_request.id()))?;
 
         let mut new_fd = usize::MAX;
         if let Err(e) = sendfd_request.obtain_fd(
@@ -1096,7 +1081,10 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             }
         }
 
-        let (resource, node_id): (Box<dyn Resource<D>>, u32) = if !last_part.is_empty() {
+        if last_part.is_empty() {
+            return Err(Error::new(EINVAL));
+        }
+        let (resource, node_id) = {
             let stat = other_scheme_fd.stat()?;
             let mode_type = stat.st_mode as u16 & Node::MODE_TYPE;
 
@@ -1128,20 +1116,12 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             let node_id = node_ptr.id();
 
             (
-                Box::new(FileResource::new(
-                    file_path,
-                    Some(parent_resource_ptr),
-                    node_ptr,
-                    flags,
-                    uid,
-                )),
+                FileResource::new(file_path, Some(parent_resource_ptr), node_ptr, flags, uid),
                 node_id,
             )
-        } else {
-            return Err(Error::new(EINVAL));
         };
 
-        let node_ptr = resource.node_ptr();
+        let node_ptr = (&resource as &'_ dyn Resource<D>).node_ptr();
         {
             let fmap_info = self
                 .fmap
@@ -1155,7 +1135,8 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.handles.insert(id, Handle::Resource(resource));
+        self.handles
+            .insert(id, Handle::ResourceFile((resource, PhantomData)));
         self.other_scheme_fd_map.insert(node_id, other_scheme_fd);
         Ok(new_fd)
     }
@@ -1215,9 +1196,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn inode(&self, id: usize) -> Result<usize> {
-        let Some(Handle::Resource(resource)) = self.handles.get(&id) else {
-            return Err(Error::new(EBADF));
-        };
+        let resource = Handle::get_resource(self.handles.get(&id))?;
         Ok(resource.node_ptr().id() as usize)
     }
 }

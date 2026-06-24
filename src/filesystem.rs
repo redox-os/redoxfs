@@ -1,6 +1,5 @@
 use aes::Aes128;
 use alloc::{
-    boxed::Box,
     collections::{BTreeMap, VecDeque},
     vec,
 };
@@ -14,8 +13,8 @@ use crate::{
     HEADER_RING, RECORD_SIZE,
 };
 
-fn compress_cache() -> Box<[u8]> {
-    vec![0; lz4_flex::block::get_maximum_output_size(RECORD_SIZE as usize)].into_boxed_slice()
+fn compress_cache() -> Vec<u8> {
+    vec![0; lz4_flex::block::get_maximum_output_size(RECORD_SIZE as usize)]
 }
 
 /// A file system
@@ -28,7 +27,7 @@ pub struct FileSystem<D: Disk> {
     pub header: Header,
     pub(crate) allocator: Allocator,
     pub(crate) cipher_opt: Option<Xts128<Aes128>>,
-    pub(crate) compress_cache: Box<[u8]>,
+    pub(crate) compress_cache: Vec<u8>,
     pub node_usages: BTreeMap<u32, u64>,
 }
 
