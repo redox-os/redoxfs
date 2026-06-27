@@ -417,9 +417,8 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
-version = "0.1.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e02f3bb43d335493c96bf3fd3a321600bf6bd07ed34bc64118e9293bdffea46c"
+version = "0.1.18"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=fcntl#08a65ee90b513923388469bbb83322b3ee1c345f"
 dependencies = [
  "bitflags",
  "libc",
@@ -581,9 +580,8 @@ checksum = "436d45c2b6a5b159d43da708e62b25be3a4a3d5550d654b72216ade4c4bfd717"
 
 [[package]]
 name = "redox-scheme"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e58cb7dee1058575f320f9bfa32c7c0eda857e285c2a163a0eb595d37add09cd"
+version = "0.11.1"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-scheme.git?branch=libredox-socket-create_inner#7c9c706fe4bea866c91ad7086485acd38aca64db"
 dependencies = [
  "libredox",
  "redox_syscall",
@@ -591,9 +589,8 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4666a1a60d8412eab19d94f6d13dcc9cea0a5ef4fdf6a5db306537413c661b1b"
+version = "0.9.0"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/syscall.git?branch=remove-fd-allocation#4b76625ed9fdb305969b59e18a20a0d5855251cc"
 dependencies = [
  "bitflags",
 ]
