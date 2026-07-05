@@ -6,7 +6,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use libredox::Fd;
+use redox_path::RedoxReference;
+use redox_path::RedoxScheme;
+use redox_path::RedoxStr;
 use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult, SendFdRequest, Socket};
+use smallvec::SmallVec;
 use syscall::data::{Stat, StatVfs, StdFsCallMeta, TimeSpec};
 use syscall::dirent::DirentBuf;
 use syscall::error::{
@@ -22,10 +26,7 @@ use syscall::FobtainFdFlags;
 use syscall::FsCall;
 use syscall::MunmapFlags;
 
-use redox_path::{
-    canonicalize_to_standard, canonicalize_using_cwd, canonicalize_using_scheme, scheme_path,
-    RedoxPath,
-};
+use redox_path::RedoxPath;
 
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
@@ -64,7 +65,7 @@ impl<D: Disk> Handle<D> {
 }
 
 pub struct FileScheme<'sock, D: Disk> {
-    scheme_name: String,
+    scheme_name: RedoxScheme<'sock>,
     mounted_path: String,
     pub(crate) fs: FileSystem<D>,
     socket: &'sock Socket,
@@ -86,7 +87,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         socket: &'sock Socket,
     ) -> Result<FileScheme<'sock, D>> {
         Ok(FileScheme {
-            scheme_name,
+            scheme_name: RedoxScheme::new(scheme_name)
+                .expect("scheme name for FileScheme is not valid"),
             mounted_path,
             fs,
             socket,
@@ -104,24 +106,23 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         })
     }
 
-    fn resolve_symlink(
-        scheme_name: &str,
+    /// Resolve a symbolic link of given `node`. `full_path` must be non-canonicalized path from root node.
+    fn resolve_symlink<'a>(
+        scheme_name: &RedoxScheme<'sock>,
         tx: &mut Transaction<D>,
         uid: u32,
         gid: u32,
-        full_path: &str,
+        full_path: RedoxReference<'a>,
         node: TreeData<Node>,
-        nodes: &mut Vec<(TreeData<Node>, String)>,
-    ) -> Result<String> {
+        nodes: &mut SmallVec<[(TreeData<Node>, String); 16]>,
+    ) -> Result<RedoxReference<'a>> {
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-
         // symbolic link is relative to this part of the url
-        let mut working_dir =
-            dirname(full_path).unwrap_or(scheme_path(scheme_name).ok_or(Error::new(EINVAL))?);
+        let mut working_dir = full_path.dirname();
         // node of the link
         let mut node = node;
 
-        for _ in 0..32 {
+        for _ in 0..64 {
             // XXX What should the limit be?
             assert!(node.data().is_symlink());
             let mut buf = [0; 4096];
@@ -133,18 +134,20 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 atime.subsec_nanos(),
             )?;
 
-            let target = canonicalize_to_standard(
-                Some(&working_dir),
-                str::from_utf8(&buf[..count]).or(Err(Error::new(EINVAL)))?,
-            )
-            .ok_or(Error::new(EINVAL))?;
-            let target_as_path = RedoxPath::from_absolute(&target).ok_or(Error::new(EINVAL))?;
-
-            let (scheme, reference) = target_as_path.as_parts().ok_or(Error::new(EINVAL))?;
-            if scheme.as_ref() != scheme_name {
-                return Err(Error::new(EXDEV));
-            }
-            let target_reference = reference.to_string();
+            let path = str::from_utf8(&buf[..count]).or(Err(Error::new(EINVAL)))?;
+            let path = RedoxStr::new(path).ok_or(Error::new(EINVAL))?;
+            let target_reference = match path {
+                RedoxStr::Absolute(redox_path) => {
+                    if redox_path
+                        .get_scheme()
+                        .is_some_and(|s| s.as_ref() != scheme_name.as_ref())
+                    {
+                        return Err(Error::new(EXDEV));
+                    }
+                    redox_path.to_reference()
+                }
+                RedoxStr::Relative(redox_reference) => working_dir.join_checked(redox_reference),
+            };
 
             nodes.clear();
             if let Some((next_node, next_node_name)) = Self::path_nodes(
@@ -158,10 +161,10 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             )? {
                 if !next_node.data().is_symlink() {
                     nodes.push((next_node, next_node_name));
-                    return Ok(target_reference);
+                    return Ok(target_reference.into_owned());
                 }
                 node = next_node;
-                working_dir = dirname(&target).ok_or(Error::new(EINVAL))?.to_string();
+                working_dir = target_reference.dirname()
             } else {
                 return Err(Error::new(ENOENT));
             }
@@ -180,29 +183,32 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         return Ok(len);
     }
 
-    fn open(&mut self, url: &str, flags: usize, ctx: &CallerCtx) -> Result<OpenResult> {
+    fn open(
+        &mut self,
+        url: RedoxReference<'_>,
+        flags: usize,
+        ctx: &CallerCtx,
+    ) -> Result<OpenResult> {
         self.open_internal(TreePtr::root(), url, flags, ctx)
     }
 
     fn open_internal(
         &mut self,
         start_ptr: TreePtr<Node>,
-        url: &str,
+        path: RedoxReference<'_>,
         flags: usize,
         ctx: &CallerCtx,
     ) -> Result<OpenResult> {
         let CallerCtx { uid, gid, .. } = *ctx;
 
-        let path = url.trim_matches('/');
-
         // println!("Open '{}' {:X}", &path, flags);
 
         //TODO: try to move things into one transaction
         let scheme_name = &self.scheme_name;
-        let mut nodes = Vec::new();
+        let mut nodes = SmallVec::new();
         let node_opt = self
             .fs
-            .tx(|tx| Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes))?;
+            .tx(|tx| Self::path_nodes(scheme_name, tx, start_ptr, &path, uid, gid, &mut nodes))?;
         let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
         let handle: Handle<D> = match node_opt {
             Some((node, _node_name)) => {
@@ -257,21 +263,19 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                     && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW)
                     && flags & O_SYMLINK != O_SYMLINK
                 {
-                    let mut resolve_nodes = Vec::new();
-                    let full_path =
-                        canonicalize_using_scheme(scheme_name, url).ok_or(Error::new(EINVAL))?;
+                    let mut resolve_nodes = SmallVec::new();
                     let resolved = self.fs.tx(|tx| {
                         Self::resolve_symlink(
                             scheme_name,
                             tx,
                             uid,
                             gid,
-                            &full_path,
+                            path,
                             node,
                             &mut resolve_nodes,
                         )
                     })?;
-                    return self.open(&resolved, flags, ctx);
+                    return self.open(resolved, flags, ctx);
                 } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));
                 } else {
@@ -315,78 +319,63 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 }
             }
             None => {
-                if flags & O_CREAT == O_CREAT {
-                    let mut last_part = String::new();
-                    for part in path.split('/') {
-                        if !part.is_empty() {
-                            last_part = part.to_string();
-                        }
-                    }
-                    if !last_part.is_empty() {
-                        if let Some((parent, _parent_name)) = nodes.last() {
-                            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                                // println!("dir not writable {:o}", parent.1.mode);
-                                return Err(Error::new(EACCES));
-                            }
-
-                            let dir = flags & O_DIRECTORY == O_DIRECTORY;
-                            let mode_type = if dir {
-                                Node::MODE_DIR
-                            } else if flags & O_SYMLINK == O_SYMLINK {
-                                Node::MODE_SYMLINK
-                            } else {
-                                Node::MODE_FILE
-                            };
-
-                            let node_ptr = self.fs.tx(|tx| {
-                                let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                                let mut node = tx.create_node(
-                                    parent.ptr(),
-                                    &last_part,
-                                    mode_type as u16 | (flags as u16 & Node::MODE_PERM),
-                                    ctime.as_secs(),
-                                    ctime.subsec_nanos(),
-                                )?;
-                                let node_ptr = node.ptr();
-                                if node.data().uid() != uid || node.data().gid() != gid {
-                                    node.data_mut().set_uid(uid);
-                                    node.data_mut().set_gid(gid);
-                                    tx.sync_tree(node)?;
-                                }
-                                Ok(node_ptr)
-                            })?;
-
-                            if dir {
-                                Handle::ResourceDir((
-                                    DirResource::new(
-                                        path.to_string(),
-                                        parent_ptr_opt,
-                                        node_ptr,
-                                        None,
-                                        uid,
-                                    ),
-                                    PhantomData,
-                                ))
-                            } else {
-                                Handle::ResourceFile((
-                                    FileResource::new(
-                                        path.to_string(),
-                                        parent_ptr_opt,
-                                        node_ptr,
-                                        flags,
-                                        uid,
-                                    ),
-                                    PhantomData,
-                                ))
-                            }
-                        } else {
-                            return Err(Error::new(EPERM));
-                        }
-                    } else {
-                        return Err(Error::new(EPERM));
-                    }
-                } else {
+                if flags & O_CREAT != O_CREAT {
                     return Err(Error::new(ENOENT));
+                }
+                let mut last_part = String::new();
+                for part in path.as_ref().split('/') {
+                    if !part.is_empty() {
+                        last_part = part.to_string();
+                    }
+                }
+                if last_part.is_empty() {
+                    return Err(Error::new(EPERM));
+                }
+                let Some((parent, _parent_name)) = nodes.last() else {
+                    return Err(Error::new(EPERM));
+                };
+                if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                    // println!("dir not writable {:o}", parent.1.mode);
+                    return Err(Error::new(EACCES));
+                }
+
+                let dir = flags & O_DIRECTORY == O_DIRECTORY;
+                let mode_type = if dir {
+                    Node::MODE_DIR
+                } else if flags & O_SYMLINK == O_SYMLINK {
+                    Node::MODE_SYMLINK
+                } else {
+                    Node::MODE_FILE
+                };
+
+                let node_ptr = self.fs.tx(|tx| {
+                    let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                    let mut node = tx.create_node(
+                        parent.ptr(),
+                        &last_part,
+                        mode_type as u16 | (flags as u16 & Node::MODE_PERM),
+                        ctime.as_secs(),
+                        ctime.subsec_nanos(),
+                    )?;
+                    let node_ptr = node.ptr();
+                    if node.data().uid() != uid || node.data().gid() != gid {
+                        node.data_mut().set_uid(uid);
+                        node.data_mut().set_gid(gid);
+                        tx.sync_tree(node)?;
+                    }
+                    Ok(node_ptr)
+                })?;
+
+                if dir {
+                    Handle::ResourceDir((
+                        DirResource::new(path.to_string(), parent_ptr_opt, node_ptr, None, uid),
+                        PhantomData,
+                    ))
+                } else {
+                    Handle::ResourceFile((
+                        FileResource::new(path.to_string(), parent_ptr_opt, node_ptr, flags, uid),
+                        PhantomData,
+                    ))
                 }
             }
         };
@@ -416,7 +405,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     fn unlink_internal(
         &mut self,
         start_ptr: TreePtr<Node>,
-        path: &str,
+        path: &RedoxReference<'_>,
         flags: usize,
         uid: u32,
         gid: u32,
@@ -424,7 +413,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         let scheme_name = &self.scheme_name;
 
         let unlink_result = self.fs.tx(|tx| {
-            let mut nodes = Vec::new();
+            let mut nodes = SmallVec::new();
 
             let Some((child, child_name)) =
                 Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes)?
@@ -485,15 +474,16 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     }
 
     fn path_nodes(
-        scheme_name: &str,
+        scheme_name: &RedoxScheme<'sock>,
         tx: &mut Transaction<D>,
         start_ptr: TreePtr<Node>,
-        path: &str,
+        path: &RedoxReference<'_>,
         uid: u32,
         gid: u32,
-        nodes: &mut Vec<(TreeData<Node>, String)>,
+        nodes: &mut SmallVec<[(TreeData<Node>, String); 16]>,
     ) -> Result<Option<(TreeData<Node>, String)>> {
         let mut parts = path
+            .as_ref()
             .split('/')
             .filter(|part| !part.is_empty() && *part != ".");
         let mut part_opt: Option<&str> = None;
@@ -516,13 +506,16 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 }
                 if node.data().is_symlink() {
                     let mut url = String::new();
-                    url.push_str(scheme_name);
-                    url.push(':');
+                    // url.push_str(scheme_name.as_ref());
+                    // url.push(':');
                     for (_parent, parent_name) in nodes.iter() {
-                        url.push('/');
+                        if !url.is_empty() {
+                            url.push('/');
+                        }
                         url.push_str(&parent_name);
                     }
-                    Self::resolve_symlink(scheme_name, tx, uid, gid, &url, node, nodes)?;
+                    let url = RedoxReference::new(url).ok_or(Error::new(EINVAL))?;
+                    Self::resolve_symlink(scheme_name, tx, uid, gid, url, node, nodes)?;
                     node_ptr = nodes.last().unwrap().0.ptr();
                 } else if !node.data().is_dir() {
                     return Err(Error::new(ENOTDIR));
@@ -543,61 +536,13 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     }
 }
 
-/// given a path with a scheme, return the containing directory (or scheme)
-fn dirname(path: &str) -> Option<String> {
-    canonicalize_using_cwd(Some(path), "..")
-}
-
-// TODO: Reimplement these using the scheme common path related crate
-pub fn resolve_path<D: Disk>(dir: &dyn Resource<D>, path: String) -> Option<String> {
-    let max_upward_depth = 64; // Same value as MAX_LEVEL of sym loops in relibc
-    let (canon, _depth) =
-        canonicalize_using_cwd_with_max_upward_depth(dir.path(), &path, max_upward_depth)?;
-
-    Some(canon)
-}
-pub fn canonicalize_using_cwd_with_max_upward_depth(
-    cwd: &str,
-    path: &str,
-    max_upward_depth: usize,
-) -> Option<(String, usize)> {
-    let (canonical, upward_depth) =
-        canonicalize_with_max_upward_depth(&format!("{}/{}", cwd, path), max_upward_depth)?;
-    Some((canonical, upward_depth))
-}
-pub fn canonicalize_with_max_upward_depth(
-    path: &str,
-    max_upward_depth: usize,
-) -> Option<(String, usize)> {
-    let mut nskip = 0;
-    let mut parts = Vec::new();
-    let mut upward_depth = 0;
-
-    for part in path.split('/').rev() {
-        if part == "." || part.is_empty() {
-            continue;
-        } else if part == ".." {
-            nskip += 1;
-            upward_depth += 1;
-            if upward_depth > max_upward_depth {
-                return None;
-            }
-        } else if nskip > 0 {
-            nskip -= 1;
-        } else {
-            parts.push(part);
-        }
-    }
-
-    let canonical = parts.iter().rev().fold(String::new(), |mut string, &part| {
-        if !string.is_empty() && !string.ends_with('/') {
-            string.push('/');
-        }
-        string.push_str(part);
-        string
-    });
-
-    Some((canonical, upward_depth))
+pub fn resolve_path<'a, 'b, D: Disk>(
+    dir: &'a dyn Resource<D>,
+    path: RedoxReference<'b>,
+) -> Result<RedoxReference<'b>> {
+    let dirpath = RedoxReference::new(dir.path());
+    let dirpath = dirpath.ok_or(Error::new(ENOENT))?;
+    Ok(dirpath.join_checked(path))
 }
 
 impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
@@ -615,31 +560,34 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         _fcntl_flags: u32,
         ctx: &CallerCtx,
     ) -> Result<OpenResult> {
-        let path = path.to_string();
+        let path = RedoxReference::new(path).ok_or(Error::new(EINVAL))?;
         let path_to_open = match Handle::get_resource_or(self.handles.get(&dirfd))? {
             // If pathname is absolute, then dirfd is ignored.
-            Some(res) if !path.starts_with('/') => {
-                resolve_path(res, path).ok_or(Error::new(ENOENT))?
-            }
-            _ => path.to_string(),
+            Some(res) if path.is_relative() => resolve_path(res, path)?,
+            _ => path,
         };
-        self.open_internal(TreePtr::root(), &path_to_open, flags, ctx)
+        self.open_internal(
+            TreePtr::root(),
+            path_to_open.to_relative().canonical(),
+            flags,
+            ctx,
+        )
     }
 
-    fn unlinkat(&mut self, dirfd: usize, url: &str, flags: usize, ctx: &CallerCtx) -> Result<()> {
+    fn unlinkat(&mut self, dirfd: usize, path: &str, flags: usize, ctx: &CallerCtx) -> Result<()> {
         let uid = ctx.uid;
         let gid = ctx.gid;
-        let url = url.to_string();
+        let path = RedoxReference::new(path).ok_or(Error::new(EINVAL))?;
         let path = match Handle::get_resource_or(self.handles.get(&dirfd))? {
-            Some(res) => resolve_path(res, url).ok_or(Error::new(ENOENT))?,
-            None => url,
+            // If pathname is absolute, then dirfd is ignored.
+            Some(res) if path.is_relative() => resolve_path(res, path)?,
+            _ => path,
         };
-        let path = path.trim_matches('/');
         let start_ptr = TreePtr::root();
 
         // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
-        self.unlink_internal(start_ptr, path, flags, uid, gid)
+        self.unlink_internal(start_ptr, &path.canonical(), flags, uid, gid)
     }
 
     /* Resource operations */
@@ -727,7 +675,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     //TODO: this function has too much code, try to simplify it
     fn flink(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
-        let new_path = url.trim_matches('/');
+        let new_path = RedoxReference::new(url)
+            .ok_or(Error::new(EINVAL))?
+            .canonical();
         let uid = ctx.uid;
         let gid = ctx.gid;
 
@@ -749,7 +699,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         }
 
         let mut new_name = String::new();
-        for part in new_path.split('/') {
+        for part in new_path.as_ref().split('/') {
             if !part.is_empty() {
                 new_name = part.to_string();
             }
@@ -775,12 +725,12 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 return Err(Error::new(EACCES));
             }
 
-            let mut new_nodes = Vec::new();
+            let mut new_nodes = SmallVec::new();
             let new_node_opt = Self::path_nodes(
                 scheme_name,
                 tx,
                 TreePtr::root(),
-                new_path,
+                &new_path,
                 uid,
                 gid,
                 &mut new_nodes,
@@ -821,7 +771,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
                 tx.link_node(new_parent.ptr(), &new_name, orig_node.ptr())?;
 
-                file.set_path(new_path);
+                file.set_path(new_path.as_ref());
                 Ok(0)
             } else {
                 Err(Error::new(EPERM))
@@ -831,7 +781,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     //TODO: this function has too much code, try to simplify it
     fn frename(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
-        let new_path = url.trim_matches('/');
+        let new_path = RedoxReference::new(url)
+            .ok_or(Error::new(EINVAL))?
+            .canonical();
         let uid = ctx.uid;
         let gid = ctx.gid;
 
@@ -853,7 +805,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         }
 
         let mut new_name = String::new();
-        for part in new_path.split('/') {
+        for part in new_path.as_ref().split('/') {
             if !part.is_empty() {
                 new_name = part.to_string();
             }
@@ -879,12 +831,12 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 return Err(Error::new(EACCES));
             }
 
-            let mut new_nodes = Vec::new();
+            let mut new_nodes = SmallVec::new();
             let new_node_opt = Self::path_nodes(
                 scheme_name,
                 tx,
                 TreePtr::root(),
-                new_path,
+                &new_path,
                 uid,
                 gid,
                 &mut new_nodes,
@@ -925,7 +877,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
                 tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)?;
 
-                file.set_path(new_path);
+                file.set_path(new_path.as_ref());
                 Ok(0)
             } else {
                 Err(Error::new(EPERM))
