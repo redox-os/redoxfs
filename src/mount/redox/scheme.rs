@@ -146,7 +146,9 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                     }
                     redox_path.to_reference()
                 }
-                RedoxStr::Relative(redox_reference) => working_dir.join_checked(redox_reference),
+                RedoxStr::Relative(redox_reference) => {
+                    working_dir.join_checked(redox_reference).canonical()
+                }
             };
 
             nodes.clear();
@@ -542,7 +544,7 @@ pub fn resolve_path<'a, 'b, D: Disk>(
 ) -> Result<RedoxReference<'b>> {
     let dirpath = RedoxReference::new(dir.path());
     let dirpath = dirpath.ok_or(Error::new(ENOENT))?;
-    Ok(dirpath.join_checked(path))
+    Ok(dirpath.join_checked(path).canonical())
 }
 
 impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
