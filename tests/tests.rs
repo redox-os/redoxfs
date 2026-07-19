@@ -96,9 +96,15 @@ where
                 // There seems to be a race condition where the device can be busy when trying to unmount.
                 // So, we pause for a moment and retry. There will still be an error output to the logs
                 // for the first failed attempt.
-                sleep(Duration::from_millis(200));
-                if unmount_path(&mount_path).is_err() {
-                    panic!("umount failed");
+                for i in 0..10 {
+                    sleep(Duration::from_millis(500));
+                    if unmount_path(&mount_path).is_err() {
+                        if i == 9 {
+                            panic!("umount failed");
+                        }
+                    } else {
+                        break;
+                    }
                 }
             }
         }
