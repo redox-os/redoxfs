@@ -914,7 +914,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     fn ftruncate(&mut self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
         // println!("Ftruncate {}, {}", id, len);
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs.tx(|tx| file.truncate(len, tx))
+        self.fs.tx(|tx| file.truncate(&mut self.fmap, len, tx))
     }
 
     fn futimens(&mut self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
