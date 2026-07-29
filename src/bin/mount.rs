@@ -174,22 +174,14 @@ fn filesystem_by_path(
         let disk: Box<dyn Disk> = match DiskFile::open(path) {
             Ok(mut df) => {
                 let disk_size = df.size().unwrap_or(0);
-
-                match libredox::call::openat(df.file.as_raw_fd() as usize, "ring", 0, 0) {
-                    Ok(ring_file) => {
-                        match DiskRing::from_fd(libredox::Fd::new(ring_file), disk_size) {
-                            Ok(dr) => {
-                                log::debug!("Using DiskRing for {}", path);
-                                Box::new(dr)
-                            }
-                            Err(e) => {
-                                log::debug!("DiskRing init failed for {}: {}", path, e);
-                                Box::new(df)
-                            }
-                        }
+                match libredox::call::dup(df.file.as_raw_fd() as usize, b"uring") {
+                    Ok(ring_fd) => {
+                        let ring_fd = libredox::Fd::new(ring_fd);
+                        Box::new(DiskRing::from_fd(ring_fd, df, disk_size).unwrap())
                     }
-                    Err(e) => {
-                        log::debug!("Ring communication not supported on {} ({}). Falling back to standard IO.", path, e);
+
+                    Err(err) => {
+                        log::debug!("Ring communication not supported on {path} ({err}). Falling back to standard IO.");
                         Box::new(df)
                     }
                 }

@@ -1,51 +1,25 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::os::fd::AsRawFd;
+use std::os::fd::IntoRawFd;
 use std::slice;
 use std::sync::Mutex;
 
 use libredox::flag;
 use libredox::Fd;
+use redox_rings::op::{DiskOpCqe, DiskOpKind, DiskOpSqe};
 use redox_rings::raw::RingPopError;
 use redox_rings::sync::{BlockingConsumer, BlockingProducer, FutexWaitResult, WaitNotify};
 use syscall::error::{Error, Result};
 use syscall::CallFlags;
 use syscall::TimeSpec;
 use syscall::EIO;
+use zerocopy::IntoBytes;
 
 use super::Disk;
+use crate::DiskFile;
 use crate::SIGNATURE;
 
-const POOL_SIZE: usize = 4 * 1024 * 1024; // 4 MB pool
+const POOL_SIZE: u32 = 4 * 1024 * 1024; // 4 MB pool
 const CHUNK_SIZE: usize = 256 * 1024;
-const RING_SIZE: usize = 65536; // 64 KB rings
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-enum DiskOpcode {
-    Read = 0,
-    Write = 1,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct DiskOpSqe {
-    pub block: u64,
-    pub id: u64,
-    pub buf_offset: u32,
-    pub buf_len: u32,
-    pub opcode: u8, // 0 = Read, 1 = Write
-    pub pad: [u8; 7],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct DiskOpCqe {
-    pub id: u64,
-    pub count: u32,
-    pub status: u16, // 0 = Success
-    pub pad: u16,
-}
 
 pub struct ShmAllocator {
     free_offsets: Mutex<Vec<usize>>,
@@ -89,19 +63,30 @@ pub struct DiskRing {
     next_id: u64,
     disk_size: u64,
     offset: u64,
+    ring_fd: Fd,
     pipe: Pipe,
 }
 
 struct Pipe(Fd);
 
 impl WaitNotify for Pipe {
-    fn wait_on_tail(&self, expected_tail: u32, deadline_opt: Option<&TimeSpec>) -> FutexWaitResult {
+    fn wait_on_tail(
+        &self,
+        _expected_tail: u32,
+        _deadline_opt: Option<&TimeSpec>,
+    ) -> FutexWaitResult {
         unimplemented!("notify_on_tail is not implemented for Pipe")
     }
     fn notify_on_tail(&self) {
-        let _ = self.0.write(&[0]);
+        if let Err(err) = self.0.write(&[0]) {
+            log::error!("Pipe::notify_on_tail() failed: {err}");
+        }
     }
-    fn wait_on_head(&self, expected_head: u32, deadline_opt: Option<&TimeSpec>) -> FutexWaitResult {
+    fn wait_on_head(
+        &self,
+        _expected_head: u32,
+        _deadline_opt: Option<&TimeSpec>,
+    ) -> FutexWaitResult {
         unimplemented!("wait_on_head is not implemented for Pipe")
     }
     fn notify_on_head(&self) {
@@ -110,28 +95,55 @@ impl WaitNotify for Pipe {
 }
 
 impl DiskRing {
-    pub fn from_fd(df: libredox::Fd, disk_size: u64) -> Result<Self> {
+    pub fn from_fd(ring_fd: Fd, df: DiskFile, disk_size: u64) -> Result<Self> {
+        use libredox::call::{mmap, MmapArgs};
+        use redox_rings::op::{RingCallVerb, RingSetupFlags, RingSetupParams};
+
+        let disk_fd = Fd::new(df.file.into_raw_fd() as usize);
+
+        let mut params = RingSetupParams {
+            nr_sq_entries: 256,
+            // The `CQSIZE` flag is not set, so the scheme will fill in this field for us.
+            nr_cq_entries: 0,
+            flags: RingSetupFlags::empty().bits(),
+            pool_size: POOL_SIZE,
+        };
+
+        ring_fd.call_rw(
+            params.as_mut_bytes(),
+            CallFlags::empty(),
+            &[RingCallVerb::Setup as u64],
+        )?;
+
+        let fixed_rtbl_req = [ring_fd.raw(), disk_fd.raw()];
+        syscall::call_wo(
+            fixed_rtbl_req.as_slice(),
+            &[],
+            CallFlags::empty(),
+            &[RingCallVerb::SetFileTable as u64],
+        )?;
+        drop(disk_fd);
+
         // mmap the shared DMA/shm pool
         let shm_ptr = unsafe {
-            libredox::call::mmap(libredox::call::MmapArgs {
+            mmap(MmapArgs {
                 addr: std::ptr::null_mut(),
-                length: POOL_SIZE,
+                length: POOL_SIZE as usize,
                 prot: flag::PROT_READ | flag::PROT_WRITE,
                 flags: flag::MAP_SHARED,
-                fd: df.raw(),
+                fd: ring_fd.raw(),
                 offset: 0,
             })
             .map_err(|_| Error::new(EIO))? as *mut u8
         };
 
         let mut fd_buf = [usize::MAX; 3]; // [sq_shm_fd, cq_shm_fd, pipe_fd]
-        let fd_bytes = unsafe {
-            std::slice::from_raw_parts_mut(
-                fd_buf.as_mut_ptr() as *mut u8,
-                fd_buf.len() * std::mem::size_of::<usize>(),
+        ring_fd
+            .call_ro(
+                fd_buf.as_mut_bytes(),
+                CallFlags::FD | CallFlags::FD_UPPER,
+                &[],
             )
-        };
-        libredox::call::call_ro(df.raw(), fd_bytes, CallFlags::FD | CallFlags::FD_UPPER, &[])
             .map_err(|_| Error::new(EIO))?;
 
         let (sq_shm_fd, cq_shm_fd, pipe) = (
@@ -140,16 +152,20 @@ impl DiskRing {
             Fd::new(fd_buf[2]).openat("write", 0, 0)?,
         );
 
-        let sq = BlockingProducer::<DiskOpSqe>::from_fd(sq_shm_fd, false, Some(RING_SIZE))
-            .map_err(|_| Error::new(EIO))?;
-        let cq = BlockingConsumer::<DiskOpCqe>::from_fd(cq_shm_fd, false, Some(RING_SIZE))
-            .map_err(|_| Error::new(EIO))?;
+        let sq =
+            BlockingProducer::<DiskOpSqe>::from_fd(sq_shm_fd, false, Some(params.nr_sq_entries))
+                .map_err(|_| Error::new(EIO))?;
+
+        let cq =
+            BlockingConsumer::<DiskOpCqe>::from_fd(cq_shm_fd, false, Some(params.nr_cq_entries))
+                .map_err(|_| Error::new(EIO))?;
 
         let mut ring = Self {
             sq,
             cq,
+            ring_fd,
             shm_base: shm_ptr,
-            allocator: ShmAllocator::new(POOL_SIZE, CHUNK_SIZE),
+            allocator: ShmAllocator::new(POOL_SIZE as usize, CHUNK_SIZE),
             next_id: 0,
             disk_size,
             offset: 0,
@@ -161,7 +177,7 @@ impl DiskRing {
         let candidates = [0, 2048];
         for &start_lba in &candidates {
             let mut buf = [0u8; 4096];
-            if let Ok(_) = ring.disk_op(DiskOpcode::Read, start_lba, &mut buf) {
+            if let Ok(_) = ring.disk_op(DiskOpKind::Read, start_lba, &mut buf) {
                 if &buf[0..8] == SIGNATURE {
                     ring.offset = start_lba;
                     break;
@@ -172,7 +188,7 @@ impl DiskRing {
         Ok(ring)
     }
 
-    fn disk_op(&mut self, opcode: DiskOpcode, start_lba: u64, buffer: &mut [u8]) -> Result<usize> {
+    fn disk_op(&mut self, opcode: DiskOpKind, start_lba: u64, buffer: &mut [u8]) -> Result<usize> {
         let mut total_processed = 0;
         let mut chunks = buffer.chunks_mut(CHUNK_SIZE).enumerate();
         let mut pending = HashMap::new();
@@ -194,7 +210,7 @@ impl DiskRing {
                     }
                 };
 
-                if matches!(opcode, DiskOpcode::Write) {
+                if matches!(opcode, DiskOpKind::Write) {
                     unsafe {
                         std::ptr::copy_nonoverlapping(
                             chunk.as_ptr(),
@@ -208,11 +224,12 @@ impl DiskRing {
                 self.next_id += 1;
                 let sqe = DiskOpSqe {
                     opcode: opcode as u8,
+                    file_idx: 0,
                     block: lba,
                     buf_offset: buf_offset as u32,
                     buf_len: len as u32,
-                    id: new_id,
-                    pad: [0; 7],
+                    user_data: new_id,
+                    pad: [0; 3],
                 };
 
                 let chunk_ptr = chunk.as_mut_ptr();
@@ -220,22 +237,24 @@ impl DiskRing {
                     new_id,
                     (
                         buf_offset,
-                        matches!(opcode, DiskOpcode::Read),
+                        matches!(opcode, DiskOpKind::Read),
                         chunk_ptr,
                         len,
                     ),
                 );
 
                 loop {
-                    match self.sq.inner.try_push_notify(sqe, &self.pipe) {
+                    match self.sq.inner.try_push_notify(sqe.clone(), &self.pipe) {
                         Ok(_) => break,
                         Err(_) => match self.cq.try_pop() {
-                            Ok(cqe) => Self::process_cqe(
-                                cqe,
-                                &mut pending,
-                                self.shm_base,
-                                &self.allocator,
-                            )?,
+                            Ok(cqe) => {
+                                Self::process_cqe(
+                                    cqe,
+                                    &mut pending,
+                                    self.shm_base,
+                                    &self.allocator,
+                                )?;
+                            }
                             Err(e) => match e {
                                 RingPopError::Empty => {}
                                 RingPopError::Broken => return Err(e.into()),
@@ -266,7 +285,7 @@ impl DiskRing {
         shm_base: *mut u8,
         allocator: &ShmAllocator,
     ) -> Result<()> {
-        if let Some((buf_offset, is_read, chunk_ptr, len)) = pending.remove(&cqe.id) {
+        if let Some((buf_offset, is_read, chunk_ptr, len)) = pending.remove(&cqe.user_data) {
             if is_read {
                 unsafe {
                     std::ptr::copy_nonoverlapping(shm_base.add(buf_offset), chunk_ptr, len);
@@ -281,14 +300,14 @@ impl DiskRing {
 impl Disk for DiskRing {
     unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         let lba = (block * 8) + self.offset;
-        self.disk_op(DiskOpcode::Read, lba, buffer)
+        self.disk_op(DiskOpKind::Read, lba, buffer)
     }
 
     unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         let lba = (block * 8) + self.offset;
         let ptr = buffer.as_ptr() as *mut u8;
         let mut_slice = slice::from_raw_parts_mut(ptr, buffer.len());
-        self.disk_op(DiskOpcode::Write, lba, mut_slice)
+        self.disk_op(DiskOpKind::Write, lba, mut_slice)
     }
 
     fn size(&mut self) -> Result<u64> {
@@ -299,7 +318,7 @@ impl Disk for DiskRing {
 impl Drop for DiskRing {
     fn drop(&mut self) {
         unsafe {
-            let _ = libredox::call::munmap(self.shm_base.cast(), POOL_SIZE);
+            let _ = libredox::call::munmap(self.shm_base.cast(), POOL_SIZE as usize);
         }
     }
 }
