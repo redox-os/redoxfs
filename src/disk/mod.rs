@@ -32,11 +32,23 @@ pub trait Disk {
     /// Unsafe to discourage use, use filesystem wrappers instead
     unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize>;
 
-    /// Write blocks from disk
+    /// Write blocks to disk
     ///
     /// # Safety
     /// Unsafe to discourage use, use filesystem wrappers instead
     unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize>;
+
+    /// Write blocks to the disk
+    ///
+    /// # Safety
+    /// Unsafe to discourage use, use filesystem wrappers instead
+    unsafe fn write_at_batched(&mut self, batch: &[(u64, &[u8])]) -> Result<usize> {
+        let mut written = 0;
+        for (block, buf) in batch {
+            written += unsafe { self.write_at(*block, buf)? };
+        }
+        Ok(written)
+    }
 
     /// Get size of disk in bytes
     fn size(&mut self) -> Result<u64>;
@@ -49,6 +61,10 @@ impl Disk for Box<dyn Disk> {
 
     unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         unsafe { (**self).write_at(block, buffer) }
+    }
+
+    unsafe fn write_at_batched(&mut self, batch: &[(u64, &[u8])]) -> Result<usize> {
+        unsafe { (**self).write_at_batched(batch) }
     }
 
     fn size(&mut self) -> Result<u64> {

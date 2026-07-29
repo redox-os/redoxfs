@@ -270,15 +270,22 @@ impl<'a, D: Disk> Transaction<'a, D> {
         self.sync_allocator(force_squash)?;
 
         // Write all items in write cache
+        let mut batch = Vec::with_capacity(self.write_cache.len());
+        let mut expected_written = 0;
         for (addr, raw) in self.write_cache.iter_mut() {
+            self.fs.encrypt(raw, *addr);
+            batch.push((self.fs.block + addr.index(), raw.as_slice()));
+            expected_written += raw.len();
+        }
+
+        if !batch.is_empty() {
             // sync_alloc must have changed alloc block pointer
             // if we have any blocks to write
             assert!(self.header_changed);
 
-            self.fs.encrypt(raw, *addr);
-            let count = unsafe { self.fs.disk.write_at(self.fs.block + addr.index(), raw)? };
-            if count != raw.len() {
-                // Read wrong number of bytes
+            let written = unsafe { self.fs.disk.write_at_batched(&batch)? };
+            if written != expected_written {
+                // Wrote wrong number of bytes
                 #[cfg(feature = "log")]
                 log::error!("SYNC WRITE_CACHE: WRONG NUMBER OF BYTES");
                 return Err(Error::new(EIO));

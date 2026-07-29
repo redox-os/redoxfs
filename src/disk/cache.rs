@@ -104,6 +104,31 @@ impl<T: Disk> Disk for DiskCache<T> {
         Ok(written)
     }
 
+    unsafe fn write_at_batched(&mut self, batch: &[(u64, &[u8])]) -> Result<usize> {
+        //TODO: Write only blocks that have changed
+        // println!("Cache write at {}", block);
+
+        unsafe {
+            self.inner.write_at_batched(batch)?;
+        }
+
+        let mut written = 0;
+        for (block, buffer) in batch {
+            for i in 0..buffer.len().div_ceil(BLOCK_SIZE as usize) {
+                let block_i = block + i as u64;
+
+                let buffer_i = i * BLOCK_SIZE as usize;
+                let buffer_j = cmp::min(buffer_i + BLOCK_SIZE as usize, buffer.len());
+                let buffer_slice = &buffer[buffer_i..buffer_j];
+
+                let mut cache_buf = [0; BLOCK_SIZE as usize];
+                written += copy_memory(buffer_slice, &mut cache_buf);
+                self.insert(block_i, cache_buf);
+            }
+        }
+        Ok(written)
+    }
+
     fn size(&mut self) -> Result<u64> {
         self.inner.size()
     }
