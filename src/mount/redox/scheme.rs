@@ -9,7 +9,7 @@ use libredox::Fd;
 use redox_path::RedoxReference;
 use redox_path::RedoxScheme;
 use redox_path::RedoxStr;
-use redox_scheme::{scheme::SchemeSync, CallerCtx, OpenResult, SendFdRequest, Socket};
+use redox_scheme::{scheme::SchemeAsync, CallerCtx, OpenResult, SendFdRequest, Socket};
 use smallvec::SmallVec;
 use syscall::data::{Stat, StatVfs, StdFsCallMeta, TimeSpec};
 use syscall::dirent::DirentBuf;
@@ -547,7 +547,7 @@ pub fn resolve_path<'a, 'b, D: Disk>(
     Ok(dirpath.join_checked(path).canonical())
 }
 
-impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
+impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     fn scheme_root(&mut self) -> Result<usize> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.handles.insert(id, Handle::SchemeRoot);
@@ -555,7 +555,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn openat(
-        &mut self,
+        &self,
         dirfd: usize,
         path: &str,
         flags: usize,
@@ -576,7 +576,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         )
     }
 
-    fn unlinkat(&mut self, dirfd: usize, path: &str, flags: usize, ctx: &CallerCtx) -> Result<()> {
+    fn unlinkat(&self, dirfd: usize, path: &str, flags: usize, ctx: &CallerCtx) -> Result<()> {
         let uid = ctx.uid;
         let gid = ctx.gid;
         let path = RedoxReference::new(path).ok_or(Error::new(EINVAL))?;
@@ -594,7 +594,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
 
     /* Resource operations */
     fn read(
-        &mut self,
+        &self,
         id: usize,
         buf: &mut [u8],
         offset: u64,
@@ -607,7 +607,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn write(
-        &mut self,
+        &self,
         id: usize,
         buf: &[u8],
         offset: u64,
@@ -619,34 +619,34 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         self.fs.tx(|tx| file.write(&mut self.fmap, buf, offset, tx))
     }
 
-    fn fsize(&mut self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
+    fn fsize(&self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
         // println!("Seek {}, {} {}", id, pos, whence);
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         self.fs.tx(|tx| file.fsize(tx))
     }
 
-    fn fchmod(&mut self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
+    fn fchmod(&self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         self.fs.tx(|tx| file.fchmod(mode, tx))
     }
 
-    fn fchown(&mut self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
+    fn fchown(&self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         self.fs.tx(|tx| file.fchown(new_uid, new_gid, tx))
     }
 
-    fn fcntl(&mut self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
+    fn fcntl(&self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         file.fcntl(cmd, arg)
     }
 
-    fn fevent(&mut self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
+    fn fevent(&self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
         let _file = Handle::get_resource(self.handles.get(&id))?;
         // EPERM is returned for handles that are always readable or writable
         Err(Error::new(EPERM))
     }
 
-    fn fpath(&mut self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
+    fn fpath(&self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let file = Handle::get_resource(self.handles.get(&id))?;
         let mounted_path = self.mounted_path.as_bytes();
@@ -676,7 +676,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     //TODO: this function has too much code, try to simplify it
-    fn flink(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
+    fn flink(&self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
         let new_path = RedoxReference::new(url)
             .ok_or(Error::new(EINVAL))?
             .canonical();
@@ -782,7 +782,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     //TODO: this function has too much code, try to simplify it
-    fn frename(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
+    fn frename(&self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
         let new_path = RedoxReference::new(url)
             .ok_or(Error::new(EINVAL))?
             .canonical();
@@ -887,13 +887,13 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         })
     }
 
-    fn fstat(&mut self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
+    fn fstat(&self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
         let file = Handle::get_resource(self.handles.get(&id))?;
         self.fs.tx(|tx| file.stat(stat, tx))
     }
 
-    fn fstatvfs(&mut self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
+    fn fstatvfs(&self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
         let _file = Handle::get_resource(self.handles.get(&id))?;
         stat.f_bsize = BLOCK_SIZE as u32;
         stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
@@ -903,7 +903,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         Ok(())
     }
 
-    fn fsync(&mut self, id: usize, _ctx: &CallerCtx) -> Result<()> {
+    fn fsync(&self, id: usize, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fsync {}", id);
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         let fmaps = &mut self.fmap;
@@ -911,20 +911,20 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         self.fs.tx(|tx| file.sync(fmaps, tx))
     }
 
-    fn ftruncate(&mut self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
+    fn ftruncate(&self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
         // println!("Ftruncate {}, {}", id, len);
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         self.fs.tx(|tx| file.truncate(len, tx))
     }
 
-    fn futimens(&mut self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
+    fn futimens(&self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
         // println!("Futimens {}, {}", id, times.len());
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         self.fs.tx(|tx| file.utimens(times, tx))
     }
 
     fn getdents<'buf>(
-        &mut self,
+        &self,
         id: usize,
         buf: DirentBuf<&'buf mut [u8]>,
         opaque_offset: u64,
@@ -934,7 +934,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn mmap_prep(
-        &mut self,
+        &self,
         id: usize,
         offset: u64,
         size: usize,
@@ -947,7 +947,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
     }
     fn munmap(
-        &mut self,
+        &self,
         id: usize,
         offset: u64,
         size: usize,
@@ -960,7 +960,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         self.fs.tx(|tx| file.funmap(fmaps, offset, size, tx))
     }
 
-    fn on_close(&mut self, id: usize) {
+    fn on_close(&self, id: usize) {
         // println!("Close {}", id);
         let Some(file) = self.handles.remove(&id) else {
             return;
@@ -992,7 +992,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         }
     }
 
-    fn on_sendfd(&mut self, sendfd_request: &SendFdRequest) -> Result<usize> {
+    fn on_sendfd(&self, sendfd_request: &SendFdRequest) -> Result<usize> {
         let ctx = sendfd_request.caller();
         let uid = ctx.uid;
         let gid = ctx.gid;
@@ -1096,7 +1096,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn call(
-        &mut self,
+        &self,
         id: usize,
         payload: &mut [u8],
         metadata: &[u64],
@@ -1112,7 +1112,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn std_fs_call(
-        &mut self,
+        &self,
         id: usize,
         kind: StdFsCallKind,
         _payload: &mut [u8],
