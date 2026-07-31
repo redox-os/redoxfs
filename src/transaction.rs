@@ -63,6 +63,75 @@ impl AllocCtx for TreeData<Node> {
     }
 }
 
+async fn child_nodes_inner<D: Disk, T: TransactionBase<D> + ?Sized>(
+    tx: &mut T,
+    htree_node: &HTreeNode<RecordRaw>,
+    children: &mut Vec<DirEntry>,
+    htree_levels: usize,
+) -> Result<()> {
+    assert!(htree_levels > 0);
+    if htree_levels == 1 {
+        for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
+            let dir_ptr: BlockPtr<DirList> = unsafe { entry.ptr.cast() };
+            let dir = tx.read_block(dir_ptr).await?;
+            for entry in dir.data().entries() {
+                children.push(entry);
+            }
+        }
+    } else {
+        for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
+            let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
+            let htree_node = tx.read_block(htree_ptr).await?;
+            child_nodes_inner(tx, htree_node.data(), children, htree_levels - 1).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn find_node_inner<D: Disk, T: TransactionBase<D> + ?Sized>(
+    tx: &mut T,
+    parent_htree_node: &HTreeNode<RecordRaw>,
+    name: &str,
+    name_hash: HTreeHash,
+    htree_levels: usize,
+) -> Result<Option<(TreeData<Node>, BlockAddr)>> {
+    assert!(htree_levels > 0);
+    if htree_levels == 1 {
+        // If we are at the leaf level, search for the name
+        for (_, htree_ptr) in parent_htree_node.find_ptrs_for_read(name_hash) {
+            let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
+            let dir = tx.read_block(dir_ptr).await?;
+
+            if let Some(entry) = dir.data().find_entry(name) {
+                let node_ptr = entry.node_ptr();
+                return Ok(Some(tx.read_tree_and_addr(node_ptr).await?));
+            }
+        }
+        #[cfg(feature = "log")]
+        log::trace!("FIND_NODE: Node not found in leaf level 1");
+        return Ok(None);
+    }
+
+    // Otherwise, search the next level of the H-tree
+    for (_, entry) in parent_htree_node.find_ptrs_for_read(name_hash) {
+        let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
+        let htree_node = tx.read_block(htree_ptr).await?;
+        let result =
+            find_node_inner(tx, htree_node.data(), name, name_hash, htree_levels - 1).await?;
+        if let Some(node) = result {
+            return Ok(Some(node));
+        }
+    }
+
+    #[cfg(feature = "log")]
+    log::trace!(
+        "FIND_NODE: Node not found in higher level: {}",
+        htree_levels
+    );
+    Ok(None)
+}
+
 // Shared read functionality for Transaction and TransactionRead
 pub trait TransactionBase<D: Disk> {
     //
@@ -284,36 +353,8 @@ pub trait TransactionBase<D: Disk> {
                 let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { htree_record_ptr.cast() };
                 self.read_block(htree_ptr).await?
             };
-            self.child_nodes_inner(htree_root.data(), children, htree_levels.max(1))
-                .await?;
+            child_nodes_inner(self, htree_root.data(), children, htree_levels.max(1)).await?;
         }
-        Ok(())
-    }
-
-    async fn child_nodes_inner(
-        &mut self,
-        htree_node: &HTreeNode<RecordRaw>,
-        children: &mut Vec<DirEntry>,
-        htree_levels: usize,
-    ) -> Result<()> {
-        assert!(htree_levels > 0);
-        if htree_levels == 1 {
-            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
-                let dir_ptr: BlockPtr<DirList> = unsafe { entry.ptr.cast() };
-                let dir = self.read_block(dir_ptr).await?;
-                for entry in dir.data().entries() {
-                    children.push(entry);
-                }
-            }
-        } else {
-            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
-                let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
-                let htree_node = self.read_block(htree_ptr).await?;
-                self.child_nodes_inner(htree_node.data(), children, htree_levels - 1)
-                    .await?;
-            }
-        }
-
         Ok(())
     }
 
@@ -341,61 +382,17 @@ pub trait TransactionBase<D: Disk> {
             self.read_block(root_htree_ptr).await?
         };
 
-        let result = self
-            .find_node_inner(
-                root_htree_node.data(),
-                name,
-                HTreeHash::from_name(name),
-                htree_levels.max(1),
-            )
-            .await?;
+        let result = find_node_inner(
+            self,
+            root_htree_node.data(),
+            name,
+            HTreeHash::from_name(name),
+            htree_levels.max(1),
+        )
+        .await?;
         result
             .map(|(tree_node, _address)| tree_node)
             .ok_or(Error::new(ENOENT))
-    }
-
-    async fn find_node_inner(
-        &mut self,
-        parent_htree_node: &HTreeNode<RecordRaw>,
-        name: &str,
-        name_hash: HTreeHash,
-        htree_levels: usize,
-    ) -> Result<Option<(TreeData<Node>, BlockAddr)>> {
-        assert!(htree_levels > 0);
-        if htree_levels == 1 {
-            // If we are at the leaf level, search for the name
-            for (_, htree_ptr) in parent_htree_node.find_ptrs_for_read(name_hash) {
-                let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
-                let dir = self.read_block(dir_ptr).await?;
-
-                if let Some(entry) = dir.data().find_entry(name) {
-                    let node_ptr = entry.node_ptr();
-                    return Ok(Some(self.read_tree_and_addr(node_ptr).await?));
-                }
-            }
-            #[cfg(feature = "log")]
-            log::trace!("FIND_NODE: Node not found in leaf level 1");
-            return Ok(None);
-        }
-
-        // Otherwise, search the next level of the H-tree
-        for (_, entry) in parent_htree_node.find_ptrs_for_read(name_hash) {
-            let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
-            let htree_node = self.read_block(htree_ptr).await?;
-            let result = self
-                .find_node_inner(htree_node.data(), name, name_hash, htree_levels - 1)
-                .await?;
-            if let Some(node) = result {
-                return Ok(Some(node));
-            }
-        }
-
-        #[cfg(feature = "log")]
-        log::trace!(
-            "FIND_NODE: Node not found in higher level: {}",
-            htree_levels
-        );
-        Ok(None)
     }
 
     /// Get a pointer to a the record of `node` with the given offset.
@@ -1337,10 +1334,15 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         // Read node and test type against requested type
         // TODO: Do this check as part of the removal tree processing, and get rid of this extra find
-        let (mut node, _node_addr) = self
-            .find_node_inner(htree_root.data(), name, name_hash, htree_levels.max(1))
-            .await?
-            .ok_or(Error::new(ENOENT))?;
+        let (mut node, _node_addr) = find_node_inner(
+            self,
+            htree_root.data(),
+            name,
+            name_hash,
+            htree_levels.max(1),
+        )
+        .await?
+        .ok_or(Error::new(ENOENT))?;
 
         if mode & Node::MODE_TYPE == Node::MODE_DIR {
             if !node.data().is_dir() {
