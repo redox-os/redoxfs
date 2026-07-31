@@ -16,7 +16,7 @@ use syscall::{EBADFD, ENOENT, PAGE_SIZE};
 
 use crate::{Disk, Node, Transaction, TreePtr, BLOCK_SIZE};
 
-pub type Fmaps = BTreeMap<u32, FileMmapInfo>;
+pub type Fmaps = AsyncMap<u32, FileMmapInfo>;
 
 pub trait Resource<D: Disk> {
     fn parent_ptr_opt(&self) -> Option<TreePtr<Node>>;
@@ -29,7 +29,7 @@ pub trait Resource<D: Disk> {
 
     fn read(
         &mut self,
-        fmaps: &mut Fmaps,
+        fmaps: &Fmaps,
         buf: &mut [u8],
         offset: u64,
         tx: &mut Transaction<D>,
@@ -37,7 +37,7 @@ pub trait Resource<D: Disk> {
 
     fn write(
         &mut self,
-        fmaps: &mut Fmaps,
+        fmaps: &Fmaps,
         buf: &[u8],
         offset: u64,
         tx: &mut Transaction<D>,
@@ -47,7 +47,7 @@ pub trait Resource<D: Disk> {
 
     fn fmap(
         &mut self,
-        fmaps: &mut Fmaps,
+        fmaps: &Fmaps,
         flags: MapFlags,
         size: usize,
         offset: u64,
@@ -56,7 +56,7 @@ pub trait Resource<D: Disk> {
 
     fn funmap(
         &mut self,
-        fmaps: &mut Fmaps,
+        fmaps: &Fmaps,
         offset: u64,
         size: usize,
         tx: &mut Transaction<D>,
@@ -143,7 +143,7 @@ pub trait Resource<D: Disk> {
         Ok(())
     }
 
-    fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<()>;
+    fn sync(&mut self, fmaps: &Fmaps, tx: &mut Transaction<D>) -> Result<()>;
 
     fn truncate(&mut self, len: u64, tx: &mut Transaction<D>) -> Result<()>;
 
@@ -207,7 +207,7 @@ impl<D: Disk> Resource<D> for DirResource {
 
     fn read(
         &mut self,
-        _fmaps: &mut Fmaps,
+        _fmaps: &Fmaps,
         _buf: &mut [u8],
         _offset: u64,
         _tx: &mut Transaction<D>,
@@ -217,7 +217,7 @@ impl<D: Disk> Resource<D> for DirResource {
 
     fn write(
         &mut self,
-        _fmaps: &mut Fmaps,
+        _fmaps: &Fmaps,
         _buf: &[u8],
         _offset: u64,
         _tx: &mut Transaction<D>,
@@ -231,7 +231,7 @@ impl<D: Disk> Resource<D> for DirResource {
 
     fn fmap(
         &mut self,
-        _fmaps: &mut Fmaps,
+        _fmaps: &Fmaps,
         _flags: MapFlags,
         _size: usize,
         _offset: u64,
@@ -241,7 +241,7 @@ impl<D: Disk> Resource<D> for DirResource {
     }
     fn funmap(
         &mut self,
-        _fmaps: &mut Fmaps,
+        _fmaps: &Fmaps,
         _offset: u64,
         _size: usize,
         _tx: &mut Transaction<D>,
@@ -257,7 +257,7 @@ impl<D: Disk> Resource<D> for DirResource {
         &self.path
     }
 
-    fn sync(&mut self, _fmaps: &mut Fmaps, _tx: &mut Transaction<D>) -> Result<()> {
+    fn sync(&mut self, _fmaps: &Fmaps, _tx: &mut Transaction<D>) -> Result<()> {
         Err(Error::new(EBADF))
     }
 
@@ -495,7 +495,7 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn read(
         &mut self,
-        fmaps: &mut Fmaps,
+        fmaps: &Fmaps,
         buf: &mut [u8],
         offset: u64,
         tx: &mut Transaction<D>,
@@ -543,7 +543,7 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn write(
         &mut self,
-        fmaps: &mut Fmaps,
+        fmaps: &Fmaps,
         buf: &[u8],
         offset: u64,
         tx: &mut Transaction<D>,
@@ -577,7 +577,7 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn fmap(
         &mut self,
-        fmaps: &mut Fmaps,
+        fmaps: &Fmaps,
         flags: MapFlags,
         unaligned_size: usize,
         offset: u64,
@@ -676,7 +676,7 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn funmap(
         &mut self,
-        fmaps: &mut Fmaps,
+        fmaps: &Fmaps,
         offset: u64,
         size: usize,
         tx: &mut Transaction<D>,
@@ -746,7 +746,7 @@ impl<D: Disk> Resource<D> for FileResource {
         &self.path
     }
 
-    fn sync(&mut self, fmaps: &mut Fmaps, tx: &mut Transaction<D>) -> Result<()> {
+    fn sync(&mut self, fmaps: &Fmaps, tx: &mut Transaction<D>) -> Result<()> {
         if let Some(fmap_info) = fmaps.get_mut(&self.node_ptr.id()) {
             for (range, fmap) in fmap_info.ranges.iter_mut() {
                 unsafe {

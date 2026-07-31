@@ -5,6 +5,7 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_lock::RwLock;
 use libredox::Fd;
 use redox_path::RedoxReference;
 use redox_path::RedoxScheme;
@@ -30,15 +31,16 @@ use redox_path::RedoxPath;
 
 use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
 
+use super::async_map::{AsyncMap, AsyncMapGuard};
 use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, Resource};
 
-enum Handle<D: Disk> {
+enum HandleState<D: Disk> {
     ResourceDir((DirResource, PhantomData<D>)),
     ResourceFile((FileResource, PhantomData<D>)),
     SchemeRoot,
 }
 
-impl<D: Disk> Handle<D> {
+impl<D: Disk> HandleState<D> {
     pub fn resource(&self) -> Result<&dyn Resource<D>> {
         match self {
             Handle::ResourceDir((dir_resource, _)) => Ok(dir_resource as &dyn Resource<D>),
@@ -53,6 +55,13 @@ impl<D: Disk> Handle<D> {
             Handle::SchemeRoot => Err(Error::new(EBADF)),
         }
     }
+}
+
+struct Handle<D: Disk> {
+    guard: AsyncMapGuard<HandleState<D>>,
+}
+
+impl<D: Disk> Handle<D> {
     pub fn get_resource(res: Option<&Self>) -> Result<&dyn Resource<D>> {
         res.ok_or(Error::new(EBADF)).and_then(|s| s.resource())
     }
@@ -64,17 +73,31 @@ impl<D: Disk> Handle<D> {
     }
 }
 
+impl<D: Disk> Deref for Handle<D> {
+    fn deref(&self) -> &HandleState<D> {
+        self.guard.deref()
+    }
+}
+
+impl<D: Disk> DerefMut for Handle<D> {
+    fn deref_mut(&mut self) -> &mut HandleState<D> {
+        self.guard.deref_mut()
+    }
+}
+
+// Lock order is handles, fmap, fs, other_scheme_fd_map
+
 pub struct FileScheme<'sock, D: Disk> {
     scheme_name: RedoxScheme<'sock>,
     mounted_path: String,
-    pub(crate) fs: FileSystem<D>,
+    pub(crate) fs: RwLock<FileSystem<D>>,
     socket: &'sock Socket,
     next_id: AtomicUsize,
-    handles: BTreeMap<usize, Handle<D>>,
+    handles: AsyncMap<usize, Handle<D>>,
     fmap: super::resource::Fmaps,
 
     // Map of file id to other scheme's file descriptor.
-    other_scheme_fd_map: BTreeMap<u32, Fd>,
+    other_scheme_fd_map: RwLock<BTreeMap<u32, Fd>>,
 
     proc_creds_capability: Fd,
 }
@@ -90,12 +113,12 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             scheme_name: RedoxScheme::new(scheme_name)
                 .expect("scheme name for FileScheme is not valid"),
             mounted_path,
-            fs,
-            socket,
+            fs: RwLock::new(fs),
+            socket: socket,
             next_id: AtomicUsize::new(1),
-            handles: BTreeMap::new(),
-            fmap: BTreeMap::new(),
-            other_scheme_fd_map: BTreeMap::new(),
+            handles: AsyncMap::new(),
+            fmap: AsyncMap::new(),
+            other_scheme_fd_map: RwLock::new(BTreeMap::new()),
             proc_creds_capability: {
                 libredox::Fd::open(
                     "/scheme/proc/proc-creds-capability",
@@ -104,6 +127,17 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 )?
             },
         })
+    }
+
+    pub async fn tx_read<F: AsyncFnOnce(&mut TransactionRead<D>) -> Result<T>, T>(
+        &self,
+        f: F,
+    ) -> Result<T> {
+        self.fs.read().await.deref().tx_read(f).await
+    }
+
+    pub async fn tx<F: AsyncFnOnce(&mut Transaction<D>) -> Result<T>, T>(&self, f: F) -> Result<T> {
+        self.fs.write().await.deref().tx(f).await
     }
 
     /// Resolve a symbolic link of given `node`. `full_path` must be non-canonicalized path from root node.
@@ -174,28 +208,30 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         Err(Error::new(ELOOP))
     }
 
-    fn handle_connect(&mut self, id: usize, payload: &mut [u8]) -> Result<usize> {
+    fn handle_connect(&self, id: usize, payload: &mut [u8]) -> Result<usize> {
         let resource = Handle::get_resource(self.handles.get(&id))?;
         let inode_id = resource.node_ptr().id();
         let target_fd = self
             .other_scheme_fd_map
+            .read()
+            .await
             .get(&inode_id)
             .ok_or(Error::new(EBADF))?;
         let len = libredox::call::get_socket_token(target_fd.raw(), payload)?;
         return Ok(len);
     }
 
-    fn open(
+    async fn open(
         &mut self,
         url: RedoxReference<'_>,
         flags: usize,
         ctx: &CallerCtx,
     ) -> Result<OpenResult> {
-        self.open_internal(TreePtr::root(), url, flags, ctx)
+        self.open_internal(TreePtr::root(), url, flags, ctx).await
     }
 
-    fn open_internal(
-        &mut self,
+    async fn open_internal(
+        &self,
         start_ptr: TreePtr<Node>,
         path: RedoxReference<'_>,
         flags: usize,
@@ -210,9 +246,12 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         let mut nodes = SmallVec::new();
         let node_opt = self
             .fs
-            .tx(|tx| Self::path_nodes(scheme_name, tx, start_ptr, &path, uid, gid, &mut nodes))?;
+            .tx(async |tx| {
+                Self::path_nodes(scheme_name, tx, start_ptr, &path, uid, gid, &mut nodes).await
+            })
+            .await?;
         let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
-        let handle: Handle<D> = match node_opt {
+        let handle: HandleState<D> = match node_opt {
             Some((node, _node_name)) => {
                 if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
                     return Err(Error::new(EEXIST));
@@ -224,7 +263,9 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         }
 
                         let mut children = Vec::new();
-                        self.fs.tx(|tx| tx.child_nodes(node.ptr(), &mut children))?;
+                        self.fs
+                            .tx(async |tx| tx.child_nodes(node.ptr(), &mut children).await)
+                            .await?;
 
                         let mut data = Vec::new();
                         for child in children.iter() {
@@ -236,7 +277,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                             }
                         }
 
-                        Handle::ResourceDir((
+                        HandleState::ResourceDir((
                             DirResource::new(
                                 path.to_string(),
                                 parent_ptr_opt,
@@ -250,7 +291,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
                         return Err(Error::new(EISDIR));
                     } else {
-                        Handle::ResourceDir((
+                        HandleState::ResourceDir((
                             DirResource::new(
                                 path.to_string(),
                                 parent_ptr_opt,
@@ -266,17 +307,21 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                     && flags & O_SYMLINK != O_SYMLINK
                 {
                     let mut resolve_nodes = SmallVec::new();
-                    let resolved = self.fs.tx(|tx| {
-                        Self::resolve_symlink(
-                            scheme_name,
-                            tx,
-                            uid,
-                            gid,
-                            path,
-                            node,
-                            &mut resolve_nodes,
-                        )
-                    })?;
+                    let resolved = self
+                        .fs
+                        .tx(async |tx| {
+                            Self::resolve_symlink(
+                                scheme_name,
+                                tx,
+                                uid,
+                                gid,
+                                path,
+                                node,
+                                &mut resolve_nodes,
+                            )
+                            .await
+                        })
+                        .await?;
                     return self.open(resolved, flags, ctx);
                 } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));
@@ -309,12 +354,15 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         }
 
                         let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                        self.fs.tx(|tx| {
-                            tx.truncate_node(node_ptr, 0, mtime.as_secs(), mtime.subsec_nanos())
-                        })?;
+                        self.fs
+                            .tx(async |tx| {
+                                tx.truncate_node(node_ptr, 0, mtime.as_secs(), mtime.subsec_nanos())
+                                    .await
+                            })
+                            .await?;
                     }
 
-                    Handle::ResourceFile((
+                    HandleState::ResourceFile((
                         FileResource::new(path.to_string(), parent_ptr_opt, node_ptr, flags, uid),
                         PhantomData,
                     ))
@@ -350,31 +398,36 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                     Node::MODE_FILE
                 };
 
-                let node_ptr = self.fs.tx(|tx| {
-                    let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                    let mut node = tx.create_node(
-                        parent.ptr(),
-                        &last_part,
-                        mode_type as u16 | (flags as u16 & Node::MODE_PERM),
-                        ctime.as_secs(),
-                        ctime.subsec_nanos(),
-                    )?;
-                    let node_ptr = node.ptr();
-                    if node.data().uid() != uid || node.data().gid() != gid {
-                        node.data_mut().set_uid(uid);
-                        node.data_mut().set_gid(gid);
-                        tx.sync_tree(node)?;
-                    }
-                    Ok(node_ptr)
-                })?;
+                let node_ptr = self
+                    .fs
+                    .tx(async |tx| {
+                        let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                        let mut node = tx
+                            .create_node(
+                                parent.ptr(),
+                                &last_part,
+                                mode_type as u16 | (flags as u16 & Node::MODE_PERM),
+                                ctime.as_secs(),
+                                ctime.subsec_nanos(),
+                            )
+                            .await?;
+                        let node_ptr = node.ptr();
+                        if node.data().uid() != uid || node.data().gid() != gid {
+                            node.data_mut().set_uid(uid);
+                            node.data_mut().set_gid(gid);
+                            tx.sync_tree(node)?;
+                        }
+                        Ok(node_ptr)
+                    })
+                    .await?;
 
                 if dir {
-                    Handle::ResourceDir((
+                    HandleState::ResourceDir((
                         DirResource::new(path.to_string(), parent_ptr_opt, node_ptr, None, uid),
                         PhantomData,
                     ))
                 } else {
-                    Handle::ResourceFile((
+                    HandleState::ResourceFile((
                         FileResource::new(path.to_string(), parent_ptr_opt, node_ptr, flags, uid),
                         PhantomData,
                     ))
@@ -386,11 +439,12 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         {
             let fmap_info = self
                 .fmap
-                .entry(node_ptr.id())
-                .or_insert_with(FileMmapInfo::new);
+                .get_or_insert_with(node_ptr.id(), FileMmapInfo::new);
             if !fmap_info.in_use() {
                 // Notify filesystem of open
-                self.fs.tx(|tx| tx.on_open_node(node_ptr))?;
+                self.fs
+                    .tx(async |tx| tx.on_open_node(node_ptr).await)
+                    .await?;
             }
             fmap_info.open_fds += 1;
         }
@@ -404,8 +458,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         })
     }
 
-    fn unlink_internal(
-        &mut self,
+    async fn unlink_internal(
+        &self,
         start_ptr: TreePtr<Node>,
         path: &RedoxReference<'_>,
         flags: usize,
@@ -414,63 +468,67 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     ) -> Result<()> {
         let scheme_name = &self.scheme_name;
 
-        let unlink_result = self.fs.tx(|tx| {
-            let mut nodes = SmallVec::new();
+        let unlink_result = self
+            .fs
+            .tx(async |tx| {
+                let mut nodes = SmallVec::new();
 
-            let Some((child, child_name)) =
-                Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes)?
-            else {
-                return Err(Error::new(ENOENT));
-            };
+                let Some((child, child_name)) =
+                    Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes)?
+                else {
+                    return Err(Error::new(ENOENT));
+                };
 
-            let Some((parent, _parent_name)) = nodes.last() else {
-                return Err(Error::new(EPERM));
-            };
+                let Some((parent, _parent_name)) = nodes.last() else {
+                    return Err(Error::new(EPERM));
+                };
 
-            if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
-                // println!("dir not writable {:o}", parent.1.mode);
-                return Err(Error::new(EACCES));
-            }
-
-            // Check AT_REMOVEDIR
-            if flags & syscall::AT_REMOVEDIR == syscall::AT_REMOVEDIR {
-                // --- rmdir ---
-                if child.data().is_dir() {
-                    if !child.data().permission(uid, gid, Node::MODE_WRITE) {
-                        return Err(Error::new(EACCES));
-                    }
-                    tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
-                } else {
-                    Err(Error::new(ENOTDIR))
+                if !parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                    // println!("dir not writable {:o}", parent.1.mode);
+                    return Err(Error::new(EACCES));
                 }
-            } else {
-                // --- unlink ---
-                if !child.data().is_dir() {
-                    if child.data().uid() != uid && uid != 0 {
-                        // println!("file not owned by current user {}", parent.1.uid);
-                        return Err(Error::new(EACCES));
-                    }
 
-                    let mode = if child.data().is_symlink() {
-                        Node::MODE_SYMLINK
-                    } else if child.data().is_sock() {
-                        Node::MODE_SOCK
+                // Check AT_REMOVEDIR
+                if flags & syscall::AT_REMOVEDIR == syscall::AT_REMOVEDIR {
+                    // --- rmdir ---
+                    if child.data().is_dir() {
+                        if !child.data().permission(uid, gid, Node::MODE_WRITE) {
+                            return Err(Error::new(EACCES));
+                        }
+                        tx.remove_node(parent.ptr(), &child_name, Node::MODE_DIR)
+                            .await
                     } else {
-                        Node::MODE_FILE
-                    };
-
-                    tx.remove_node(parent.ptr(), &child_name, mode)
+                        Err(Error::new(ENOTDIR))
+                    }
                 } else {
-                    Err(Error::new(EISDIR))
+                    // --- unlink ---
+                    if !child.data().is_dir() {
+                        if child.data().uid() != uid && uid != 0 {
+                            // println!("file not owned by current user {}", parent.1.uid);
+                            return Err(Error::new(EACCES));
+                        }
+
+                        let mode = if child.data().is_symlink() {
+                            Node::MODE_SYMLINK
+                        } else if child.data().is_sock() {
+                            Node::MODE_SOCK
+                        } else {
+                            Node::MODE_FILE
+                        };
+
+                        tx.remove_node(parent.ptr(), &child_name, mode).await
+                    } else {
+                        Err(Error::new(EISDIR))
+                    }
                 }
-            }
-        });
+            })
+            .await;
 
         let Some(node_id) = unlink_result? else {
             return Ok(());
         };
 
-        let _ = self.other_scheme_fd_map.remove(&node_id);
+        let _ = self.other_scheme_fd_map.write().await.remove(&node_id);
 
         Ok(())
     }
@@ -550,11 +608,11 @@ pub fn resolve_path<'a, 'b, D: Disk>(
 impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     fn scheme_root(&mut self) -> Result<usize> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.handles.insert(id, Handle::SchemeRoot);
+        self.handles.insert(id, HandleState::SchemeRoot);
         Ok(id)
     }
 
-    fn openat(
+    async fn openat(
         &self,
         dirfd: usize,
         path: &str,
@@ -574,9 +632,16 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
             flags,
             ctx,
         )
+        .await
     }
 
-    fn unlinkat(&self, dirfd: usize, path: &str, flags: usize, ctx: &CallerCtx) -> Result<()> {
+    async fn unlinkat(
+        &self,
+        dirfd: usize,
+        path: &str,
+        flags: usize,
+        ctx: &CallerCtx,
+    ) -> Result<()> {
         let uid = ctx.uid;
         let gid = ctx.gid;
         let path = RedoxReference::new(path).ok_or(Error::new(EINVAL))?;
@@ -590,10 +655,11 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
         self.unlink_internal(start_ptr, &path.canonical(), flags, uid, gid)
+            .await
     }
 
     /* Resource operations */
-    fn read(
+    async fn read(
         &self,
         id: usize,
         buf: &mut [u8],
@@ -603,10 +669,11 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     ) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs.tx(|tx| file.read(&mut self.fmap, buf, offset, tx))
+        self.tx_read(async |tx| file.read(&self.fmap, buf, offset, tx).await)
+            .await
     }
 
-    fn write(
+    async fn write(
         &self,
         id: usize,
         buf: &[u8],
@@ -616,37 +683,39 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     ) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs.tx(|tx| file.write(&mut self.fmap, buf, offset, tx))
+        self.tx(async |tx| file.write(&self.fmap, buf, offset, tx).await)
+            .await
     }
 
-    fn fsize(&self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
+    async fn fsize(&self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
         // println!("Seek {}, {} {}", id, pos, whence);
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs.tx(|tx| file.fsize(tx))
+        self.tx(async |tx| file.fsize(tx).await).await
     }
 
-    fn fchmod(&self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
+    async fn fchmod(&self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs.tx(|tx| file.fchmod(mode, tx))
+        self.tx(async |tx| file.fchmod(mode, tx).await).await
     }
 
-    fn fchown(&self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
+    async fn fchown(&self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs.tx(|tx| file.fchown(new_uid, new_gid, tx))
+        self.tx(async |tx| file.fchown(new_uid, new_gid, tx).await)
+            .await
     }
 
-    fn fcntl(&self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
+    async fn fcntl(&self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
         file.fcntl(cmd, arg)
     }
 
-    fn fevent(&self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
+    async fn fevent(&self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
         let _file = Handle::get_resource(self.handles.get(&id))?;
         // EPERM is returned for handles that are always readable or writable
         Err(Error::new(EPERM))
     }
 
-    fn fpath(&self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
+    async fn fpath(&self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
         let file = Handle::get_resource(self.handles.get(&id))?;
         let mounted_path = self.mounted_path.as_bytes();
@@ -676,7 +745,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     }
 
     //TODO: this function has too much code, try to simplify it
-    fn flink(&self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
+    async fn flink(&self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
         let new_path = RedoxReference::new(url)
             .ok_or(Error::new(EINVAL))?
             .canonical();
@@ -711,7 +780,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         }
 
         let scheme_name = &self.scheme_name;
-        self.fs.tx(|tx| {
+        self.tx(async |tx| {
             let _orig_parent_ptr = match file.parent_ptr_opt() {
                 Some(some) => some,
                 None => {
@@ -720,7 +789,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                 }
             };
 
-            let orig_node = tx.read_tree(file.node_ptr())?;
+            let orig_node = tx.read_tree(file.node_ptr()).await?;
 
             if !orig_node.data().owner(uid) {
                 // println!("orig_node not owned by caller {}", uid);
@@ -757,7 +826,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                         }
 
                         let mut children = Vec::new();
-                        tx.child_nodes(new_node.ptr(), &mut children)?;
+                        tx.child_nodes(new_node.ptr(), &mut children).await?;
 
                         if !children.is_empty() {
                             // println!("new dir not empty");
@@ -771,7 +840,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                     }
                 }
 
-                tx.link_node(new_parent.ptr(), &new_name, orig_node.ptr())?;
+                tx.link_node(new_parent.ptr(), &new_name, orig_node.ptr())
+                    .await?;
 
                 file.set_path(new_path.as_ref());
                 Ok(0)
@@ -779,10 +849,11 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                 Err(Error::new(EPERM))
             }
         })
+        .await
     }
 
     //TODO: this function has too much code, try to simplify it
-    fn frename(&self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
+    async fn frename(&self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
         let new_path = RedoxReference::new(url)
             .ok_or(Error::new(EINVAL))?
             .canonical();
@@ -817,7 +888,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         }
 
         let scheme_name = &self.scheme_name;
-        self.fs.tx(|tx| {
+        self.tx(async |tx| {
             let orig_parent_ptr = match file.parent_ptr_opt() {
                 Some(some) => some,
                 None => {
@@ -826,7 +897,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                 }
             };
 
-            let orig_node = tx.read_tree(file.node_ptr())?;
+            let orig_node = tx.read_tree(file.node_ptr()).await?;
 
             if !orig_node.data().owner(uid) {
                 // println!("orig_node not owned by caller {}", uid);
@@ -863,7 +934,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                         }
 
                         let mut children = Vec::new();
-                        tx.child_nodes(new_node.ptr(), &mut children)?;
+                        tx.child_nodes(new_node.ptr(), &mut children).await?;
 
                         if !children.is_empty() {
                             // println!("new dir not empty");
@@ -877,7 +948,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                     }
                 }
 
-                tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)?;
+                tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)
+                    .await?;
 
                 file.set_path(new_path.as_ref());
                 Ok(0)
@@ -885,15 +957,16 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                 Err(Error::new(EPERM))
             }
         })
+        .await
     }
 
-    fn fstat(&self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
+    async fn fstat(&self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
         let file = Handle::get_resource(self.handles.get(&id))?;
-        self.fs.tx(|tx| file.stat(stat, tx))
+        self.tx_read(async |tx| file.stat(stat, tx).await).await
     }
 
-    fn fstatvfs(&self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
+    async fn fstatvfs(&self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
         let _file = Handle::get_resource(self.handles.get(&id))?;
         stat.f_bsize = BLOCK_SIZE as u32;
         stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
@@ -903,37 +976,37 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         Ok(())
     }
 
-    fn fsync(&self, id: usize, _ctx: &CallerCtx) -> Result<()> {
+    async fn fsync(&self, id: usize, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fsync {}", id);
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        let fmaps = &mut self.fmap;
-
-        self.fs.tx(|tx| file.sync(fmaps, tx))
+        self.tx(async |tx| file.sync(&self.fmap, tx).await).await
     }
 
-    fn ftruncate(&self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
+    async fn ftruncate(&self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
         // println!("Ftruncate {}, {}", id, len);
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs.tx(|tx| file.truncate(len, tx))
+        self.tx(async |tx| file.truncate(len, tx).await).await
     }
 
-    fn futimens(&self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
+    async fn futimens(&self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
         // println!("Futimens {}, {}", id, times.len());
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs.tx(|tx| file.utimens(times, tx))
+        self.tx(async |tx| file.utimens(times, tx).await).await
     }
 
-    fn getdents<'buf>(
+    async fn getdents<'buf>(
         &self,
         id: usize,
         buf: DirentBuf<&'buf mut [u8]>,
         opaque_offset: u64,
     ) -> Result<DirentBuf<&'buf mut [u8]>> {
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs.tx(|tx| file.getdents(buf, opaque_offset, tx))
+        self.fs
+            .tx_read(async |tx| file.getdents(buf, opaque_offset, tx).await)
+            .await
     }
 
-    fn mmap_prep(
+    async fn mmap_prep(
         &self,
         id: usize,
         offset: u64,
@@ -942,11 +1015,10 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<usize> {
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        let fmaps = &mut self.fmap;
-
-        self.fs.tx(|tx| file.fmap(fmaps, flags, size, offset, tx))
+        self.tx(async |tx| file.fmap(&self.fmap, flags, size, offset, tx).await)
+            .await
     }
-    fn munmap(
+    async fn munmap(
         &self,
         id: usize,
         offset: u64,
@@ -955,12 +1027,11 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<()> {
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        let fmaps = &mut self.fmap;
-
-        self.fs.tx(|tx| file.funmap(fmaps, offset, size, tx))
+        self.tx(async |tx| file.funmap(&self.fmap, offset, size, tx).await)
+            .await
     }
 
-    fn on_close(&self, id: usize) {
+    async fn on_close(&self, id: usize) {
         // println!("Close {}", id);
         let Some(file) = self.handles.remove(&id) else {
             return;
@@ -981,7 +1052,11 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         // Check if node no longer in use
         if !file_info.in_use() {
             // Notify filesystem of close
-            if let Err(err) = self.fs.tx(|tx| tx.on_close_node(node_ptr)) {
+            if let Err(err) = self
+                .fs
+                .tx(async |tx| tx.on_close_node(node_ptr).await)
+                .await
+            {
                 log::error!("failed to close node {}: {}", node_ptr.id(), err);
             }
 
@@ -992,7 +1067,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         }
     }
 
-    fn on_sendfd(&self, sendfd_request: &SendFdRequest) -> Result<usize> {
+    async fn on_sendfd(&self, sendfd_request: &SendFdRequest) -> Result<usize> {
         let ctx = sendfd_request.caller();
         let uid = ctx.uid;
         let gid = ctx.gid;
@@ -1011,7 +1086,10 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
 
         let parent_resource_ptr = parent_resource.node_ptr();
 
-        let parent_node = self.fs.tx(|tx| tx.read_tree(parent_resource_ptr))?;
+        let parent_node = self
+            .fs
+            .tx(async |tx| tx.read_tree(parent_resource_ptr).await)
+            .await?;
         if !parent_node.data().is_dir() {
             return Err(Error::new(ENOTDIR));
         }
@@ -1043,28 +1121,33 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
             let mode_type = stat.st_mode as u16 & Node::MODE_TYPE;
 
             let flags = 0o777;
-            let node_ptr = self.fs.tx(|tx| {
-                if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
-                    // If the file already exists, we cannot create it again
-                    return Err(Error::new(EEXIST));
-                }
+            let node_ptr = self
+                .fs
+                .tx(async |tx| {
+                    if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
+                        // If the file already exists, we cannot create it again
+                        return Err(Error::new(EEXIST));
+                    }
 
-                let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                let mut node = tx.create_node(
-                    parent_resource_ptr,
-                    &last_part,
-                    mode_type | (flags as u16 & Node::MODE_PERM),
-                    ctime.as_secs(),
-                    ctime.subsec_nanos(),
-                )?;
-                let node_ptr = node.ptr();
-                if node.data().uid() != uid || node.data().gid() != gid {
-                    node.data_mut().set_uid(uid);
-                    node.data_mut().set_gid(gid);
-                    tx.sync_tree(node)?;
-                }
-                Ok(node_ptr)
-            })?;
+                    let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                    let mut node = tx
+                        .create_node(
+                            parent_resource_ptr,
+                            &last_part,
+                            mode_type | (flags as u16 & Node::MODE_PERM),
+                            ctime.as_secs(),
+                            ctime.subsec_nanos(),
+                        )
+                        .await?;
+                    let node_ptr = node.ptr();
+                    if node.data().uid() != uid || node.data().gid() != gid {
+                        node.data_mut().set_uid(uid);
+                        node.data_mut().set_gid(gid);
+                        tx.sync_tree(node)?;
+                    }
+                    Ok(node_ptr)
+                })
+                .await?;
 
             let file_path = format!("{parent_path}/{last_part}");
             let node_id = node_ptr.id();
@@ -1079,11 +1162,10 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         {
             let fmap_info = self
                 .fmap
-                .entry(node_ptr.id())
-                .or_insert_with(FileMmapInfo::new);
+                .get_or_insert_with(node_ptr.id(), FileMmapInfo::new);
             if !fmap_info.in_use() {
                 // Notify filesystem of open
-                self.fs.tx(|tx| tx.on_open_node(node_ptr))?;
+                self.fs.tx(async |tx| tx.on_open_node(node_ptr)).await?;
             }
             fmap_info.open_fds += 1;
         }
@@ -1091,11 +1173,14 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.handles
             .insert(id, Handle::ResourceFile((resource, PhantomData)));
-        self.other_scheme_fd_map.insert(node_id, other_scheme_fd);
+        self.other_scheme_fd_map
+            .write()
+            .await
+            .insert(node_id, other_scheme_fd);
         Ok(new_fd)
     }
 
-    fn call(
+    async fn call(
         &self,
         id: usize,
         payload: &mut [u8],
@@ -1111,7 +1196,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         }
     }
 
-    fn std_fs_call(
+    async fn std_fs_call(
         &self,
         id: usize,
         kind: StdFsCallKind,
@@ -1126,7 +1211,9 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                 if uid != 0 && (uid != ctx.uid || gid != ctx.gid) {
                     return Err(Error::new(EPERM));
                 }
-                self.fchown(id, new_uid, new_gid as u32, ctx).map(|_| 0)
+                self.fchown(id, new_uid, new_gid as u32, ctx)
+                    .map(|_| 0)
+                    .await
             }
             /* TODO: Support Unlinkat using std_fs_call
             Unlinkat => {

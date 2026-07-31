@@ -28,13 +28,13 @@ pub trait Disk {
     ///
     /// # Safety
     /// Unsafe to discourage use, use filesystem wrappers instead
-    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize>;
+    async unsafe fn read_at(&self, block: u64, buffer: &mut [u8]) -> Result<usize>;
 
     /// Write blocks from disk
     ///
     /// # Safety
     /// Unsafe to discourage use, use filesystem wrappers instead
-    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize>;
+    async unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize>;
 
     /// Get size of disk in bytes
     fn size(&mut self) -> Result<u64>;

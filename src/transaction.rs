@@ -63,6 +63,518 @@ impl AllocCtx for TreeData<Node> {
     }
 }
 
+// Shared read functionality for Transaction and TransactionRead
+pub trait TransactionBase<D: Disk> {
+    //
+    // MARK: block operations
+    //
+
+    async fn read_raw<T: BlockTrait + DerefMut<Target = [u8]>>(
+        fs: &FileSystem<D>,
+        ptr: BlockPtr<T>,
+        data: &mut T,
+    ) -> Result<()> {
+        let count = unsafe { fs.disk.read_at(fs.block + ptr.addr().index(), data).await? };
+        if count != data.len() {
+            // Read wrong number of bytes
+            #[cfg(feature = "log")]
+            log::error!("READ_BLOCK: WRONG NUMBER OF BYTES");
+            return Err(Error::new(EIO));
+        }
+        fs.decrypt(data, ptr.addr());
+        Ok(())
+    }
+
+    async fn read_direct<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: BlockPtr<T>,
+        data: &mut T,
+    ) -> Result<()>;
+
+    async fn read_block<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: BlockPtr<T>,
+    ) -> Result<BlockData<T>> {
+        if ptr.is_null() {
+            // Pointer is invalid (should this return None?)
+            #[cfg(feature = "log")]
+            log::error!("READ_BLOCK: POINTER IS NULL");
+            return Err(Error::new(ENOENT));
+        }
+
+        let mut data = match T::empty(ptr.addr().level()) {
+            Some(some) => some,
+            None => {
+                #[cfg(feature = "log")]
+                log::error!("READ_BLOCK: INVALID BLOCK LEVEL FOR TYPE");
+                return Err(Error::new(ENOENT));
+            }
+        };
+        self.read_direct(ptr, &mut data).await?;
+
+        let block = BlockData::new(ptr.addr(), data);
+        let block_ptr = block.create_ptr();
+        if block_ptr.hash() != ptr.hash() {
+            // Incorrect hash
+            #[cfg(feature = "log")]
+            log::error!(
+                "READ_BLOCK: INCORRECT HASH 0x{:X} != 0x{:X} for block 0x{:X}",
+                block_ptr.hash(),
+                ptr.hash(),
+                ptr.addr().index()
+            );
+            return Err(Error::new(EIO));
+        }
+        Ok(block)
+    }
+
+    /// Read block data or, if pointer is null, return default block data
+    ///
+    /// # Safety
+    /// Unsafe because it creates strange BlockData types that must be swapped before use
+    async unsafe fn read_block_or_empty<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: BlockPtr<T>,
+    ) -> Result<BlockData<T>> {
+        if ptr.is_null() {
+            let addr = ptr.addr();
+            match T::empty(addr.level()) {
+                Some(empty) => Ok(BlockData::new(addr, empty)),
+                None => {
+                    #[cfg(feature = "log")]
+                    log::error!("READ_BLOCK_OR_EMPTY: INVALID BLOCK LEVEL FOR TYPE");
+                    Err(Error::new(ENOENT))
+                }
+            }
+        } else {
+            self.read_block(ptr).await
+        }
+    }
+
+    async unsafe fn read_record<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        mut ptr: BlockPtr<T>,
+        level: BlockLevel,
+    ) -> Result<BlockData<T>> {
+        // Set null pointers to correct size (reduces number of copies below)
+        if ptr.is_null() {
+            ptr = BlockPtr::<T>::null(BlockMeta::new(level));
+        }
+
+        // Read record from disk, or construct empty one for null pointers
+        let mut record = unsafe { self.read_block_or_empty(ptr).await? };
+
+        // Attempt to decompress if address metadata indicates compression
+        if let Some(decomp_level) = record.addr().decomp_level() {
+            // First 2 bytes store compressed data length
+            // This means only compressed record sizes up to 64 KiB are supported
+            let mut decomp = match T::empty(decomp_level) {
+                Some(empty) => empty,
+                None => {
+                    #[cfg(feature = "log")]
+                    log::error!("READ_RECORD: INVALID DECOMPRESSED BLOCK LEVEL FOR TYPE");
+                    return Err(Error::new(ENOENT));
+                }
+            };
+            let comp_len = record.data()[0] as usize | ((record.data()[1] as usize) << 8);
+            let total_len = comp_len + 2;
+            if let Err(err) = lz4_flex::decompress_into(&record.data()[2..total_len], &mut decomp) {
+                #[cfg(feature = "log")]
+                log::error!("READ_RECORD: FAILED TO DECOMPRESS: {:?}", err);
+                return Err(Error::new(EIO));
+            }
+            record = BlockData::new(BlockAddr::null(BlockMeta::new(decomp_level)), decomp);
+        }
+
+        // Return record if it is larger than or equal to requested level
+        if record.addr().level() >= level {
+            return Ok(record);
+        }
+
+        // If a larger level was requested,
+        // create a fake record with the requested level
+        // and fill it with the data in the original record.
+        let (_old_addr, old_raw) = unsafe { record.into_parts() };
+        let mut raw = match T::empty(level) {
+            Some(empty) => empty,
+            None => {
+                #[cfg(feature = "log")]
+                log::error!("READ_RECORD: INVALID BLOCK LEVEL FOR TYPE");
+                return Err(Error::new(ENOENT));
+            }
+        };
+        let len = min(raw.len(), old_raw.len());
+        raw[..len].copy_from_slice(&old_raw[..len]);
+
+        Ok(BlockData::new(BlockAddr::null(BlockMeta::new(level)), raw))
+    }
+
+    //
+    // MARK: tree operations
+    //
+
+    fn header(&self) -> &Header;
+
+    /// Walk the tree and return the contents and address
+    /// of the data block that `ptr` points too.
+    async fn read_tree_and_addr<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: TreePtr<T>,
+    ) -> Result<(TreeData<T>, BlockAddr)> {
+        if ptr.is_null() {
+            // ID is invalid (should this return None?)
+            #[cfg(feature = "log")]
+            log::error!("READ_TREE: ID IS NULL");
+            return Err(Error::new(ENOENT));
+        }
+
+        let (i3, i2, i1, i0) = ptr.indexes();
+        let l3 = self.read_block(self.header().tree).await?;
+        let l2 = self.read_block(l3.data().ptrs[i3]).await?;
+        let l1 = self.read_block(l2.data().ptrs[i2]).await?;
+        let l0 = self.read_block(l1.data().ptrs[i1]).await?;
+        let raw = self.read_block(l0.data().ptrs[i0]).await?;
+
+        //TODO: transmute instead of copy?
+        let mut data = match T::empty(BlockLevel::default()) {
+            Some(some) => some,
+            None => {
+                #[cfg(feature = "log")]
+                log::error!("READ_TREE: INVALID BLOCK LEVEL FOR TYPE");
+                return Err(Error::new(ENOENT));
+            }
+        };
+        data.copy_from_slice(raw.data());
+
+        Ok((TreeData::new(ptr.id(), data), raw.addr()))
+    }
+
+    /// Walk the tree and return the contents of the data block that `ptr` points too.
+    async fn read_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: TreePtr<T>,
+    ) -> Result<TreeData<T>> {
+        Ok(self.read_tree_and_addr(ptr).await?.0)
+    }
+
+    //
+    // MARK: node operations
+    //
+
+    /// Write all children of `parent_ptr` to `children`.
+    /// `parent_ptr` must point to a directory node.
+    async fn child_nodes(
+        &mut self,
+        parent_ptr: TreePtr<Node>,
+        children: &mut Vec<DirEntry>,
+    ) -> Result<()> {
+        let parent = self.read_tree(parent_ptr).await?;
+        if level_data(&parent)?.level0[0].is_marker() {
+            let htree_levels = level_data(&parent)?.level0[0].addr().level().0;
+            let htree_root = if htree_levels == 0 {
+                // Create a fake root to satisfy the recursive child_nodes_inner function signature
+                let mut fake_htree_node =
+                    BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
+                let dir_ptr = level_data(&parent)?.level0[1];
+                let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
+                fake_htree_node.data_mut().ptrs[0] = htree_ptr;
+                fake_htree_node
+            } else {
+                let htree_record_ptr = level_data(&parent)?.level0[1];
+                let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { htree_record_ptr.cast() };
+                self.read_block(htree_ptr).await?
+            };
+            self.child_nodes_inner(htree_root.data(), children, htree_levels.max(1))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn child_nodes_inner(
+        &mut self,
+        htree_node: &HTreeNode<RecordRaw>,
+        children: &mut Vec<DirEntry>,
+        htree_levels: usize,
+    ) -> Result<()> {
+        assert!(htree_levels > 0);
+        if htree_levels == 1 {
+            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
+                let dir_ptr: BlockPtr<DirList> = unsafe { entry.ptr.cast() };
+                let dir = self.read_block(dir_ptr).await?;
+                for entry in dir.data().entries() {
+                    children.push(entry);
+                }
+            }
+        } else {
+            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
+                let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
+                let htree_node = self.read_block(htree_ptr).await?;
+                self.child_nodes_inner(htree_node.data(), children, htree_levels - 1)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Find a node that is a child of the `parent_ptr` and is named `name`.
+    /// Returns ENOENT if this node is not found.
+    async fn find_node(&mut self, parent_ptr: TreePtr<Node>, name: &str) -> Result<TreeData<Node>> {
+        let parent = self.read_tree(parent_ptr).await?;
+        if !level_data(&parent)?.level0[0].is_marker() {
+            return Err(Error::new(ENOENT));
+        }
+
+        let htree_levels = level_data(&parent)?.level0[0].addr().level().0;
+
+        let root_htree_node = if htree_levels == 0 {
+            // Create a fake root to satisfy the recursive inner_find_node function signature
+            let mut fake_htree_node =
+                BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
+            let dir_ptr = level_data(&parent)?.level0[1];
+            let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
+            fake_htree_node.data_mut().ptrs[0] = htree_ptr;
+            fake_htree_node
+        } else {
+            let root_htree_ptr: BlockPtr<HTreeNode<RecordRaw>> =
+                unsafe { level_data(&parent)?.level0[1].cast() };
+            self.read_block(root_htree_ptr).await?
+        };
+
+        let result = self
+            .find_node_inner(
+                root_htree_node.data(),
+                name,
+                HTreeHash::from_name(name),
+                htree_levels.max(1),
+            )
+            .await?;
+        result
+            .map(|(tree_node, _address)| tree_node)
+            .ok_or(Error::new(ENOENT))
+    }
+
+    async fn find_node_inner(
+        &mut self,
+        parent_htree_node: &HTreeNode<RecordRaw>,
+        name: &str,
+        name_hash: HTreeHash,
+        htree_levels: usize,
+    ) -> Result<Option<(TreeData<Node>, BlockAddr)>> {
+        assert!(htree_levels > 0);
+        if htree_levels == 1 {
+            // If we are at the leaf level, search for the name
+            for (_, htree_ptr) in parent_htree_node.find_ptrs_for_read(name_hash) {
+                let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
+                let dir = self.read_block(dir_ptr).await?;
+
+                if let Some(entry) = dir.data().find_entry(name) {
+                    let node_ptr = entry.node_ptr();
+                    return Ok(Some(self.read_tree_and_addr(node_ptr).await?));
+                }
+            }
+            #[cfg(feature = "log")]
+            log::trace!("FIND_NODE: Node not found in leaf level 1");
+            return Ok(None);
+        }
+
+        // Otherwise, search the next level of the H-tree
+        for (_, entry) in parent_htree_node.find_ptrs_for_read(name_hash) {
+            let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
+            let htree_node = self.read_block(htree_ptr).await?;
+            let result = self
+                .find_node_inner(htree_node.data(), name, name_hash, htree_levels - 1)
+                .await?;
+            if let Some(node) = result {
+                return Ok(Some(node));
+            }
+        }
+
+        #[cfg(feature = "log")]
+        log::trace!(
+            "FIND_NODE: Node not found in higher level: {}",
+            htree_levels
+        );
+        Ok(None)
+    }
+
+    /// Get a pointer to a the record of `node` with the given offset.
+    /// (i.e, to the `n`th record of `node`.)
+    async fn node_record_ptr(
+        &mut self,
+        node: &TreeData<Node>,
+        record_offset: u64,
+    ) -> Result<BlockPtr<RecordRaw>> {
+        unsafe {
+            match NodeLevel::new(record_offset).ok_or(Error::new(ERANGE))? {
+                NodeLevel::L0(i0) => Ok(level_data(node)?.level0[i0]),
+                NodeLevel::L1(i1, i0) => {
+                    let l0 = self
+                        .read_block_or_empty(level_data(node)?.level1[i1])
+                        .await?;
+                    Ok(l0.data().ptrs[i0])
+                }
+                NodeLevel::L2(i2, i1, i0) => {
+                    let l1 = self
+                        .read_block_or_empty(level_data(node)?.level2[i2])
+                        .await?;
+                    let l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                    Ok(l0.data().ptrs[i0])
+                }
+                NodeLevel::L3(i3, i2, i1, i0) => {
+                    let l2 = self
+                        .read_block_or_empty(level_data(node)?.level3[i3])
+                        .await?;
+                    let l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                    Ok(l0.data().ptrs[i0])
+                }
+                NodeLevel::L4(i4, i3, i2, i1, i0) => {
+                    let l3 = self
+                        .read_block_or_empty(level_data(node)?.level4[i4])
+                        .await?;
+                    let l2 = self.read_block_or_empty(l3.data().ptrs[i3]).await?;
+                    let l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                    Ok(l0.data().ptrs[i0])
+                }
+            }
+        }
+    }
+
+    async fn read_node_inner(
+        &mut self,
+        node: &TreeData<Node>,
+        mut offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize> {
+        let node_size = node.data().size();
+
+        // Try reading from inline data
+        if let Some(inline_data) = node.data().inline_data() {
+            if offset >= node_size {
+                return Ok(0);
+            }
+
+            // Read as much as possible from inline data
+            let mut i = 0;
+            if offset < inline_data.len() as u64 {
+                let len = min(
+                    buf.len() as u64,
+                    min(node_size - offset, inline_data.len() as u64 - offset),
+                );
+                buf[i..len as usize]
+                    .copy_from_slice(&inline_data[offset as usize..(offset + len) as usize]);
+                i += len as usize;
+                offset += len;
+            }
+
+            // Handle sparse data (outside of inline data)
+            while i < buf.len() && offset < node_size {
+                buf[i] = 0;
+                i += 1;
+                offset += 1;
+            }
+
+            return Ok(i);
+        }
+
+        let record_level = node.data().record_level();
+
+        let mut bytes_read = 0;
+        while bytes_read < buf.len() && offset < node_size {
+            // How many bytes we've read into the next record
+            let j = (offset % record_level.bytes()) as usize;
+
+            // Number of bytes to read in this iteration
+            let len = min(
+                buf.len() - bytes_read, // number of bytes we have left in `buf`
+                min(
+                    record_level.bytes() - j as u64, // number of bytes we haven't read in this record
+                    node_size - offset,              // number of bytes left in this node
+                ) as usize,
+            );
+
+            let record_idx = offset / record_level.bytes();
+            let record_ptr = self.node_record_ptr(node, record_idx).await?;
+
+            // The level of the record to read.
+            // This is at most `record_level` due to the way `len` is computed.
+            let level = BlockLevel::for_bytes((j + len) as u64);
+
+            let record = unsafe { self.read_record(record_ptr, level).await? };
+            buf[bytes_read..bytes_read + len].copy_from_slice(&record.data()[j..j + len]);
+
+            bytes_read += len;
+            offset += len as u64;
+        }
+        Ok(bytes_read)
+    }
+
+    async fn read_node(
+        &mut self,
+        node_ptr: TreePtr<Node>,
+        offset: u64,
+        buf: &mut [u8],
+        _atime: u64,
+        _atime_nsec: u32,
+    ) -> Result<usize> {
+        let node = self.read_tree(node_ptr).await?;
+        // let mut node_changed = false;
+
+        let i = self.read_node_inner(&node, offset, buf).await?;
+
+        // TODO: atime needs some kind of defered update if
+        // we want directory reads to be concurrent in general.
+        // Alternately, once we get to locking individual files
+        // instead of a single RwLock on the whole filesystem,
+        // we'll likely end up with a simpler retry loop
+        // internal to the lookup path.
+
+        // if i > 0 {
+        //     let node_atime = node.data().atime();
+        //     if atime > node_atime.0 || (atime == node_atime.0 && atime_nsec > node_atime.1) {
+        //         let is_old = atime - node_atime.0 > 3600; // Last read was more than a day ago
+        //         if is_old {
+        //             node.data_mut().set_atime(atime, atime_nsec);
+        //             node_changed = true;
+        //         }
+        //     }
+        // }
+
+        // if node_changed {
+        //     self.sync_tree(node).await?;
+        // }
+
+        Ok(i)
+    }
+}
+
+// Stub transaction for reads, with no write cache or allocations.
+pub struct TransactionRead<'a, D: Disk> {
+    fs: &'a FileSystem<D>,
+}
+
+impl<'a, D: Disk> TransactionRead<'a, D> {
+    pub(crate) fn new(fs: &'a FileSystem<D>) -> Self {
+        Self { fs: fs }
+    }
+}
+
+impl<'a, D: Disk> TransactionBase<D> for TransactionRead<'a, D> {
+    async fn read_direct<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: BlockPtr<T>,
+        data: &mut T,
+    ) -> Result<()> {
+        Self::read_raw(self.fs, ptr, data).await
+    }
+
+    fn header(&self) -> &Header {
+        &self.fs.header
+    }
+}
+
 pub struct Transaction<'a, D: Disk> {
     fs: &'a mut FileSystem<D>,
     //TODO: make private
@@ -90,8 +602,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
     }
 
-    pub fn commit(mut self, squash: bool) -> Result<()> {
-        self.sync(squash)?;
+    pub async fn commit(mut self, squash: bool) -> Result<()> {
+        self.sync(squash).await?;
         self.fs.header = self.header;
         self.fs.allocator = self.allocator;
         Ok(())
@@ -172,7 +684,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     /// To keep the allocator log from growing excessively, it will
     /// periodically be fully rebuilt using the state of `self.allocator`.
     /// This rebuild can be forced by setting `force_squash` to `true`.
-    fn sync_allocator(&mut self, force_squash: bool) -> Result<bool> {
+    async fn sync_allocator(&mut self, force_squash: bool) -> Result<bool> {
         let mut prev_ptr = BlockPtr::default();
         let should_gc = self.header.generation() % ALLOC_GC_THRESHOLD == 0
             && self.header.generation() >= ALLOC_GC_THRESHOLD
@@ -203,7 +715,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             // Prepare to deallocate old alloc blocks
             let mut alloc_ptr = self.header.alloc;
             while !alloc_ptr.is_null() {
-                let alloc = self.read_block(alloc_ptr)?;
+                let alloc = self.read_block(alloc_ptr).await?;
                 self.deallocate.push(alloc.addr());
                 alloc_ptr = alloc.data().prev;
             }
@@ -215,7 +727,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
             // Push old alloc block to front of allocator log
             //TODO: just skip this if it is already full?
-            let alloc = self.read_block(self.header.alloc)?;
+            let alloc = self.read_block(self.header.alloc).await?;
             for i in (0..alloc.data().entries.len()).rev() {
                 let entry = alloc.data().entries[i];
                 if !entry.is_null() {
@@ -265,9 +777,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
     }
 
     /// Write all changes cached in this [`Transaction`] to disk.
-    pub fn sync(&mut self, force_squash: bool) -> Result<bool> {
+    pub async fn sync(&mut self, force_squash: bool) -> Result<bool> {
         // Make sure alloc is synced
-        self.sync_allocator(force_squash)?;
+        self.sync_allocator(force_squash).await?;
 
         // Write all items in write cache
         for (addr, raw) in self.write_cache.iter_mut() {
@@ -276,7 +788,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
             assert!(self.header_changed);
 
             self.fs.encrypt(raw, *addr);
-            let count = unsafe { self.fs.disk.write_at(self.fs.block + addr.index(), raw)? };
+            let count = unsafe {
+                self.fs
+                    .disk
+                    .write_at(self.fs.block + addr.index(), raw)
+                    .await?
+            };
             if count != raw.len() {
                 // Read wrong number of bytes
                 #[cfg(feature = "log")]
@@ -302,7 +819,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let count = unsafe {
             self.fs
                 .disk
-                .write_at(self.fs.block + gen_block, &self.header)?
+                .write_at(self.fs.block + gen_block, &self.header)
+                .await?
         };
         if count != mem::size_of_val(&self.header) {
             // Read wrong number of bytes
@@ -313,139 +831,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         self.header_changed = false;
         Ok(true)
-    }
-
-    pub fn read_block<T: BlockTrait + DerefMut<Target = [u8]>>(
-        &mut self,
-        ptr: BlockPtr<T>,
-    ) -> Result<BlockData<T>> {
-        if ptr.is_null() {
-            // Pointer is invalid (should this return None?)
-            #[cfg(feature = "log")]
-            log::error!("READ_BLOCK: POINTER IS NULL");
-            return Err(Error::new(ENOENT));
-        }
-
-        let mut data = match T::empty(ptr.addr().level()) {
-            Some(some) => some,
-            None => {
-                #[cfg(feature = "log")]
-                log::error!("READ_BLOCK: INVALID BLOCK LEVEL FOR TYPE");
-                return Err(Error::new(ENOENT));
-            }
-        };
-        if let Some(raw) = self.write_cache.get(&ptr.addr()) {
-            data.copy_from_slice(raw);
-        } else {
-            let count = unsafe {
-                self.fs
-                    .disk
-                    .read_at(self.fs.block + ptr.addr().index(), &mut data)?
-            };
-            if count != data.len() {
-                // Read wrong number of bytes
-                #[cfg(feature = "log")]
-                log::error!("READ_BLOCK: WRONG NUMBER OF BYTES");
-                return Err(Error::new(EIO));
-            }
-            self.fs.decrypt(&mut data, ptr.addr());
-        }
-
-        let block = BlockData::new(ptr.addr(), data);
-        let block_ptr = block.create_ptr();
-        if block_ptr.hash() != ptr.hash() {
-            // Incorrect hash
-            #[cfg(feature = "log")]
-            log::error!(
-                "READ_BLOCK: INCORRECT HASH 0x{:X} != 0x{:X} for block 0x{:X}",
-                block_ptr.hash(),
-                ptr.hash(),
-                ptr.addr().index()
-            );
-            return Err(Error::new(EIO));
-        }
-        Ok(block)
-    }
-
-    /// Read block data or, if pointer is null, return default block data
-    ///
-    /// # Safety
-    /// Unsafe because it creates strange BlockData types that must be swapped before use
-    unsafe fn read_block_or_empty<T: BlockTrait + DerefMut<Target = [u8]>>(
-        &mut self,
-        ptr: BlockPtr<T>,
-    ) -> Result<BlockData<T>> {
-        if ptr.is_null() {
-            let addr = ptr.addr();
-            match T::empty(addr.level()) {
-                Some(empty) => Ok(BlockData::new(addr, empty)),
-                None => {
-                    #[cfg(feature = "log")]
-                    log::error!("READ_BLOCK_OR_EMPTY: INVALID BLOCK LEVEL FOR TYPE");
-                    Err(Error::new(ENOENT))
-                }
-            }
-        } else {
-            self.read_block(ptr)
-        }
-    }
-
-    unsafe fn read_record<T: BlockTrait + DerefMut<Target = [u8]>>(
-        &mut self,
-        mut ptr: BlockPtr<T>,
-        level: BlockLevel,
-    ) -> Result<BlockData<T>> {
-        // Set null pointers to correct size (reduces number of copies below)
-        if ptr.is_null() {
-            ptr = BlockPtr::<T>::null(BlockMeta::new(level));
-        }
-
-        // Read record from disk, or construct empty one for null pointers
-        let mut record = unsafe { self.read_block_or_empty(ptr)? };
-
-        // Attempt to decompress if address metadata indicates compression
-        if let Some(decomp_level) = record.addr().decomp_level() {
-            // First 2 bytes store compressed data length
-            // This means only compressed record sizes up to 64 KiB are supported
-            let mut decomp = match T::empty(decomp_level) {
-                Some(empty) => empty,
-                None => {
-                    #[cfg(feature = "log")]
-                    log::error!("READ_RECORD: INVALID DECOMPRESSED BLOCK LEVEL FOR TYPE");
-                    return Err(Error::new(ENOENT));
-                }
-            };
-            let comp_len = record.data()[0] as usize | ((record.data()[1] as usize) << 8);
-            let total_len = comp_len + 2;
-            if let Err(err) = lz4_flex::decompress_into(&record.data()[2..total_len], &mut decomp) {
-                #[cfg(feature = "log")]
-                log::error!("READ_RECORD: FAILED TO DECOMPRESS: {:?}", err);
-                return Err(Error::new(EIO));
-            }
-            record = BlockData::new(BlockAddr::null(BlockMeta::new(decomp_level)), decomp);
-        }
-
-        // Return record if it is larger than or equal to requested level
-        if record.addr().level() >= level {
-            return Ok(record);
-        }
-
-        // If a larger level was requested,
-        // create a fake record with the requested level
-        // and fill it with the data in the original record.
-        let (_old_addr, old_raw) = unsafe { record.into_parts() };
-        let mut raw = match T::empty(level) {
-            Some(empty) => empty,
-            None => {
-                #[cfg(feature = "log")]
-                log::error!("READ_RECORD: INVALID BLOCK LEVEL FOR TYPE");
-                return Err(Error::new(ENOENT));
-            }
-        };
-        let len = min(raw.len(), old_raw.len());
-        raw[..len].copy_from_slice(&old_raw[..len]);
-
-        Ok(BlockData::new(BlockAddr::null(BlockMeta::new(level)), raw))
     }
 
     /// Write block data to a new address, returning new address
@@ -493,51 +878,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
     // MARK: tree operations
     //
 
-    /// Walk the tree and return the contents and address
-    /// of the data block that `ptr` points too.
-    fn read_tree_and_addr<T: BlockTrait + DerefMut<Target = [u8]>>(
-        &mut self,
-        ptr: TreePtr<T>,
-    ) -> Result<(TreeData<T>, BlockAddr)> {
-        if ptr.is_null() {
-            // ID is invalid (should this return None?)
-            #[cfg(feature = "log")]
-            log::error!("READ_TREE: ID IS NULL");
-            return Err(Error::new(ENOENT));
-        }
-
-        let (i3, i2, i1, i0) = ptr.indexes();
-        let l3 = self.read_block(self.header.tree)?;
-        let l2 = self.read_block(l3.data().ptrs[i3])?;
-        let l1 = self.read_block(l2.data().ptrs[i2])?;
-        let l0 = self.read_block(l1.data().ptrs[i1])?;
-        let raw = self.read_block(l0.data().ptrs[i0])?;
-
-        //TODO: transmute instead of copy?
-        let mut data = match T::empty(BlockLevel::default()) {
-            Some(some) => some,
-            None => {
-                #[cfg(feature = "log")]
-                log::error!("READ_TREE: INVALID BLOCK LEVEL FOR TYPE");
-                return Err(Error::new(ENOENT));
-            }
-        };
-        data.copy_from_slice(raw.data());
-
-        Ok((TreeData::new(ptr.id(), data), raw.addr()))
-    }
-
-    /// Walk the tree and return the contents of the data block that `ptr` points too.
-    pub fn read_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
-        &mut self,
-        ptr: TreePtr<T>,
-    ) -> Result<TreeData<T>> {
-        Ok(self.read_tree_and_addr(ptr)?.0)
-    }
-
     /// Insert `block_ptr` into the first free slot in the tree,
     /// returning a pointer to that slot.
-    pub fn insert_tree<T: Deref<Target = [u8]>>(
+    pub async fn insert_tree<T: Deref<Target = [u8]>>(
         &mut self,
         block_ptr: BlockPtr<T>,
     ) -> Result<TreePtr<T>> {
@@ -545,22 +888,22 @@ impl<'a, D: Disk> Transaction<'a, D> {
         // allocates at the lowest level, so we can save a write by not writing each level as it
         // is allocated.
         unsafe {
-            let mut l3 = self.read_block(self.header.tree)?;
+            let mut l3 = self.read_block(self.header.tree).await?;
             for i3 in 0..l3.data().ptrs.len() {
                 if l3.data().branch_is_full(i3) {
                     continue;
                 }
-                let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
+                let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3]).await?;
                 for i2 in 0..l2.data().ptrs.len() {
                     if l2.data().branch_is_full(i2) {
                         continue;
                     }
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
                     for i1 in 0..l1.data().ptrs.len() {
                         if l1.data().branch_is_full(i1) {
                             continue;
                         }
-                        let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                        let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
                         for i0 in 0..l0.data().ptrs.len() {
                             if l0.data().branch_is_full(i0) {
                                 continue;
@@ -604,7 +947,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
     /// Clear the previously claimed slot in the tree for the given `ptr`. Note that this
     /// should only be called after the corresponding node block has already been deallocated.
-    fn remove_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
+    async fn remove_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: TreePtr<T>,
     ) -> Result<()> {
@@ -616,10 +959,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         let (i3, i2, i1, i0) = ptr.indexes();
-        let mut l3 = self.read_block(self.header.tree)?;
-        let mut l2 = self.read_block(l3.data().ptrs[i3])?;
-        let mut l1 = self.read_block(l2.data().ptrs[i2])?;
-        let mut l0 = self.read_block(l1.data().ptrs[i1])?;
+        let mut l3 = self.read_block(self.header.tree).await?;
+        let mut l2 = self.read_block(l3.data().ptrs[i3]).await?;
+        let mut l1 = self.read_block(l2.data().ptrs[i2]).await?;
+        let mut l0 = self.read_block(l1.data().ptrs[i1]).await?;
 
         // Clear the value in the tree, but do not deallocate the node block, as that should already
         // have been done at the node level. The inner tree nodes can be deallocated if they are empty.
@@ -664,7 +1007,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    pub fn sync_trees<T: Deref<Target = [u8]>>(&mut self, nodes: &[TreeData<T>]) -> Result<()> {
+    pub async fn sync_trees<T: Deref<Target = [u8]>>(
+        &mut self,
+        nodes: &[TreeData<T>],
+    ) -> Result<()> {
         for node in nodes.iter().rev() {
             let ptr = node.ptr();
             if ptr.is_null() {
@@ -677,11 +1023,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         for node in nodes.iter().rev() {
             let (i3, i2, i1, i0) = node.ptr().indexes();
-            let mut l3 = self.read_block(self.header.tree)?;
-            let mut l2 = self.read_block(l3.data().ptrs[i3])?;
-            let mut l1 = self.read_block(l2.data().ptrs[i2])?;
-            let mut l0 = self.read_block(l1.data().ptrs[i1])?;
-            let mut raw = self.read_block(l0.data().ptrs[i0])?;
+            let mut l3 = self.read_block(self.header.tree).await?;
+            let mut l2 = self.read_block(l3.data().ptrs[i3]).await?;
+            let mut l1 = self.read_block(l2.data().ptrs[i2]).await?;
+            let mut l0 = self.read_block(l1.data().ptrs[i1]).await?;
+            let mut raw = self.read_block(l0.data().ptrs[i0]).await?;
 
             // Return if data is equal
             if raw.data().deref() == node.data().deref() {
@@ -703,148 +1049,16 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    pub fn sync_tree<T: Deref<Target = [u8]>>(&mut self, node: TreeData<T>) -> Result<()> {
-        self.sync_trees(&[node])
+    pub async fn sync_tree<T: Deref<Target = [u8]>>(&mut self, node: TreeData<T>) -> Result<()> {
+        self.sync_trees(&[node]).await
     }
 
     //
     // MARK: node operations
     //
 
-    /// Write all children of `parent_ptr` to `children`.
-    /// `parent_ptr` must point to a directory node.
-    pub fn child_nodes(
-        &mut self,
-        parent_ptr: TreePtr<Node>,
-        children: &mut Vec<DirEntry>,
-    ) -> Result<()> {
-        let parent = self.read_tree(parent_ptr)?;
-        if level_data(&parent)?.level0[0].is_marker() {
-            let htree_levels = level_data(&parent)?.level0[0].addr().level().0;
-            let htree_root = if htree_levels == 0 {
-                // Create a fake root to satisfy the recursive child_nodes_inner function signature
-                let mut fake_htree_node =
-                    BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
-                let dir_ptr = level_data(&parent)?.level0[1];
-                let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
-                fake_htree_node.data_mut().ptrs[0] = htree_ptr;
-                fake_htree_node
-            } else {
-                let htree_record_ptr = level_data(&parent)?.level0[1];
-                let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { htree_record_ptr.cast() };
-                self.read_block(htree_ptr)?
-            };
-            self.child_nodes_inner(htree_root.data(), children, htree_levels.max(1))?;
-        }
-        Ok(())
-    }
-
-    fn child_nodes_inner(
-        &mut self,
-        htree_node: &HTreeNode<RecordRaw>,
-        children: &mut Vec<DirEntry>,
-        htree_levels: usize,
-    ) -> Result<()> {
-        assert!(htree_levels > 0);
-        if htree_levels == 1 {
-            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
-                let dir_ptr: BlockPtr<DirList> = unsafe { entry.ptr.cast() };
-                let dir = self.read_block(dir_ptr)?;
-                for entry in dir.data().entries() {
-                    children.push(entry);
-                }
-            }
-        } else {
-            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
-                let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
-                let htree_node = self.read_block(htree_ptr)?;
-                self.child_nodes_inner(htree_node.data(), children, htree_levels - 1)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Find a node that is a child of the `parent_ptr` and is named `name`.
-    /// Returns ENOENT if this node is not found.
-    pub fn find_node(&mut self, parent_ptr: TreePtr<Node>, name: &str) -> Result<TreeData<Node>> {
-        let parent = self.read_tree(parent_ptr)?;
-        if !level_data(&parent)?.level0[0].is_marker() {
-            return Err(Error::new(ENOENT));
-        }
-
-        let htree_levels = level_data(&parent)?.level0[0].addr().level().0;
-
-        let root_htree_node = if htree_levels == 0 {
-            // Create a fake root to satisfy the recursive inner_find_node function signature
-            let mut fake_htree_node =
-                BlockData::<HTreeNode<RecordRaw>>::empty(BlockAddr::default()).unwrap();
-            let dir_ptr = level_data(&parent)?.level0[1];
-            let htree_ptr = HTreePtr::new(HTreeHash::MAX, dir_ptr);
-            fake_htree_node.data_mut().ptrs[0] = htree_ptr;
-            fake_htree_node
-        } else {
-            let root_htree_ptr: BlockPtr<HTreeNode<RecordRaw>> =
-                unsafe { level_data(&parent)?.level0[1].cast() };
-            self.read_block(root_htree_ptr)?
-        };
-
-        let result = self.find_node_inner(
-            root_htree_node.data(),
-            name,
-            HTreeHash::from_name(name),
-            htree_levels.max(1),
-        )?;
-        result
-            .map(|(tree_node, _address)| tree_node)
-            .ok_or(Error::new(ENOENT))
-    }
-
-    fn find_node_inner(
-        &mut self,
-        parent_htree_node: &HTreeNode<RecordRaw>,
-        name: &str,
-        name_hash: HTreeHash,
-        htree_levels: usize,
-    ) -> Result<Option<(TreeData<Node>, BlockAddr)>> {
-        assert!(htree_levels > 0);
-        if htree_levels == 1 {
-            // If we are at the leaf level, search for the name
-            for (_, htree_ptr) in parent_htree_node.find_ptrs_for_read(name_hash) {
-                let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
-                let dir = self.read_block(dir_ptr)?;
-
-                if let Some(entry) = dir.data().find_entry(name) {
-                    let node_ptr = entry.node_ptr();
-                    return Ok(Some(self.read_tree_and_addr(node_ptr)?));
-                }
-            }
-            #[cfg(feature = "log")]
-            log::trace!("FIND_NODE: Node not found in leaf level 1");
-            return Ok(None);
-        }
-
-        // Otherwise, search the next level of the H-tree
-        for (_, entry) in parent_htree_node.find_ptrs_for_read(name_hash) {
-            let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
-            let htree_node = self.read_block(htree_ptr)?;
-            let result =
-                self.find_node_inner(htree_node.data(), name, name_hash, htree_levels - 1)?;
-            if let Some(node) = result {
-                return Ok(Some(node));
-            }
-        }
-
-        #[cfg(feature = "log")]
-        log::trace!(
-            "FIND_NODE: Node not found in higher level: {}",
-            htree_levels
-        );
-        Ok(None)
-    }
-
     /// Create a new node in the tree with the given parameters.
-    pub fn create_node(
+    pub async fn create_node(
         &mut self,
         parent_ptr: TreePtr<Node>,
         name: &str,
@@ -852,10 +1066,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         ctime: u64,
         ctime_nsec: u32,
     ) -> Result<TreeData<Node>> {
-        self.check_name(&parent_ptr, name)?;
+        self.check_name(&parent_ptr, name).await?;
 
         unsafe {
-            let parent = self.read_tree(parent_ptr)?;
+            let parent = self.read_tree(parent_ptr).await?;
             let node_block_data = BlockData::new(
                 self.allocate(&mut FsCtx, BlockMeta::default())?,
                 Node::new(
@@ -867,23 +1081,23 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 ),
             );
             let node_block_ptr = self.write_block(node_block_data)?;
-            let node_ptr = self.insert_tree(node_block_ptr)?;
+            let node_ptr = self.insert_tree(node_block_ptr).await?;
 
-            self.link_node(parent_ptr, name, node_ptr)?;
+            self.link_node(parent_ptr, name, node_ptr).await?;
 
             //TODO: do not re-read node
-            self.read_tree(node_ptr)
+            self.read_tree(node_ptr).await
         }
     }
 
-    pub fn link_node(
+    pub async fn link_node(
         &mut self,
         parent_ptr: TreePtr<Node>,
         name: &str,
         node_ptr: TreePtr<Node>,
     ) -> Result<()> {
-        let mut parent = self.read_tree(parent_ptr)?;
-        let mut node = self.read_tree(node_ptr)?;
+        let mut parent = self.read_tree(parent_ptr).await?;
+        let mut node = self.read_tree(node_ptr).await?;
 
         // Increment node reference counter
         let links = node.data().links();
@@ -925,16 +1139,18 @@ impl<'a, D: Disk> Transaction<'a, D> {
             // Otherwise get the real H-tree root
             let htree_root_ptr: BlockPtr<HTreeNode<RecordRaw>> =
                 unsafe { level_data(&parent)?.level0[1].cast() };
-            self.read_block(htree_root_ptr)?
+            self.read_block(htree_root_ptr).await?
         };
 
-        let new_sibling = self.link_node_inner(
-            &mut parent,
-            htree_root.data_mut(),
-            dir_entry,
-            dir_entry_htree_hash,
-            htree_levels.max(1),
-        )?;
+        let new_sibling = self
+            .link_node_inner(
+                &mut parent,
+                htree_root.data_mut(),
+                dir_entry,
+                dir_entry_htree_hash,
+                htree_levels.max(1),
+            )
+            .await?;
 
         // If we used a fake root, and we grew beyond a single DirList block, we need to create a real root
         if htree_levels == 0 && !htree_root.data().ptrs[1].is_null() {
@@ -986,11 +1202,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
             // Update the parent with the DirList block, ignoring the fake htree_root
             level_data_mut(&mut parent)?.level0[1] = htree_root.data().ptrs[0].ptr;
         }
-        self.sync_trees(&[parent, node])?;
+        self.sync_trees(&[parent, node]).await?;
         Ok(())
     }
 
-    fn link_node_inner(
+    async fn link_node_inner(
         &mut self,
         parent_dir_node: &mut TreeData<Node>,
         parent_htree_node: &mut HTreeNode<RecordRaw>,
@@ -1019,7 +1235,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         if htree_levels == 1 {
             // Add the entry to the DirList block
             let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
-            let mut dir = self.read_block(dir_ptr)?;
+            let mut dir = self.read_block(dir_ptr).await?;
             let unallocated_sibling =
                 htree::add_dir_entry(dir.data_mut(), &mut htree_ptr.htree_hash, dir_entry)?;
             let dir_record_ptr = unsafe { self.sync_block(parent_dir_node, dir)?.cast() };
@@ -1044,14 +1260,16 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         // Recursively insert the entry into the next H-tree level
         let htree_block_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { htree_ptr.ptr.cast() };
-        let mut htree_block = self.read_block(htree_block_ptr)?;
-        let unallocated_sibling = self.link_node_inner(
-            parent_dir_node,
-            htree_block.data_mut(),
-            dir_entry,
-            dir_entry_htree_hash,
-            htree_levels - 1,
-        )?;
+        let mut htree_block = self.read_block(htree_block_ptr).await?;
+        let unallocated_sibling = self
+            .link_node_inner(
+                parent_dir_node,
+                htree_block.data_mut(),
+                dir_entry,
+                dir_entry_htree_hash,
+                htree_levels - 1,
+            )
+            .await?;
 
         // Write the muteated H-tree block back to disk and update the parent node's pointer
         let htree_hash = htree_block.data().find_max_htree_hash().unwrap();
@@ -1077,7 +1295,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(None)
     }
 
-    pub fn remove_node(
+    pub async fn remove_node(
         &mut self,
         parent_ptr: TreePtr<Node>,
         name: &str,
@@ -1091,7 +1309,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             parent_ptr.indexes()
         );
 
-        let mut parent = self.read_tree(parent_ptr)?;
+        let mut parent = self.read_tree(parent_ptr).await?;
         if !level_data(&parent)?.level0[0].is_marker() {
             #[cfg(feature = "log")]
             log::error!("REMOVE_NODE: Parent has no htree marker set (not a directory or empty)");
@@ -1114,13 +1332,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let htree_root_record_ptr = level_data(&parent)?.level0[1];
             let htree_root_ptr: BlockPtr<HTreeNode<RecordRaw>> =
                 unsafe { htree_root_record_ptr.cast() };
-            self.read_block(htree_root_ptr)?
+            self.read_block(htree_root_ptr).await?
         };
 
         // Read node and test type against requested type
         // TODO: Do this check as part of the removal tree processing, and get rid of this extra find
         let (mut node, _node_addr) = self
-            .find_node_inner(htree_root.data(), name, name_hash, htree_levels.max(1))?
+            .find_node_inner(htree_root.data(), name, name_hash, htree_levels.max(1))
+            .await?
             .ok_or(Error::new(ENOENT))?;
 
         if mode & Node::MODE_TYPE == Node::MODE_DIR {
@@ -1157,7 +1376,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
             name,
             name_hash,
             htree_levels.max(1),
-        )?;
+        )
+        .await?;
 
         htree_root
             .data_mut()
@@ -1186,12 +1406,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         if remove_node {
-            self.sync_tree(parent)?;
-            self.release_node(node.ptr())?;
+            self.sync_tree(parent).await?;
+            self.release_node(node.ptr()).await?;
             Ok(Some(node_id))
         } else {
             // Sync both parent and node at the same time
-            self.sync_trees(&[parent, node])?;
+            self.sync_trees(&[parent, node]).await?;
             Ok(None)
         }
     }
@@ -1211,7 +1431,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     /// the release list.
     ///
     /// Returns `Ok(true)` if the node was deleted
-    pub fn on_close_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
+    pub async fn on_close_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
         // Subtract from usages and return if not zero
         match self.fs.node_usages.get_mut(&node_ptr.id()) {
             Some(entry) => {
@@ -1239,17 +1459,17 @@ impl<'a, D: Disk> Transaction<'a, D> {
         self.fs.node_usages.remove(&node_ptr.id());
 
         // Check for node in release list and delete it
-        self.release_unused_nodes()
+        self.release_unused_nodes().await
     }
 
     /// Check for unused nodes in release list and delete them
-    pub fn release_unused_nodes(&mut self) -> Result<()> {
+    pub async fn release_unused_nodes(&mut self) -> Result<()> {
         // Read current release lists (going forward through list)
         let mut releases = VecDeque::<BlockData<ReleaseList>>::new();
         {
             let mut release_ptr = self.header.release;
             while !release_ptr.is_null() {
-                let release = self.read_block(release_ptr)?;
+                let release = self.read_block(release_ptr).await?;
                 release_ptr = release.data().prev;
                 releases.push_front(release);
             }
@@ -1298,7 +1518,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         for node_ptr in release_nodes {
-            self.release_node(node_ptr)?;
+            self.release_node(node_ptr).await?;
         }
 
         Ok(())
@@ -1306,7 +1526,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
     /// Removes node if usages are zero, adds it to release list if usages are
     /// greater than zero.
-    pub fn release_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
+    pub async fn release_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
         let usages = self
             .fs
             .node_usages
@@ -1314,7 +1534,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             .copied()
             .unwrap_or(0);
         if usages > 0 {
-            let mut release = unsafe { self.read_block_or_empty(self.header.release)? };
+            let mut release = unsafe { self.read_block_or_empty(self.header.release).await? };
 
             // Try to insert into current release block
             let mut inserted = false;
@@ -1337,9 +1557,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
             self.header.release = self.sync_block(&mut FsCtx, release)?;
             self.header_changed = true;
         } else {
-            let (mut node, node_addr) = self.read_tree_and_addr(node_ptr)?;
-            self.truncate_node_inner(&mut node, 0)?;
-            self.remove_tree(node.ptr())?;
+            let (mut node, node_addr) = self.read_tree_and_addr(node_ptr).await?;
+            self.truncate_node_inner(&mut node, 0).await?;
+            self.remove_tree(node.ptr()).await?;
             unsafe {
                 self.deallocate(&mut FsCtx, node_addr);
             }
@@ -1347,7 +1567,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    fn remove_node_inner(
+    async fn remove_node_inner(
         &mut self,
         parent_dir_node: &mut TreeData<Node>,
         parent_htree_node: &mut HTreeNode<RecordRaw>,
@@ -1368,7 +1588,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let entry_ptr = parent_htree_node.ptrs[entry_idx];
             if htree_levels == 1 {
                 let dir_ptr: BlockPtr<DirList> = unsafe { entry_ptr.ptr.cast() };
-                let mut dir_list = self.read_block(dir_ptr)?;
+                let mut dir_list = self.read_block(dir_ptr).await?;
 
                 // If we don't find the entry to remove, continue to the next relevant node
                 if !dir_list.data_mut().remove_entry(dir_entry_name) {
@@ -1399,15 +1619,17 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 return Ok(());
             } else {
                 let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry_ptr.ptr.cast() };
-                let mut htree_node = self.read_block(htree_ptr)?;
+                let mut htree_node = self.read_block(htree_ptr).await?;
 
-                let result = self.remove_node_inner(
-                    parent_dir_node,
-                    htree_node.data_mut(),
-                    dir_entry_name,
-                    dir_entry_htree_hash,
-                    htree_levels - 1,
-                );
+                let result = self
+                    .remove_node_inner(
+                        parent_dir_node,
+                        htree_node.data_mut(),
+                        dir_entry_name,
+                        dir_entry_htree_hash,
+                        htree_levels - 1,
+                    )
+                    .await;
 
                 // If the removal attempt resulted in ENOENT, iterate to look at the next relevant node
                 if result.is_err() && result.err().unwrap().errno == ENOENT {
@@ -1442,17 +1664,17 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Err(Error::new(ENOENT))
     }
 
-    pub fn rename_node(
+    pub async fn rename_node(
         &mut self,
         orig_parent_ptr: TreePtr<Node>,
         orig_name: &str,
         new_parent_ptr: TreePtr<Node>,
         new_name: &str,
     ) -> Result<()> {
-        let orig = self.find_node(orig_parent_ptr, orig_name)?;
+        let orig = self.find_node(orig_parent_ptr, orig_name).await?;
 
         // TODO: only allow ENOENT as an error?
-        if let Ok(new) = self.find_node(new_parent_ptr, new_name) {
+        if let Ok(new) = self.find_node(new_parent_ptr, new_name).await {
             // Move to same name, return
             if new.id() == orig.id() {
                 return Ok(());
@@ -1464,53 +1686,56 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 new_parent_ptr,
                 new_name,
                 new.data().mode() & Node::MODE_TYPE,
-            )?;
+            )
+            .await?;
         }
 
         // Link original file to new name
-        self.check_name(&new_parent_ptr, new_name)?;
-        self.link_node(new_parent_ptr, new_name, orig.ptr())?;
+        self.check_name(&new_parent_ptr, new_name).await?;
+        self.link_node(new_parent_ptr, new_name, orig.ptr()).await?;
 
         // Remove original file
         self.remove_node(
             orig_parent_ptr,
             orig_name,
             orig.data().mode() & Node::MODE_TYPE,
-        )?;
+        )
+        .await?;
 
         Ok(())
     }
 
-    pub fn rename_node_no_replace(
+    pub async fn rename_node_no_replace(
         &mut self,
         orig_parent_ptr: TreePtr<Node>,
         orig_name: &str,
         new_parent_ptr: TreePtr<Node>,
         new_name: &str,
     ) -> Result<()> {
-        let orig = self.find_node(orig_parent_ptr, orig_name)?;
+        let orig = self.find_node(orig_parent_ptr, orig_name).await?;
 
         // The target shouldn't exist.
-        if self.find_node(new_parent_ptr, new_name).is_ok() {
+        if self.find_node(new_parent_ptr, new_name).await.is_ok() {
             return Err(Error::new(EEXIST));
         }
 
         // The rest is the same as rename_node.
         // Link original file to new name
-        self.check_name(&new_parent_ptr, new_name)?;
-        self.link_node(new_parent_ptr, new_name, orig.ptr())?;
+        self.check_name(&new_parent_ptr, new_name).await?;
+        self.link_node(new_parent_ptr, new_name, orig.ptr()).await?;
 
         // Remove original file
         self.remove_node(
             orig_parent_ptr,
             orig_name,
             orig.data().mode() & Node::MODE_TYPE,
-        )?;
+        )
+        .await?;
 
         Ok(())
     }
 
-    fn check_name(&mut self, parent_ptr: &TreePtr<Node>, name: &str) -> Result<()> {
+    async fn check_name(&mut self, parent_ptr: &TreePtr<Node>, name: &str) -> Result<()> {
         if name.contains(':') {
             return Err(Error::new(EINVAL));
         }
@@ -1520,50 +1745,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         // TODO: Can this be removed if link_node satisfies this check itself?
-        if self.find_node(*parent_ptr, name).is_ok() {
+        if self.find_node(*parent_ptr, name).await.is_ok() {
             return Err(Error::new(EEXIST));
         }
 
         Ok(())
     }
 
-    /// Get a pointer to a the record of `node` with the given offset.
-    /// (i.e, to the `n`th record of `node`.)
-    fn node_record_ptr(
-        &mut self,
-        node: &TreeData<Node>,
-        record_offset: u64,
-    ) -> Result<BlockPtr<RecordRaw>> {
-        unsafe {
-            match NodeLevel::new(record_offset).ok_or(Error::new(ERANGE))? {
-                NodeLevel::L0(i0) => Ok(level_data(node)?.level0[i0]),
-                NodeLevel::L1(i1, i0) => {
-                    let l0 = self.read_block_or_empty(level_data(node)?.level1[i1])?;
-                    Ok(l0.data().ptrs[i0])
-                }
-                NodeLevel::L2(i2, i1, i0) => {
-                    let l1 = self.read_block_or_empty(level_data(node)?.level2[i2])?;
-                    let l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
-                    Ok(l0.data().ptrs[i0])
-                }
-                NodeLevel::L3(i3, i2, i1, i0) => {
-                    let l2 = self.read_block_or_empty(level_data(node)?.level3[i3])?;
-                    let l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
-                    let l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
-                    Ok(l0.data().ptrs[i0])
-                }
-                NodeLevel::L4(i4, i3, i2, i1, i0) => {
-                    let l3 = self.read_block_or_empty(level_data(node)?.level4[i4])?;
-                    let l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
-                    let l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
-                    let l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
-                    Ok(l0.data().ptrs[i0])
-                }
-            }
-        }
-    }
-
-    fn remove_node_record_ptr(
+    async fn remove_node_record_ptr(
         &mut self,
         node: &mut TreeData<Node>,
         record_offset: u64,
@@ -1575,7 +1764,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     self.deallocate_block(node, ptr);
                 }
                 NodeLevel::L1(i1, i0) => {
-                    let mut l0 = self.read_block_or_empty(level_data(node)?.level1[i1])?;
+                    let mut l0 = self
+                        .read_block_or_empty(level_data(node)?.level1[i1])
+                        .await?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
                         let ptr = level_data_mut(node)?.level1[i1].clear();
@@ -1585,8 +1776,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     }
                 }
                 NodeLevel::L2(i2, i1, i0) => {
-                    let mut l1 = self.read_block_or_empty(level_data(node)?.level2[i2])?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    let mut l1 = self
+                        .read_block_or_empty(level_data(node)?.level2[i2])
+                        .await?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
                         self.deallocate_block(node, l1.data_mut().ptrs[i1].clear());
@@ -1601,9 +1794,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     }
                 }
                 NodeLevel::L3(i3, i2, i1, i0) => {
-                    let mut l2 = self.read_block_or_empty(level_data(node)?.level3[i3])?;
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    let mut l2 = self
+                        .read_block_or_empty(level_data(node)?.level3[i3])
+                        .await?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
                         self.deallocate_block(node, l1.data_mut().ptrs[i1].clear());
@@ -1623,10 +1818,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     }
                 }
                 NodeLevel::L4(i4, i3, i2, i1, i0) => {
-                    let mut l3 = self.read_block_or_empty(level_data(node)?.level4[i4])?;
-                    let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    let mut l3 = self
+                        .read_block_or_empty(level_data(node)?.level4[i4])
+                        .await?;
+                    let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3]).await?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
                         self.deallocate_block(node, l1.data_mut().ptrs[i1].clear());
@@ -1657,7 +1854,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     }
 
     /// Set the record at `ptr` as the data at `record_offset` of `node`.
-    fn sync_node_record_ptr(
+    async fn sync_node_record_ptr(
         &mut self,
         node: &mut TreeData<Node>,
         record_offset: u64,
@@ -1669,23 +1866,29 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     level_data_mut(node)?.level0[i0] = ptr;
                 }
                 NodeLevel::L1(i1, i0) => {
-                    let mut l0 = self.read_block_or_empty(level_data(node)?.level1[i1])?;
+                    let mut l0 = self
+                        .read_block_or_empty(level_data(node)?.level1[i1])
+                        .await?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     level_data_mut(node)?.level1[i1] = self.sync_block(node, l0)?;
                 }
                 NodeLevel::L2(i2, i1, i0) => {
-                    let mut l1 = self.read_block_or_empty(level_data(node)?.level2[i2])?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    let mut l1 = self
+                        .read_block_or_empty(level_data(node)?.level2[i2])
+                        .await?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
                     level_data_mut(node)?.level2[i2] = self.sync_block(node, l1)?;
                 }
                 NodeLevel::L3(i3, i2, i1, i0) => {
-                    let mut l2 = self.read_block_or_empty(level_data(node)?.level3[i3])?;
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    let mut l2 = self
+                        .read_block_or_empty(level_data(node)?.level3[i3])
+                        .await?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
@@ -1693,10 +1896,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
                     level_data_mut(node)?.level3[i3] = self.sync_block(node, l2)?;
                 }
                 NodeLevel::L4(i4, i3, i2, i1, i0) => {
-                    let mut l3 = self.read_block_or_empty(level_data(node)?.level4[i4])?;
-                    let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3])?;
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2])?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1])?;
+                    let mut l3 = self
+                        .read_block_or_empty(level_data(node)?.level4[i4])
+                        .await?;
+                    let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3]).await?;
+                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
@@ -1710,106 +1915,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    pub fn read_node_inner(
+    pub async fn truncate_node_inner(
         &mut self,
-        node: &TreeData<Node>,
-        mut offset: u64,
-        buf: &mut [u8],
-    ) -> Result<usize> {
-        let node_size = node.data().size();
-
-        // Try reading from inline data
-        if let Some(inline_data) = node.data().inline_data() {
-            if offset >= node_size {
-                return Ok(0);
-            }
-
-            // Read as much as possible from inline data
-            let mut i = 0;
-            if offset < inline_data.len() as u64 {
-                let len = min(
-                    buf.len() as u64,
-                    min(node_size - offset, inline_data.len() as u64 - offset),
-                );
-                buf[i..len as usize]
-                    .copy_from_slice(&inline_data[offset as usize..(offset + len) as usize]);
-                i += len as usize;
-                offset += len;
-            }
-
-            // Handle sparse data (outside of inline data)
-            while i < buf.len() && offset < node_size {
-                buf[i] = 0;
-                i += 1;
-                offset += 1;
-            }
-
-            return Ok(i);
-        }
-
-        let record_level = node.data().record_level();
-
-        let mut bytes_read = 0;
-        while bytes_read < buf.len() && offset < node_size {
-            // How many bytes we've read into the next record
-            let j = (offset % record_level.bytes()) as usize;
-
-            // Number of bytes to read in this iteration
-            let len = min(
-                buf.len() - bytes_read, // number of bytes we have left in `buf`
-                min(
-                    record_level.bytes() - j as u64, // number of bytes we haven't read in this record
-                    node_size - offset,              // number of bytes left in this node
-                ) as usize,
-            );
-
-            let record_idx = offset / record_level.bytes();
-            let record_ptr = self.node_record_ptr(node, record_idx)?;
-
-            // The level of the record to read.
-            // This is at most `record_level` due to the way `len` is computed.
-            let level = BlockLevel::for_bytes((j + len) as u64);
-
-            let record = unsafe { self.read_record(record_ptr, level)? };
-            buf[bytes_read..bytes_read + len].copy_from_slice(&record.data()[j..j + len]);
-
-            bytes_read += len;
-            offset += len as u64;
-        }
-        Ok(bytes_read)
-    }
-
-    pub fn read_node(
-        &mut self,
-        node_ptr: TreePtr<Node>,
-        offset: u64,
-        buf: &mut [u8],
-        atime: u64,
-        atime_nsec: u32,
-    ) -> Result<usize> {
-        let mut node = self.read_tree(node_ptr)?;
-        let mut node_changed = false;
-
-        let i = self.read_node_inner(&node, offset, buf)?;
-        if i > 0 {
-            let node_atime = node.data().atime();
-            if atime > node_atime.0 || (atime == node_atime.0 && atime_nsec > node_atime.1) {
-                let is_old = atime - node_atime.0 > 3600; // Last read was more than a day ago
-                if is_old {
-                    node.data_mut().set_atime(atime, atime_nsec);
-                    node_changed = true;
-                }
-            }
-        }
-
-        if node_changed {
-            self.sync_tree(node)?;
-        }
-
-        Ok(i)
-    }
-
-    pub fn truncate_node_inner(&mut self, node: &mut TreeData<Node>, size: u64) -> Result<bool> {
+        node: &mut TreeData<Node>,
+        size: u64,
+    ) -> Result<bool> {
         let old_size = node.data().size();
         let record_level = node.data().record_level();
 
@@ -1837,7 +1947,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 } else {
                     record_level.bytes()
                 };
-                self.write_node_inner(node, &mut offset, &zeroes[start as usize..end as usize])?;
+                self.write_node_inner(node, &mut offset, &zeroes[start as usize..end as usize])
+                    .await?;
             }
             assert_eq!(offset, size);
         } else if !node.data().has_inline_data() {
@@ -1845,7 +1956,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             for record in
                 (size.div_ceil(record_level.bytes())..old_size / record_level.bytes()).rev()
             {
-                self.remove_node_record_ptr(node, record)?;
+                self.remove_node_record_ptr(node, record).await?;
             }
         }
 
@@ -1859,27 +1970,27 @@ impl<'a, D: Disk> Transaction<'a, D> {
     ///
     /// If `size` is larger than the node's current size,
     /// expand the node with zeroes.
-    pub fn truncate_node(
+    pub async fn truncate_node(
         &mut self,
         node_ptr: TreePtr<Node>,
         size: u64,
         mtime: u64,
         mtime_nsec: u32,
     ) -> Result<()> {
-        let mut node = self.read_tree(node_ptr)?;
-        if self.truncate_node_inner(&mut node, size)? {
+        let mut node = self.read_tree(node_ptr).await?;
+        if self.truncate_node_inner(&mut node, size).await? {
             let node_mtime = node.data().mtime();
             if mtime > node_mtime.0 || (mtime == node_mtime.0 && mtime_nsec > node_mtime.1) {
                 node.data_mut().set_mtime(mtime, mtime_nsec);
             }
 
-            self.sync_tree(node)?;
+            self.sync_tree(node).await?;
         }
 
         Ok(())
     }
 
-    fn write_node_inner_records(
+    async fn write_node_inner_records(
         &mut self,
         node: &mut TreeData<Node>,
         offset: &mut u64,
@@ -1898,11 +2009,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let level = BlockLevel::for_bytes((j + len) as u64);
 
             let mut record_ptr = if node_records > (*offset / record_level.bytes()) {
-                self.node_record_ptr(node, *offset / record_level.bytes())?
+                self.node_record_ptr(node, *offset / record_level.bytes())
+                    .await?
             } else {
                 BlockPtr::null(BlockMeta::new(level))
             };
-            let mut record = unsafe { self.read_record(record_ptr, level)? };
+            let mut record = unsafe { self.read_record(record_ptr, level).await? };
 
             // If record has changed
             if buf[i..i + len] != record.data()[j..j + len] {
@@ -1958,7 +2070,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 record_ptr = unsafe { self.write_block(record)? };
 
                 // Update record pointer
-                self.sync_node_record_ptr(node, *offset / record_level.bytes(), record_ptr)?;
+                self.sync_node_record_ptr(node, *offset / record_level.bytes(), record_ptr)
+                    .await?;
                 node_changed = true;
 
                 // Deallocate old record
@@ -1981,7 +2094,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(node_changed)
     }
 
-    pub fn write_node_inner(
+    pub async fn write_node_inner(
         &mut self,
         node: &mut TreeData<Node>,
         offset: &mut u64,
@@ -2013,11 +2126,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
             flags.remove(NodeFlags::INLINE_DATA);
             node.data_mut().set_flags(flags);
             node.data_mut().level_data = NodeLevelData::default();
-            self.write_node_inner_records(node, &mut 0, &inline_data)?;
+            self.write_node_inner_records(node, &mut 0, &inline_data)
+                .await?;
             node_changed = true;
         }
 
-        if self.write_node_inner_records(node, offset, buf)? {
+        if self.write_node_inner_records(node, offset, buf).await? {
             node_changed = true;
         }
 
@@ -2025,7 +2139,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     }
 
     /// Write the bytes at `buf` to `node` starting at `offset`.
-    pub fn write_node(
+    pub async fn write_node(
         &mut self,
         node_ptr: TreePtr<Node>,
         mut offset: u64,
@@ -2033,17 +2147,36 @@ impl<'a, D: Disk> Transaction<'a, D> {
         mtime: u64,
         mtime_nsec: u32,
     ) -> Result<usize> {
-        let mut node = self.read_tree(node_ptr)?;
+        let mut node = self.read_tree(node_ptr).await?;
 
-        if self.write_node_inner(&mut node, &mut offset, buf)? {
+        if self.write_node_inner(&mut node, &mut offset, buf).await? {
             let node_mtime = node.data().mtime();
             if mtime > node_mtime.0 || (mtime == node_mtime.0 && mtime_nsec > node_mtime.1) {
                 node.data_mut().set_mtime(mtime, mtime_nsec);
             }
 
-            self.sync_tree(node)?;
+            self.sync_tree(node).await?;
         }
 
         Ok(buf.len())
+    }
+}
+
+impl<'a, D: Disk> TransactionBase<D> for Transaction<'a, D> {
+    async fn read_direct<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: BlockPtr<T>,
+        data: &mut T,
+    ) -> Result<()> {
+        if let Some(raw) = self.write_cache.get(&ptr.addr()) {
+            data.copy_from_slice(raw);
+            Ok(())
+        } else {
+            Self::read_raw(self.fs, ptr, data).await
+        }
+    }
+
+    fn header(&self) -> &Header {
+        &self.header
     }
 }

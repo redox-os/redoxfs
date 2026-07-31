@@ -1,5 +1,5 @@
 use redox_scheme::{
-    scheme::{SchemeState, SchemeAsync},
+    scheme::{SchemeAsync, SchemeState},
     RequestKind, Response, SignalBehavior, Socket,
 };
 use std::io;
