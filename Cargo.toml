@@ -50,6 +50,7 @@ base64ct = { version = "1", default-features = false }
 bitflags = "2"
 endian-num = "0.1"
 env_logger = { version = "0.11", optional = true }
+futures = "0.3.33"
 getrandom = { version = "0.2.5", optional = true }
 humansize = { version = "2", optional = true }
 libc = "0.2"
