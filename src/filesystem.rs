@@ -7,8 +7,8 @@ use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 use xts_mode::{get_tweak_default, Xts128};
 
 use crate::{
-    transaction::TransactionBase, transaction::TransactionRead, Allocator, BlockAddr, BlockLevel,
-    BlockMeta, Disk, Header, Transaction, BLOCK_SIZE, HEADER_RING, RECORD_SIZE,
+    transaction::TransactionRead, Allocator, BlockAddr, BlockLevel, BlockMeta, Disk, Header,
+    Transaction, BLOCK_SIZE, HEADER_RING, RECORD_SIZE,
 };
 #[cfg(feature = "std")]
 use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt, TreeList};
@@ -204,9 +204,9 @@ impl<D: Disk> FileSystem<D> {
             let alloc_free = fs_blocks - (HEADER_RING + 4);
             alloc.data_mut().entries[0] = AllocEntry::new(HEADER_RING + 4, alloc_free as i64);
 
-            tx.header.tree = tx.write_block(tree)?;
-            tx.header.alloc = tx.write_block(alloc)?;
-            tx.header_changed = true;
+            let tree_ptr = tx.write_block(tree)?;
+            let alloc_ptr = tx.write_block(alloc)?;
+            tx.update_alloc(tree_ptr, alloc_ptr);
 
             Ok(())
         })
@@ -281,7 +281,7 @@ impl<D: Disk> FileSystem<D> {
         // alloc log into a buffer to reverse it.
         let mut allocs = VecDeque::new();
         self.tx(async |tx| {
-            let mut alloc_ptr = tx.header.alloc;
+            let mut alloc_ptr = tx.alloc_ptr();
             while !alloc_ptr.is_null() {
                 let alloc = tx.read_block(alloc_ptr).await?;
                 alloc_ptr = alloc.data().prev;

@@ -6,6 +6,7 @@ use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs, process};
 
+use futures::executor::block_on;
 use redoxfs::{archive, DiskFile, FileSystem};
 use uuid::Uuid;
 
@@ -64,15 +65,15 @@ fn main() {
     };
 
     let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    match FileSystem::create_reserved(
+    match block_on(FileSystem::create_reserved(
         disk,
         None,
         &bootloader,
         ctime.as_secs(),
         ctime.subsec_nanos(),
-    ) {
+    )) {
         Ok(mut fs) => {
-            let size = match archive(&mut fs, &folder_path) {
+            let size = match block_on(archive(&mut fs, &folder_path)) {
                 Ok(ok) => ok,
                 Err(err) => {
                     println!("redoxfs-ar: failed to archive {}: {}", folder_path, err);

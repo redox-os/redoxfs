@@ -63,7 +63,7 @@ pub async fn archive_at<'a, D: Disk, P: AsRef<Path>>(
 
         let path = entry.path();
         if file_type.is_dir() {
-            archive_at(tx, path, node_ptr).await?;
+            Box::pin(archive_at(tx, path, node_ptr)).await?;
         } else if file_type.is_file() {
             let data = fs::read(path)?;
             let count = tx
@@ -120,7 +120,7 @@ pub async fn archive<D: Disk, P: AsRef<Path>>(
             // Squash alloc log
             tx.sync(true).await?;
 
-            let end_block = tx.header.size() / BLOCK_SIZE;
+            let end_block = tx.fs_bytes() / BLOCK_SIZE;
             /* TODO: Cut off any free blocks at the end of the filesystem
             let mut end_changed = true;
             while end_changed {
@@ -141,8 +141,7 @@ pub async fn archive<D: Disk, P: AsRef<Path>>(
             */
 
             // Update header
-            tx.header.size = (end_block * BLOCK_SIZE).into();
-            tx.header_changed = true;
+            tx.set_fs_bytes(end_block * BLOCK_SIZE);
             tx.sync(false).await?;
 
             Ok(end_block)

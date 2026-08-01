@@ -6,6 +6,7 @@ use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs, process};
 
+use futures::executor::block_on;
 use redoxfs::{clone, DiskFile, FileSystem};
 use uuid::Uuid;
 
@@ -49,7 +50,7 @@ fn main() {
         }
     };
 
-    let mut fs_old = match FileSystem::open(disk_old, None, None, false) {
+    let mut fs_old = match block_on(FileSystem::open(disk_old, None, None, false)) {
         Ok(fs) => fs,
         Err(err) => {
             println!(
@@ -95,13 +96,13 @@ fn main() {
     };
 
     let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    let mut fs = match FileSystem::create_reserved(
+    let mut fs = match block_on(FileSystem::create_reserved(
         disk,
         None,
         &bootloader,
         ctime.as_secs(),
         ctime.subsec_nanos(),
-    ) {
+    )) {
         Ok(fs) => fs,
         Err(err) => {
             println!(
@@ -116,7 +117,7 @@ fn main() {
     let free_old = fs_old.allocator().free() * redoxfs::BLOCK_SIZE;
     let used_old = size_old - free_old;
     let mut last_percent = 0;
-    let clone_res = clone(&mut fs_old, &mut fs, move |used| {
+    let clone_res = block_on(clone(&mut fs_old, &mut fs, move |used| {
         let percent = (used * 100) / used_old;
         if percent != last_percent {
             eprint!(
@@ -127,7 +128,7 @@ fn main() {
             );
             last_percent = percent;
         }
-    });
+    }));
     eprintln!();
     match clone_res {
         Ok(()) => (),

@@ -13,7 +13,7 @@ use crate::mount::fuse::TimeOrNow::Now;
 use crate::mount::fuse::TimeOrNow::SpecificTime;
 use futures::executor::block_on;
 
-use crate::{filesystem, transaction::TransactionBase, Disk, Node, TreeData, TreePtr, BLOCK_SIZE};
+use crate::{filesystem, Disk, Node, TreeData, TreePtr, BLOCK_SIZE};
 
 use self::fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,

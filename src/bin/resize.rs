@@ -1,10 +1,11 @@
 use std::{env, process};
 
+use futures::executor::block_on;
 use humansize::{format_size, BINARY, DECIMAL};
 use redoxfs::{BlockAddr, BlockMeta, Disk, DiskFile, FileSystem};
 use uuid::Uuid;
 
-fn resize<D: Disk>(fs: &mut FileSystem<D>, size_arg: String) -> Result<(), String> {
+async fn resize<D: Disk>(fs: &mut FileSystem<D>, size_arg: String) -> Result<(), String> {
     let disk_size = fs
         .disk
         .size()
@@ -14,10 +15,10 @@ fn resize<D: Disk>(fs: &mut FileSystem<D>, size_arg: String) -> Result<(), Strin
     //TODO: better error management
     let mut last_free = None;
     let mut last_end = 0;
-    fs.tx(|tx| {
-        let mut alloc_ptr = tx.header.alloc;
+    fs.tx(async |tx| {
+        let mut alloc_ptr = tx.alloc_ptr();
         while !alloc_ptr.is_null() {
-            let alloc = tx.read_block(alloc_ptr)?;
+            let alloc = tx.read_block(alloc_ptr).await?;
             alloc_ptr = alloc.data().prev;
             for entry in alloc.data().entries.iter() {
                 let count = entry.count();
@@ -33,6 +34,7 @@ fn resize<D: Disk>(fs: &mut FileSystem<D>, size_arg: String) -> Result<(), Strin
         }
         Ok(())
     })
+    .await
     .map_err(|err| format!("failed to read alloc log: {}", err))?;
 
     let old_size = fs.header.size();
@@ -121,16 +123,16 @@ fn resize<D: Disk>(fs: &mut FileSystem<D>, size_arg: String) -> Result<(), Strin
         }
     }
 
-    fs.tx(|tx| {
+    fs.tx(async |tx| {
         // Update header
-        tx.header.size = new_size.into();
-        tx.header_changed = true;
+        tx.set_fs_bytes(new_size);
 
         // Sync with squash
-        tx.sync(true)?;
+        tx.sync(true).await?;
 
         Ok(())
     })
+    .await
     .map_err(|err| format!("transaction failed: {}", err))
 }
 
@@ -160,7 +162,7 @@ fn main() {
         }
     };
 
-    let mut fs = match FileSystem::open(disk, None, None, true) {
+    let mut fs = match block_on(FileSystem::open(disk, None, None, true)) {
         Ok(fs) => fs,
         Err(err) => {
             eprintln!(
@@ -171,7 +173,7 @@ fn main() {
         }
     };
 
-    match resize(&mut fs, size_arg) {
+    match block_on(resize(&mut fs, size_arg)) {
         Ok(()) => {}
         Err(err) => {
             eprintln!(

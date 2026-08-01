@@ -15,8 +15,8 @@ use crate::{
     htree::{self, HTreeHash, HTreeNode, HTreePtr},
     AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockMeta, BlockPtr,
     BlockTrait, DirEntry, DirList, Disk, FileSystem, Header, Node, NodeFlags, NodeLevel,
-    NodeLevelData, RecordRaw, ReleaseList, TreeData, TreePtr, ALLOC_GC_THRESHOLD,
-    ALLOC_LIST_ENTRIES, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
+    NodeLevelData, RecordRaw, ReleaseList, Tree, TreeData, TreePtr, ALLOC_GC_THRESHOLD,
+    ALLOC_LIST_ENTRIES, BLOCK_SIZE, DIR_ENTRY_MAX_LENGTH, HEADER_RING,
 };
 
 pub(crate) fn level_data(node: &TreeData<Node>) -> Result<&NodeLevelData> {
@@ -63,102 +63,45 @@ impl AllocCtx for TreeData<Node> {
     }
 }
 
-async fn child_nodes_inner<D: Disk, T: TransactionBase<D> + ?Sized>(
-    tx: &mut T,
-    htree_node: &HTreeNode<RecordRaw>,
-    children: &mut Vec<DirEntry>,
-    htree_levels: usize,
+async fn read_raw<D: Disk, T: BlockTrait + DerefMut<Target = [u8]>>(
+    fs: &FileSystem<D>,
+    ptr: BlockPtr<T>,
+    data: &mut T,
 ) -> Result<()> {
-    assert!(htree_levels > 0);
-    if htree_levels == 1 {
-        for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
-            let dir_ptr: BlockPtr<DirList> = unsafe { entry.ptr.cast() };
-            let dir = tx.read_block(dir_ptr).await?;
-            for entry in dir.data().entries() {
-                children.push(entry);
-            }
-        }
-    } else {
-        for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
-            let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
-            let htree_node = tx.read_block(htree_ptr).await?;
-            child_nodes_inner(tx, htree_node.data(), children, htree_levels - 1).await?;
-        }
+    let count = unsafe { fs.disk.read_at(fs.block + ptr.addr().index(), data).await? };
+    if count != data.len() {
+        // Read wrong number of bytes
+        #[cfg(feature = "log")]
+        log::error!("READ_BLOCK: WRONG NUMBER OF BYTES");
+        return Err(Error::new(EIO));
     }
-
+    fs.decrypt(data, ptr.addr());
     Ok(())
 }
 
-async fn find_node_inner<D: Disk, T: TransactionBase<D> + ?Sized>(
-    tx: &mut T,
-    parent_htree_node: &HTreeNode<RecordRaw>,
-    name: &str,
-    name_hash: HTreeHash,
-    htree_levels: usize,
-) -> Result<Option<(TreeData<Node>, BlockAddr)>> {
-    assert!(htree_levels > 0);
-    if htree_levels == 1 {
-        // If we are at the leaf level, search for the name
-        for (_, htree_ptr) in parent_htree_node.find_ptrs_for_read(name_hash) {
-            let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
-            let dir = tx.read_block(dir_ptr).await?;
-
-            if let Some(entry) = dir.data().find_entry(name) {
-                let node_ptr = entry.node_ptr();
-                return Ok(Some(tx.read_tree_and_addr(node_ptr).await?));
-            }
-        }
-        #[cfg(feature = "log")]
-        log::trace!("FIND_NODE: Node not found in leaf level 1");
-        return Ok(None);
-    }
-
-    // Otherwise, search the next level of the H-tree
-    for (_, entry) in parent_htree_node.find_ptrs_for_read(name_hash) {
-        let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
-        let htree_node = tx.read_block(htree_ptr).await?;
-        let result =
-            find_node_inner(tx, htree_node.data(), name, name_hash, htree_levels - 1).await?;
-        if let Some(node) = result {
-            return Ok(Some(node));
-        }
-    }
-
-    #[cfg(feature = "log")]
-    log::trace!(
-        "FIND_NODE: Node not found in higher level: {}",
-        htree_levels
-    );
-    Ok(None)
-}
-
-// Shared read functionality for Transaction and TransactionRead
-pub trait TransactionBase<D: Disk> {
-    //
-    // MARK: block operations
-    //
-
-    async fn read_raw<T: BlockTrait + DerefMut<Target = [u8]>>(
-        fs: &FileSystem<D>,
-        ptr: BlockPtr<T>,
-        data: &mut T,
-    ) -> Result<()> {
-        let count = unsafe { fs.disk.read_at(fs.block + ptr.addr().index(), data).await? };
-        if count != data.len() {
-            // Read wrong number of bytes
-            #[cfg(feature = "log")]
-            log::error!("READ_BLOCK: WRONG NUMBER OF BYTES");
-            return Err(Error::new(EIO));
-        }
-        fs.decrypt(data, ptr.addr());
-        Ok(())
-    }
-
+trait TransactionCache {
     async fn read_direct<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: BlockPtr<T>,
         data: &mut T,
     ) -> Result<()>;
+
+    fn header(&self) -> &Header;
+}
+
+struct TransactionReadImpl<C: TransactionCache> {
+    pub cache: C,
+}
+
+// Shared read functionality for Transaction and TransactionRead
+impl<C: TransactionCache> TransactionReadImpl<C> {
+    //
+    // MARK: block operations
+    //
+
+    fn new(cache: C) -> Self {
+        Self { cache: cache }
+    }
 
     async fn read_block<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
@@ -179,7 +122,7 @@ pub trait TransactionBase<D: Disk> {
                 return Err(Error::new(ENOENT));
             }
         };
-        self.read_direct(ptr, &mut data).await?;
+        self.cache.read_direct(ptr, &mut data).await?;
 
         let block = BlockData::new(ptr.addr(), data);
         let block_ptr = block.create_ptr();
@@ -282,8 +225,6 @@ pub trait TransactionBase<D: Disk> {
     // MARK: tree operations
     //
 
-    fn header(&self) -> &Header;
-
     /// Walk the tree and return the contents and address
     /// of the data block that `ptr` points too.
     async fn read_tree_and_addr<T: BlockTrait + DerefMut<Target = [u8]>>(
@@ -298,7 +239,7 @@ pub trait TransactionBase<D: Disk> {
         }
 
         let (i3, i2, i1, i0) = ptr.indexes();
-        let l3 = self.read_block(self.header().tree).await?;
+        let l3 = self.read_block(self.cache.header().tree).await?;
         let l2 = self.read_block(l3.data().ptrs[i3]).await?;
         let l1 = self.read_block(l2.data().ptrs[i2]).await?;
         let l0 = self.read_block(l1.data().ptrs[i1]).await?;
@@ -353,8 +294,36 @@ pub trait TransactionBase<D: Disk> {
                 let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { htree_record_ptr.cast() };
                 self.read_block(htree_ptr).await?
             };
-            child_nodes_inner(self, htree_root.data(), children, htree_levels.max(1)).await?;
+            self.child_nodes_inner(htree_root.data(), children, htree_levels.max(1))
+                .await?;
         }
+        Ok(())
+    }
+
+    async fn child_nodes_inner(
+        &mut self,
+        htree_node: &HTreeNode<RecordRaw>,
+        children: &mut Vec<DirEntry>,
+        htree_levels: usize,
+    ) -> Result<()> {
+        assert!(htree_levels > 0);
+        if htree_levels == 1 {
+            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
+                let dir_ptr: BlockPtr<DirList> = unsafe { entry.ptr.cast() };
+                let dir = self.read_block(dir_ptr).await?;
+                for entry in dir.data().entries() {
+                    children.push(entry);
+                }
+            }
+        } else {
+            for entry in htree_node.ptrs.iter().filter(|entry| !entry.is_null()) {
+                let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
+                let htree_node = self.read_block(htree_ptr).await?;
+                Box::pin(self.child_nodes_inner(htree_node.data(), children, htree_levels - 1))
+                    .await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -382,17 +351,65 @@ pub trait TransactionBase<D: Disk> {
             self.read_block(root_htree_ptr).await?
         };
 
-        let result = find_node_inner(
-            self,
-            root_htree_node.data(),
-            name,
-            HTreeHash::from_name(name),
-            htree_levels.max(1),
-        )
-        .await?;
+        let result = self
+            .find_node_inner(
+                root_htree_node.data(),
+                name,
+                HTreeHash::from_name(name),
+                htree_levels.max(1),
+            )
+            .await?;
         result
             .map(|(tree_node, _address)| tree_node)
             .ok_or(Error::new(ENOENT))
+    }
+
+    async fn find_node_inner(
+        &mut self,
+        parent_htree_node: &HTreeNode<RecordRaw>,
+        name: &str,
+        name_hash: HTreeHash,
+        htree_levels: usize,
+    ) -> Result<Option<(TreeData<Node>, BlockAddr)>> {
+        assert!(htree_levels > 0);
+        if htree_levels == 1 {
+            // If we are at the leaf level, search for the name
+            for (_, htree_ptr) in parent_htree_node.find_ptrs_for_read(name_hash) {
+                let dir_ptr: BlockPtr<DirList> = unsafe { htree_ptr.ptr.cast() };
+                let dir = self.read_block(dir_ptr).await?;
+
+                if let Some(entry) = dir.data().find_entry(name) {
+                    let node_ptr = entry.node_ptr();
+                    return Ok(Some(self.read_tree_and_addr(node_ptr).await?));
+                }
+            }
+            #[cfg(feature = "log")]
+            log::trace!("FIND_NODE: Node not found in leaf level 1");
+            return Ok(None);
+        }
+
+        // Otherwise, search the next level of the H-tree
+        for (_, entry) in parent_htree_node.find_ptrs_for_read(name_hash) {
+            let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry.ptr.cast() };
+            let htree_node = self.read_block(htree_ptr).await?;
+            let result = Box::pin(self.find_node_inner(
+                htree_node.data(),
+                name,
+                name_hash,
+                htree_levels - 1,
+            ))
+            .await?;
+            if let Some(node) = result {
+                return Ok(Some(node));
+            }
+        }
+
+        #[cfg(feature = "log")]
+        log::trace!(
+            "FIND_NODE: Node not found in higher level: {}",
+            htree_levels
+        );
+        Ok(None)
     }
 
     /// Get a pointer to a the record of `node` with the given offset.
@@ -547,24 +564,17 @@ pub trait TransactionBase<D: Disk> {
     }
 }
 
-// Stub transaction for reads, with no write cache or allocations.
-pub struct TransactionRead<'a, D: Disk> {
-    fs: &'a FileSystem<D>,
+struct TransactionReadCache<'a, D: Disk> {
+    pub fs: &'a FileSystem<D>,
 }
 
-impl<'a, D: Disk> TransactionRead<'a, D> {
-    pub(crate) fn new(fs: &'a FileSystem<D>) -> Self {
-        Self { fs: fs }
-    }
-}
-
-impl<'a, D: Disk> TransactionBase<D> for TransactionRead<'a, D> {
+impl<'a, D: Disk> TransactionCache for TransactionReadCache<'a, D> {
     async fn read_direct<T: BlockTrait + DerefMut<Target = [u8]>>(
         &mut self,
         ptr: BlockPtr<T>,
         data: &mut T,
     ) -> Result<()> {
-        Self::read_raw(self.fs, ptr, data).await
+        read_raw(self.fs, ptr, data).await
     }
 
     fn header(&self) -> &Header {
@@ -572,16 +582,84 @@ impl<'a, D: Disk> TransactionBase<D> for TransactionRead<'a, D> {
     }
 }
 
-pub struct Transaction<'a, D: Disk> {
-    fs: &'a mut FileSystem<D>,
-    //TODO: make private
+pub struct TransactionRead<'a, D: Disk> {
+    inner: TransactionReadImpl<TransactionReadCache<'a, D>>,
+}
+
+impl<'a, D: Disk> TransactionRead<'a, D> {
+    pub(crate) fn new(fs: &'a FileSystem<D>) -> Self {
+        Self {
+            inner: TransactionReadImpl::new(TransactionReadCache { fs: fs }),
+        }
+    }
+
+    pub async fn read_block<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: BlockPtr<T>,
+    ) -> Result<BlockData<T>> {
+        self.inner.read_block(ptr).await
+    }
+
+    pub async fn read_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: TreePtr<T>,
+    ) -> Result<TreeData<T>> {
+        self.inner.read_tree(ptr).await
+    }
+
+    pub async fn read_node(
+        &mut self,
+        node_ptr: TreePtr<Node>,
+        offset: u64,
+        buf: &mut [u8],
+        atime: u64,
+        atime_nsec: u32,
+    ) -> Result<usize> {
+        self.inner
+            .read_node(node_ptr, offset, buf, atime, atime_nsec)
+            .await
+    }
+
+    pub async fn child_nodes(
+        &mut self,
+        parent_ptr: TreePtr<Node>,
+        children: &mut Vec<DirEntry>,
+    ) -> Result<()> {
+        self.inner.child_nodes(parent_ptr, children).await
+    }
+}
+
+struct TransactionWriteCache<'a, D: Disk> {
+    pub fs: &'a mut FileSystem<D>,
     pub header: Header,
-    //TODO: make private
-    pub header_changed: bool,
+    pub(crate) write_cache: BTreeMap<BlockAddr, Vec<u8>>,
+}
+
+impl<'a, D: Disk> TransactionCache for TransactionWriteCache<'a, D> {
+    async fn read_direct<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: BlockPtr<T>,
+        data: &mut T,
+    ) -> Result<()> {
+        if let Some(raw) = self.write_cache.get(&ptr.addr()) {
+            data.copy_from_slice(raw);
+            Ok(())
+        } else {
+            read_raw(self.fs, ptr, data).await
+        }
+    }
+
+    fn header(&self) -> &Header {
+        &self.header
+    }
+}
+
+pub struct Transaction<'a, D: Disk> {
+    inner: TransactionReadImpl<TransactionWriteCache<'a, D>>,
+    header_changed: bool,
     pub(crate) allocator: Allocator,
     allocator_log: VecDeque<AllocEntry>,
     deallocate: Vec<BlockAddr>,
-    pub(crate) write_cache: BTreeMap<BlockAddr, Vec<u8>>,
 }
 
 impl<'a, D: Disk> Transaction<'a, D> {
@@ -589,26 +667,103 @@ impl<'a, D: Disk> Transaction<'a, D> {
         let header = fs.header;
         let allocator = fs.allocator.clone();
         Self {
-            fs,
-            header,
+            inner: TransactionReadImpl::new(TransactionWriteCache {
+                fs: fs,
+                header: header,
+                write_cache: BTreeMap::new(),
+            }),
             header_changed: false,
             allocator,
             allocator_log: VecDeque::new(),
             deallocate: Vec::new(),
-            write_cache: BTreeMap::new(),
         }
+    }
+
+    pub async fn read_block<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: BlockPtr<T>,
+    ) -> Result<BlockData<T>> {
+        self.inner.read_block(ptr).await
+    }
+
+    pub async fn read_tree<T: BlockTrait + DerefMut<Target = [u8]>>(
+        &mut self,
+        ptr: TreePtr<T>,
+    ) -> Result<TreeData<T>> {
+        self.inner.read_tree(ptr).await
+    }
+
+    pub async fn read_node(
+        &mut self,
+        node_ptr: TreePtr<Node>,
+        offset: u64,
+        buf: &mut [u8],
+        atime: u64,
+        atime_nsec: u32,
+    ) -> Result<usize> {
+        self.inner
+            .read_node(node_ptr, offset, buf, atime, atime_nsec)
+            .await
+    }
+
+    pub async fn read_node_inner(
+        &mut self,
+        node: &TreeData<Node>,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize> {
+        self.inner.read_node_inner(node, offset, buf).await
+    }
+
+    pub async fn find_node(
+        &mut self,
+        parent_ptr: TreePtr<Node>,
+        name: &str,
+    ) -> Result<TreeData<Node>> {
+        self.inner.find_node(parent_ptr, name).await
+    }
+
+    pub async fn child_nodes(
+        &mut self,
+        parent_ptr: TreePtr<Node>,
+        children: &mut Vec<DirEntry>,
+    ) -> Result<()> {
+        self.inner.child_nodes(parent_ptr, children).await
     }
 
     pub async fn commit(mut self, squash: bool) -> Result<()> {
         self.sync(squash).await?;
-        self.fs.header = self.header;
-        self.fs.allocator = self.allocator;
+        self.inner.cache.fs.header = self.inner.cache.header;
+        self.inner.cache.fs.allocator = self.allocator;
         Ok(())
     }
 
     //
     // MARK: block operations
     //
+
+    pub fn alloc_ptr(&self) -> BlockPtr<AllocList> {
+        self.inner.cache.header.alloc
+    }
+
+    pub(crate) unsafe fn update_alloc(&mut self, tree: BlockPtr<Tree>, alloc: BlockPtr<AllocList>) {
+        self.inner.cache.header.tree = tree;
+        self.inner.cache.header.alloc = alloc;
+        self.header_changed = true;
+    }
+
+    pub fn fs_bytes(&self) -> u64 {
+        self.inner.cache.header.size()
+    }
+
+    pub fn fs_free_bytes(&self) -> u64 {
+        self.allocator.free() * BLOCK_SIZE
+    }
+
+    pub fn set_fs_bytes(&mut self, bytes: u64) {
+        self.inner.cache.header.size = bytes.into();
+        self.header_changed = true;
+    }
 
     /// Allocate a new block of size defined by `meta`, returning its address.
     /// - returns `Err(ENOSPC)` if a block of this size could not be alloated.
@@ -636,7 +791,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         // Remove from write_cache if it is there, since it no longer needs to be written
         //TODO: for larger blocks do we need to check for sub-blocks in here?
-        self.write_cache.remove(&addr);
+        self.inner.cache.write_cache.remove(&addr);
 
         // Search and remove the last matching entry in allocator_log
         let mut found = false;
@@ -683,8 +838,8 @@ impl<'a, D: Disk> Transaction<'a, D> {
     /// This rebuild can be forced by setting `force_squash` to `true`.
     async fn sync_allocator(&mut self, force_squash: bool) -> Result<bool> {
         let mut prev_ptr = BlockPtr::default();
-        let should_gc = self.header.generation() % ALLOC_GC_THRESHOLD == 0
-            && self.header.generation() >= ALLOC_GC_THRESHOLD
+        let should_gc = self.inner.cache.header.generation() % ALLOC_GC_THRESHOLD == 0
+            && self.inner.cache.header.generation() >= ALLOC_GC_THRESHOLD
             && self.allocator.free() > 0;
         if force_squash || should_gc {
             // Clear and rebuild alloc log
@@ -710,7 +865,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             }
 
             // Prepare to deallocate old alloc blocks
-            let mut alloc_ptr = self.header.alloc;
+            let mut alloc_ptr = self.inner.cache.header.alloc;
             while !alloc_ptr.is_null() {
                 let alloc = self.read_block(alloc_ptr).await?;
                 self.deallocate.push(alloc.addr());
@@ -724,7 +879,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
             // Push old alloc block to front of allocator log
             //TODO: just skip this if it is already full?
-            let alloc = self.read_block(self.header.alloc).await?;
+            let alloc = self.read_block(self.inner.cache.header.alloc).await?;
             for i in (0..alloc.data().entries.len()).rev() {
                 let entry = alloc.data().entries[i];
                 if !entry.is_null() {
@@ -767,7 +922,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             prev_ptr = unsafe { self.write_block(alloc)? };
         }
 
-        self.header.alloc = prev_ptr;
+        self.inner.cache.header.alloc = prev_ptr;
         self.header_changed = true;
 
         Ok(true)
@@ -779,16 +934,18 @@ impl<'a, D: Disk> Transaction<'a, D> {
         self.sync_allocator(force_squash).await?;
 
         // Write all items in write cache
-        for (addr, raw) in self.write_cache.iter_mut() {
+        for (addr, raw) in self.inner.cache.write_cache.iter_mut() {
             // sync_alloc must have changed alloc block pointer
             // if we have any blocks to write
             assert!(self.header_changed);
 
-            self.fs.encrypt(raw, *addr);
+            self.inner.cache.fs.encrypt(raw, *addr);
             let count = unsafe {
-                self.fs
+                self.inner
+                    .cache
+                    .fs
                     .disk
-                    .write_at(self.fs.block + addr.index(), raw)
+                    .write_at(self.inner.cache.fs.block + addr.index(), raw)
                     .await?
             };
             if count != raw.len() {
@@ -798,7 +955,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 return Err(Error::new(EIO));
             }
         }
-        self.write_cache.clear();
+        self.inner.cache.write_cache.clear();
 
         // Do nothing if there are no changes to write.
         //
@@ -809,17 +966,26 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         // Update header to next generation
-        let gen = self.header.update(self.fs.cipher_opt.as_ref());
+        let gen = self
+            .inner
+            .cache
+            .header
+            .update(self.inner.cache.fs.cipher_opt.as_ref());
         let gen_block = gen % HEADER_RING;
 
         // Write header
         let count = unsafe {
-            self.fs
+            self.inner
+                .cache
+                .fs
                 .disk
-                .write_at(self.fs.block + gen_block, &self.header)
+                .write_at(
+                    self.inner.cache.fs.block + gen_block,
+                    &self.inner.cache.header,
+                )
                 .await?
         };
-        if count != mem::size_of_val(&self.header) {
+        if count != mem::size_of_val(&self.inner.cache.header) {
             // Read wrong number of bytes
             #[cfg(feature = "log")]
             log::error!("SYNC: WRONG NUMBER OF BYTES");
@@ -828,6 +994,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         self.header_changed = false;
         Ok(true)
+    }
+
+    pub async fn sync_if_cache_sized(&mut self, max: usize) -> Result<bool> {
+        if self.inner.cache.write_cache.len() > max {
+            self.sync(false).await
+        } else {
+            Ok(false)
+        }
     }
 
     /// Write block data to a new address, returning new address
@@ -865,7 +1039,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
             return Err(Error::new(ENOENT));
         }
 
-        self.write_cache
+        self.inner
+            .cache
+            .write_cache
             .insert(block.addr(), block.data().deref().to_vec());
 
         Ok(block.create_ptr())
@@ -885,22 +1061,22 @@ impl<'a, D: Disk> Transaction<'a, D> {
         // allocates at the lowest level, so we can save a write by not writing each level as it
         // is allocated.
         unsafe {
-            let mut l3 = self.read_block(self.header.tree).await?;
+            let mut l3 = self.read_block(self.inner.cache.header.tree).await?;
             for i3 in 0..l3.data().ptrs.len() {
                 if l3.data().branch_is_full(i3) {
                     continue;
                 }
-                let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3]).await?;
+                let mut l2 = self.inner.read_block_or_empty(l3.data().ptrs[i3]).await?;
                 for i2 in 0..l2.data().ptrs.len() {
                     if l2.data().branch_is_full(i2) {
                         continue;
                     }
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let mut l1 = self.inner.read_block_or_empty(l2.data().ptrs[i2]).await?;
                     for i1 in 0..l1.data().ptrs.len() {
                         if l1.data().branch_is_full(i1) {
                             continue;
                         }
-                        let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                        let mut l0 = self.inner.read_block_or_empty(l1.data().ptrs[i1]).await?;
                         for i0 in 0..l0.data().ptrs.len() {
                             if l0.data().branch_is_full(i0) {
                                 continue;
@@ -929,7 +1105,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                             l3.data_mut()
                                 .set_branch_full(i3, l2.data().tree_list_is_full());
                             l3.data_mut().ptrs[i3] = self.sync_block(&mut FsCtx, l2)?;
-                            self.header.tree = self.sync_block(&mut FsCtx, l3)?;
+                            self.inner.cache.header.tree = self.sync_block(&mut FsCtx, l3)?;
                             self.header_changed = true;
 
                             return Ok(tree_ptr);
@@ -956,7 +1132,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         let (i3, i2, i1, i0) = ptr.indexes();
-        let mut l3 = self.read_block(self.header.tree).await?;
+        let mut l3 = self.read_block(self.inner.cache.header.tree).await?;
         let mut l2 = self.read_block(l3.data().ptrs[i3]).await?;
         let mut l1 = self.read_block(l2.data().ptrs[i2]).await?;
         let mut l0 = self.read_block(l1.data().ptrs[i1]).await?;
@@ -999,7 +1175,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             self.sync_block(&mut FsCtx, l3)?
         };
 
-        self.header.tree = l3_ptr;
+        self.inner.cache.header.tree = l3_ptr;
         self.header_changed = true;
         Ok(())
     }
@@ -1020,7 +1196,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         for node in nodes.iter().rev() {
             let (i3, i2, i1, i0) = node.ptr().indexes();
-            let mut l3 = self.read_block(self.header.tree).await?;
+            let mut l3 = self.read_block(self.inner.cache.header.tree).await?;
             let mut l2 = self.read_block(l3.data().ptrs[i3]).await?;
             let mut l1 = self.read_block(l2.data().ptrs[i2]).await?;
             let mut l0 = self.read_block(l1.data().ptrs[i1]).await?;
@@ -1039,7 +1215,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             l1.data_mut().ptrs[i1] = self.sync_block(&mut FsCtx, l0)?;
             l2.data_mut().ptrs[i2] = self.sync_block(&mut FsCtx, l1)?;
             l3.data_mut().ptrs[i3] = self.sync_block(&mut FsCtx, l2)?;
-            self.header.tree = self.sync_block(&mut FsCtx, l3)?;
+            self.inner.cache.header.tree = self.sync_block(&mut FsCtx, l3)?;
             self.header_changed = true;
         }
 
@@ -1258,15 +1434,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
         // Recursively insert the entry into the next H-tree level
         let htree_block_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { htree_ptr.ptr.cast() };
         let mut htree_block = self.read_block(htree_block_ptr).await?;
-        let unallocated_sibling = self
-            .link_node_inner(
-                parent_dir_node,
-                htree_block.data_mut(),
-                dir_entry,
-                dir_entry_htree_hash,
-                htree_levels - 1,
-            )
-            .await?;
+        let unallocated_sibling = Box::pin(self.link_node_inner(
+            parent_dir_node,
+            htree_block.data_mut(),
+            dir_entry,
+            dir_entry_htree_hash,
+            htree_levels - 1,
+        ))
+        .await?;
 
         // Write the muteated H-tree block back to disk and update the parent node's pointer
         let htree_hash = htree_block.data().find_max_htree_hash().unwrap();
@@ -1334,15 +1509,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
         // Read node and test type against requested type
         // TODO: Do this check as part of the removal tree processing, and get rid of this extra find
-        let (mut node, _node_addr) = find_node_inner(
-            self,
-            htree_root.data(),
-            name,
-            name_hash,
-            htree_levels.max(1),
-        )
-        .await?
-        .ok_or(Error::new(ENOENT))?;
+        let (mut node, _node_addr) = self
+            .inner
+            .find_node_inner(htree_root.data(), name, name_hash, htree_levels.max(1))
+            .await?
+            .ok_or(Error::new(ENOENT))?;
 
         if mode & Node::MODE_TYPE == Node::MODE_DIR {
             if !node.data().is_dir() {
@@ -1420,7 +1591,13 @@ impl<'a, D: Disk> Transaction<'a, D> {
 
     /// Notify of node open, for tracking node usage
     pub fn on_open_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
-        let entry = self.fs.node_usages.entry(node_ptr.id()).or_insert(0);
+        let entry = self
+            .inner
+            .cache
+            .fs
+            .node_usages
+            .entry(node_ptr.id())
+            .or_insert(0);
         *entry = entry.checked_add(1).ok_or_else(|| {
             #[cfg(feature = "log")]
             log::error!("node {} usage overflow", node_ptr.id());
@@ -1435,7 +1612,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
     /// Returns `Ok(true)` if the node was deleted
     pub async fn on_close_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
         // Subtract from usages and return if not zero
-        match self.fs.node_usages.get_mut(&node_ptr.id()) {
+        match self.inner.cache.fs.node_usages.get_mut(&node_ptr.id()) {
             Some(entry) => {
                 *entry = entry.checked_sub(1).ok_or_else(|| {
                     #[cfg(feature = "log")]
@@ -1458,7 +1635,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         // Remove node usages entry
-        self.fs.node_usages.remove(&node_ptr.id());
+        self.inner.cache.fs.node_usages.remove(&node_ptr.id());
 
         // Check for node in release list and delete it
         self.release_unused_nodes().await
@@ -1469,7 +1646,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
         // Read current release lists (going forward through list)
         let mut releases = VecDeque::<BlockData<ReleaseList>>::new();
         {
-            let mut release_ptr = self.header.release;
+            let mut release_ptr = self.inner.cache.header.release;
             while !release_ptr.is_null() {
                 let release = self.read_block(release_ptr).await?;
                 release_ptr = release.data().prev;
@@ -1489,7 +1666,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let mut empty = true;
             for entry in release.data_mut().entries.iter_mut() {
                 if !entry.is_null() {
-                    let usages = self.fs.node_usages.get(&entry.id()).copied().unwrap_or(0);
+                    let usages = self
+                        .inner
+                        .cache
+                        .fs
+                        .node_usages
+                        .get(&entry.id())
+                        .copied()
+                        .unwrap_or(0);
                     if usages == 0 {
                         release_nodes.push(*entry);
                         *entry = TreePtr::default();
@@ -1515,7 +1699,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
             }
         }
         if let Some(prev_ptr) = update_prev.take() {
-            self.header.release = prev_ptr;
+            self.inner.cache.header.release = prev_ptr;
             self.header_changed = true;
         }
 
@@ -1530,13 +1714,19 @@ impl<'a, D: Disk> Transaction<'a, D> {
     /// greater than zero.
     pub async fn release_node(&mut self, node_ptr: TreePtr<Node>) -> Result<()> {
         let usages = self
+            .inner
+            .cache
             .fs
             .node_usages
             .get(&node_ptr.id())
             .copied()
             .unwrap_or(0);
         if usages > 0 {
-            let mut release = unsafe { self.read_block_or_empty(self.header.release).await? };
+            let mut release = unsafe {
+                self.inner
+                    .read_block_or_empty(self.inner.cache.header.release)
+                    .await?
+            };
 
             // Try to insert into current release block
             let mut inserted = false;
@@ -1551,15 +1741,15 @@ impl<'a, D: Disk> Transaction<'a, D> {
             // If not inserted, try to add another release block
             if !inserted {
                 release = BlockData::empty(BlockAddr::null(BlockMeta::default())).unwrap();
-                release.data_mut().prev = self.header.release;
+                release.data_mut().prev = self.inner.cache.header.release;
                 release.data_mut().entries[0] = node_ptr;
             }
 
             // Update header
-            self.header.release = self.sync_block(&mut FsCtx, release)?;
+            self.inner.cache.header.release = self.sync_block(&mut FsCtx, release)?;
             self.header_changed = true;
         } else {
-            let (mut node, node_addr) = self.read_tree_and_addr(node_ptr).await?;
+            let (mut node, node_addr) = self.inner.read_tree_and_addr(node_ptr).await?;
             self.truncate_node_inner(&mut node, 0).await?;
             self.remove_tree(node.ptr()).await?;
             unsafe {
@@ -1623,15 +1813,14 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 let htree_ptr: BlockPtr<HTreeNode<RecordRaw>> = unsafe { entry_ptr.ptr.cast() };
                 let mut htree_node = self.read_block(htree_ptr).await?;
 
-                let result = self
-                    .remove_node_inner(
-                        parent_dir_node,
-                        htree_node.data_mut(),
-                        dir_entry_name,
-                        dir_entry_htree_hash,
-                        htree_levels - 1,
-                    )
-                    .await;
+                let result = Box::pin(self.remove_node_inner(
+                    parent_dir_node,
+                    htree_node.data_mut(),
+                    dir_entry_name,
+                    dir_entry_htree_hash,
+                    htree_levels - 1,
+                ))
+                .await;
 
                 // If the removal attempt resulted in ENOENT, iterate to look at the next relevant node
                 if result.is_err() && result.err().unwrap().errno == ENOENT {
@@ -1767,6 +1956,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
                 NodeLevel::L1(i1, i0) => {
                     let mut l0 = self
+                        .inner
                         .read_block_or_empty(level_data(node)?.level1[i1])
                         .await?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
@@ -1779,9 +1969,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
                 NodeLevel::L2(i2, i1, i0) => {
                     let mut l1 = self
+                        .inner
                         .read_block_or_empty(level_data(node)?.level2[i2])
                         .await?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                    let mut l0 = self.inner.read_block_or_empty(l1.data().ptrs[i1]).await?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
                         self.deallocate_block(node, l1.data_mut().ptrs[i1].clear());
@@ -1797,10 +1988,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
                 NodeLevel::L3(i3, i2, i1, i0) => {
                     let mut l2 = self
+                        .inner
                         .read_block_or_empty(level_data(node)?.level3[i3])
                         .await?;
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                    let mut l1 = self.inner.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let mut l0 = self.inner.read_block_or_empty(l1.data().ptrs[i1]).await?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
                         self.deallocate_block(node, l1.data_mut().ptrs[i1].clear());
@@ -1821,11 +2013,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
                 NodeLevel::L4(i4, i3, i2, i1, i0) => {
                     let mut l3 = self
+                        .inner
                         .read_block_or_empty(level_data(node)?.level4[i4])
                         .await?;
-                    let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3]).await?;
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                    let mut l2 = self.inner.read_block_or_empty(l3.data().ptrs[i3]).await?;
+                    let mut l1 = self.inner.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let mut l0 = self.inner.read_block_or_empty(l1.data().ptrs[i1]).await?;
                     self.deallocate_block(node, l0.data_mut().ptrs[i0].clear());
                     if l0.data().is_empty() {
                         self.deallocate_block(node, l1.data_mut().ptrs[i1].clear());
@@ -1869,6 +2062,7 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
                 NodeLevel::L1(i1, i0) => {
                     let mut l0 = self
+                        .inner
                         .read_block_or_empty(level_data(node)?.level1[i1])
                         .await?;
 
@@ -1877,9 +2071,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
                 NodeLevel::L2(i2, i1, i0) => {
                     let mut l1 = self
+                        .inner
                         .read_block_or_empty(level_data(node)?.level2[i2])
                         .await?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                    let mut l0 = self.inner.read_block_or_empty(l1.data().ptrs[i1]).await?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
@@ -1887,10 +2082,11 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
                 NodeLevel::L3(i3, i2, i1, i0) => {
                     let mut l2 = self
+                        .inner
                         .read_block_or_empty(level_data(node)?.level3[i3])
                         .await?;
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                    let mut l1 = self.inner.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let mut l0 = self.inner.read_block_or_empty(l1.data().ptrs[i1]).await?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
@@ -1899,11 +2095,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 }
                 NodeLevel::L4(i4, i3, i2, i1, i0) => {
                     let mut l3 = self
+                        .inner
                         .read_block_or_empty(level_data(node)?.level4[i4])
                         .await?;
-                    let mut l2 = self.read_block_or_empty(l3.data().ptrs[i3]).await?;
-                    let mut l1 = self.read_block_or_empty(l2.data().ptrs[i2]).await?;
-                    let mut l0 = self.read_block_or_empty(l1.data().ptrs[i1]).await?;
+                    let mut l2 = self.inner.read_block_or_empty(l3.data().ptrs[i3]).await?;
+                    let mut l1 = self.inner.read_block_or_empty(l2.data().ptrs[i2]).await?;
+                    let mut l0 = self.inner.read_block_or_empty(l1.data().ptrs[i1]).await?;
 
                     l0.data_mut().ptrs[i0] = ptr;
                     l1.data_mut().ptrs[i1] = self.sync_block(node, l0)?;
@@ -2011,12 +2208,13 @@ impl<'a, D: Disk> Transaction<'a, D> {
             let level = BlockLevel::for_bytes((j + len) as u64);
 
             let mut record_ptr = if node_records > (*offset / record_level.bytes()) {
-                self.node_record_ptr(node, *offset / record_level.bytes())
+                self.inner
+                    .node_record_ptr(node, *offset / record_level.bytes())
                     .await?
             } else {
                 BlockPtr::null(BlockMeta::new(level))
             };
-            let mut record = unsafe { self.read_record(record_ptr, level).await? };
+            let mut record = unsafe { self.inner.read_record(record_ptr, level).await? };
 
             // If record has changed
             if buf[i..i + len] != record.data()[j..j + len] {
@@ -2027,7 +2225,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 let decomp_level = record.addr().level();
                 if decomp_level.0 > 0 {
                     assert_eq!(decomp_level.bytes(), record.data().len() as u64);
-                    match lz4_flex::compress_into(record.data(), &mut self.fs.compress_cache) {
+                    match lz4_flex::compress_into(
+                        record.data(),
+                        &mut self.inner.cache.fs.compress_cache,
+                    ) {
                         Ok(comp_len) => {
                             let total_len = comp_len + 2;
                             // Maximum compressed record size is 64 KiB
@@ -2039,8 +2240,9 @@ impl<'a, D: Disk> Transaction<'a, D> {
                                         // First two bytes store compressed data length
                                         comp[0] = comp_len as u8;
                                         comp[1] = (comp_len >> 8) as u8;
-                                        comp[2..total_len]
-                                            .copy_from_slice(&self.fs.compress_cache[..comp_len]);
+                                        comp[2..total_len].copy_from_slice(
+                                            &self.inner.cache.fs.compress_cache[..comp_len],
+                                        );
                                         record = BlockData::new(
                                             BlockAddr::null(BlockMeta::new_compressed(
                                                 comp_level,
@@ -2161,24 +2363,5 @@ impl<'a, D: Disk> Transaction<'a, D> {
         }
 
         Ok(buf.len())
-    }
-}
-
-impl<'a, D: Disk> TransactionBase<D> for Transaction<'a, D> {
-    async fn read_direct<T: BlockTrait + DerefMut<Target = [u8]>>(
-        &mut self,
-        ptr: BlockPtr<T>,
-        data: &mut T,
-    ) -> Result<()> {
-        if let Some(raw) = self.write_cache.get(&ptr.addr()) {
-            data.copy_from_slice(raw);
-            Ok(())
-        } else {
-            Self::read_raw(self.fs, ptr, data).await
-        }
-    }
-
-    fn header(&self) -> &Header {
-        &self.header
     }
 }

@@ -23,6 +23,9 @@ mod memory;
 mod sparse;
 
 /// A disk
+// The trait_variant bit is needed because we've got
+// public async interfaces in a trait.
+#[trait_variant::make(ThreadedDisk: Send)]
 pub trait Disk {
     /// Read blocks from disk
     ///

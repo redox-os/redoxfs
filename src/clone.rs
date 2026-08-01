@@ -1,12 +1,4 @@
-use crate::{
-    transaction::TransactionBase, Disk, FileSystem, Node, Transaction, TreePtr, BLOCK_SIZE,
-};
-
-fn tx_progress<D: Disk, F: FnMut(u64)>(tx: &mut Transaction<D>, progress: &mut F) {
-    let size = tx.header.size();
-    let free = tx.allocator.free() * BLOCK_SIZE;
-    progress(size - free);
-}
+use crate::{Disk, FileSystem, Node, Transaction, TreePtr};
 
 //TODO: handle hard links
 async fn clone_at<'a, 'b, D: Disk, E: Disk, F: FnMut(u64)>(
@@ -28,9 +20,7 @@ async fn clone_at<'a, 'b, D: Disk, E: Disk, F: FnMut(u64)>(
         let node_old = tx_old.read_tree(node_ptr_old).await?;
 
         //TODO: this slows down the clone, but Redox has issues without this (Linux is fine)
-        if tx.write_cache.len() > 64 {
-            tx.sync(false).await?;
-        }
+        tx.sync_if_cache_sized(64).await?;
 
         let node_ptr = {
             let mode = node_old.data().mode();
@@ -60,10 +50,10 @@ async fn clone_at<'a, 'b, D: Disk, E: Disk, F: FnMut(u64)>(
             node_ptr
         };
 
-        tx_progress(tx, progress);
+        progress(tx.fs_bytes() - tx.fs_free_bytes());
 
         if node_old.data().is_dir() {
-            clone_at(tx_old, node_ptr_old, tx, node_ptr, buf, progress).await?;
+            Box::pin(clone_at(tx_old, node_ptr_old, tx, node_ptr, buf, progress)).await?;
         }
     }
 
