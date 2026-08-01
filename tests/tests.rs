@@ -1,4 +1,5 @@
 use core::panic::AssertUnwindSafe;
+use futures::executor::block_on;
 use redoxfs::{unmount_path, DirEntry, DiskMemory, DiskSparse, FileSystem, Node, TreePtr};
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -23,7 +24,13 @@ where
     {
         let disk = DiskSparse::create(dbg!(&disk_path), 1024 * 1024 * 1024).unwrap();
         let ctime = dbg!(time::SystemTime::now().duration_since(time::UNIX_EPOCH)).unwrap();
-        FileSystem::create(disk, None, ctime.as_secs(), ctime.subsec_nanos()).unwrap();
+        block_on(FileSystem::create(
+            disk,
+            None,
+            ctime.as_secs(),
+            ctime.subsec_nanos(),
+        ))
+        .unwrap();
     }
     let res = callback(&disk_path);
 
@@ -287,104 +294,130 @@ fn many_create_write_list_find_read_delete() {
     let ctime = time::SystemTime::now()
         .duration_since(time::UNIX_EPOCH)
         .unwrap();
-    let mut fs = FileSystem::create(disk, None, ctime.as_secs(), ctime.subsec_nanos()).unwrap();
+    let mut fs = block_on(FileSystem::create(
+        disk,
+        None,
+        ctime.as_secs(),
+        ctime.subsec_nanos(),
+    ))
+    .unwrap();
     let tree_ptr = TreePtr::<Node>::root();
     let total_count = 3000;
 
-    // Create a bunch of files
-    for i in 0..total_count {
-        let result = fs.tx(|tx| {
-            tx.create_node(
-                tree_ptr,
-                &format!("file{i:05}"),
-                Node::MODE_FILE | 0o644,
-                1,
-                0,
-            )
-        });
-        if result.is_err() {
-            println!("Failure on create iteration {i}");
-        }
-
-        let file_node = result.unwrap();
-        let result = fs.tx(|tx| {
-            tx.write_node(
-                file_node.ptr(),
-                0,
-                format!("Hello World! #{i}").as_bytes(),
-                ctime.as_secs(),
-                ctime.subsec_nanos(),
-            )
-        });
-        if result.is_err() {
-            println!("Failure on write iteration {i}");
-        }
-        assert!(result.unwrap() > 0)
-    }
-
-    // Confirm that they can be listed
-    {
-        let mut children = Vec::<DirEntry>::with_capacity(total_count);
-        fs.tx(|tx| tx.child_nodes(tree_ptr, &mut children)).unwrap();
-        assert_eq!(
-            children.len(),
-            total_count,
-            "The list of children should match the number of files created."
-        );
-        let mut children: Vec<String> = children
-            .iter()
-            .map(|entry| entry.name().unwrap_or_default().to_string())
-            .collect();
-        children.sort();
-
+    block_on(async {
+        // Create a bunch of files
         for i in 0..total_count {
-            let expected = format!("file{i:05}");
-            let idx = children.binary_search(&expected);
-            assert!(idx.is_ok(), "Children did not contain '{}'", expected);
-        }
-    }
+            let result = fs
+                .tx(async |tx| {
+                    tx.create_node(
+                        tree_ptr,
+                        &format!("file{i:05}"),
+                        Node::MODE_FILE | 0o644,
+                        1,
+                        0,
+                    )
+                    .await
+                })
+                .await;
+            if result.is_err() {
+                println!("Failure on create iteration {i}");
+            }
 
-    // Find and read the files
-    for i in 0..total_count {
-        let result = fs.tx(|tx| tx.find_node(tree_ptr, &format!("file{i:05}")));
-        if result.is_err() {
-            println!("Failure on find node iteration {i}");
-        }
-
-        let file_node = result.unwrap();
-        let offset = 0;
-        let mut buf = [0_u8; 32];
-        let result = fs.tx(|tx| {
-            tx.read_node(
-                file_node.ptr(),
-                offset,
-                &mut buf,
-                ctime.as_secs(),
-                ctime.subsec_nanos(),
-            )
-        });
-        if result.is_err() {
-            println!("Failure on read iteration {i}");
-        }
-        let size = result.unwrap();
-        let body = std::str::from_utf8(&buf[..size]).unwrap();
-        assert_eq!(body, format!("Hello World! #{i}"));
-    }
-
-    // Delete all the files
-    for i in 0..total_count {
-        let file_name = format!("file{i:05}");
-        if let Err(e) = fs.tx(|tx| tx.remove_node(tree_ptr, &file_name, Node::MODE_FILE)) {
-            println!("Failure on delete iteration {i}");
-            panic!("{e}");
+            let file_node = result.unwrap();
+            let result = fs
+                .tx(async |tx| {
+                    tx.write_node(
+                        file_node.ptr(),
+                        0,
+                        format!("Hello World! #{i}").as_bytes(),
+                        ctime.as_secs(),
+                        ctime.subsec_nanos(),
+                    )
+                    .await
+                })
+                .await;
+            if result.is_err() {
+                println!("Failure on write iteration {i}");
+            }
+            assert!(result.unwrap() > 0)
         }
 
-        let result = fs.tx(|tx| tx.find_node(tree_ptr, &file_name));
-        if result.is_ok() || result.unwrap_err().errno != syscall::error::ENOENT {
-            println!("Failure on delete verification iteration {i}");
-            panic!("Deletion appears to have failed");
+        // Confirm that they can be listed
+        {
+            let mut children = Vec::<DirEntry>::with_capacity(total_count);
+            fs.tx(async |tx| tx.child_nodes(tree_ptr, &mut children).await)
+                .await
+                .unwrap();
+            assert_eq!(
+                children.len(),
+                total_count,
+                "The list of children should match the number of files created."
+            );
+            let mut children: Vec<String> = children
+                .iter()
+                .map(|entry| entry.name().unwrap_or_default().to_string())
+                .collect();
+            children.sort();
+
+            for i in 0..total_count {
+                let expected = format!("file{i:05}");
+                let idx = children.binary_search(&expected);
+                assert!(idx.is_ok(), "Children did not contain '{}'", expected);
+            }
         }
-    }
+
+        // Find and read the files
+        for i in 0..total_count {
+            let result = fs
+                .tx(async |tx| tx.find_node(tree_ptr, &format!("file{i:05}")).await)
+                .await;
+            if result.is_err() {
+                println!("Failure on find node iteration {i}");
+            }
+
+            let file_node = result.unwrap();
+            let offset = 0;
+            let mut buf = [0_u8; 32];
+            let result = fs
+                .tx(async |tx| {
+                    tx.read_node(
+                        file_node.ptr(),
+                        offset,
+                        &mut buf,
+                        ctime.as_secs(),
+                        ctime.subsec_nanos(),
+                    )
+                    .await
+                })
+                .await;
+            if result.is_err() {
+                println!("Failure on read iteration {i}");
+            }
+            let size = result.unwrap();
+            let body = std::str::from_utf8(&buf[..size]).unwrap();
+            assert_eq!(body, format!("Hello World! #{i}"));
+        }
+
+        // Delete all the files
+        for i in 0..total_count {
+            let file_name = format!("file{i:05}");
+            if let Err(e) = fs
+                .tx(async |tx| tx.remove_node(tree_ptr, &file_name, Node::MODE_FILE).await)
+                .await
+            {
+                println!("Failure on delete iteration {i}");
+                panic!("{e}");
+            }
+
+            let result = fs
+                .tx(async |tx| tx.find_node(tree_ptr, &file_name).await)
+                .await;
+            if result.is_ok() || result.unwrap_err().errno != syscall::error::ENOENT {
+                println!("Failure on delete verification iteration {i}");
+                panic!("Deletion appears to have failed");
+            }
+        }
+    });
 }
 
 #[test]
@@ -418,202 +451,248 @@ fn many_write_read_delete_mounted() {
 
 #[test]
 fn rename_no_replace() {
-    let disk = DiskMemory::new(1024 * 1024 * 1024);
-    let mut fs = FileSystem::create(disk, None, 0, 0)
-        .expect("Creating in memory file system should succeed");
+    block_on(async {
+        let disk = DiskMemory::new(1024 * 1024 * 1024);
+        let mut fs = FileSystem::create(disk, None, 0, 0)
+            .await
+            .expect("Creating in memory file system should succeed");
 
-    let root = TreePtr::root();
-    let dir = fs
-        .tx(|tx| tx.create_node(root, "dir", Node::MODE_DIR, 0, 0))
-        .expect("Creating a directory should succeed");
-    let source_file = fs
-        .tx(|tx| tx.create_node(root, "source", Node::MODE_FILE, 0, 0))
-        .expect("Creating source file to copy should succeed");
-    let no_clobber_file = fs
-        .tx(|tx| tx.create_node(root, "no_clobber", Node::MODE_FILE, 0, 0))
-        .expect("Creating second file to not clobber should succeed");
+        let root = TreePtr::root();
+        let dir = fs
+            .tx(async |tx| tx.create_node(root, "dir", Node::MODE_DIR, 0, 0).await)
+            .await
+            .expect("Creating a directory should succeed");
+        let source_file = fs
+            .tx(async |tx| tx.create_node(root, "source", Node::MODE_FILE, 0, 0).await)
+            .await
+            .expect("Creating source file to copy should succeed");
+        let no_clobber_file = fs
+            .tx(async |tx| {
+                tx.create_node(root, "no_clobber", Node::MODE_FILE, 0, 0)
+                    .await
+            })
+            .await
+            .expect("Creating second file to not clobber should succeed");
 
-    // Rename /source to /target
-    fs.tx(|tx| tx.rename_node_no_replace(root, "source", root, "target"))
+        // Rename /source to /target
+        fs.tx(async |tx| {
+            tx.rename_node_no_replace(root, "source", root, "target")
+                .await
+        })
+        .await
         .expect("Renaming existing 'source' to non-existing 'target' should succeed");
-    let target_file = fs
-        .tx(|tx| tx.find_node(root, "target"))
-        .expect("'target' should exist because we just renamed 'source' to 'target'");
-    assert_eq!(
-        source_file.id(),
-        target_file.id(),
-        "source and target are most definitely the same file"
-    );
+        let target_file = fs
+            .tx(async |tx| tx.find_node(root, "target").await)
+            .await
+            .expect("'target' should exist because we just renamed 'source' to 'target'");
+        assert_eq!(
+            source_file.id(),
+            target_file.id(),
+            "source and target are most definitely the same file"
+        );
 
-    // Don't rename /target to /no_clobber
-    let err = fs
-        .tx(|tx| tx.rename_node_no_replace(root, "target", root, "no_clobber"))
-        .expect_err("Renaming 'target' to existing 'no_clobber' should fail");
-    assert_eq!(
-        syscall::EEXIST,
-        err.errno,
-        "Renaming to existing file should fail with EEXIST"
-    );
-    assert_ne!(
-        no_clobber_file.id(),
-        target_file.id(),
-        "'target' and 'no_clobber' should be distinct files"
-    );
+        // Don't rename /target to /no_clobber
+        let err = fs
+            .tx(async |tx| {
+                tx.rename_node_no_replace(root, "target", root, "no_clobber")
+                    .await
+            })
+            .await
+            .expect_err("Renaming 'target' to existing 'no_clobber' should fail");
+        assert_eq!(
+            syscall::EEXIST,
+            err.errno,
+            "Renaming to existing file should fail with EEXIST"
+        );
+        assert_ne!(
+            no_clobber_file.id(),
+            target_file.id(),
+            "'target' and 'no_clobber' should be distinct files"
+        );
 
-    // Don't rename /target to /dir
-    let err = fs
-        .tx(|tx| tx.rename_node_no_replace(root, "target", root, "dir"))
-        .expect_err("Renaming 'target' to existing directory 'dir' should fail");
-    assert_eq!(
-        syscall::EEXIST,
-        err.errno,
-        "Renaming to existing file should fail with EEXIST"
-    );
-    assert_ne!(
-        dir.id(),
-        target_file.id(),
-        "'target' and 'dir' should be distinct nodes"
-    );
+        // Don't rename /target to /dir
+        let err = fs
+            .tx(async |tx| tx.rename_node_no_replace(root, "target", root, "dir").await)
+            .await
+            .expect_err("Renaming 'target' to existing directory 'dir' should fail");
+        assert_eq!(
+            syscall::EEXIST,
+            err.errno,
+            "Renaming to existing file should fail with EEXIST"
+        );
+        assert_ne!(
+            dir.id(),
+            target_file.id(),
+            "'target' and 'dir' should be distinct nodes"
+        );
 
-    // Don't rename /dir to /target
-    let err = fs
-        .tx(|tx| tx.rename_node_no_replace(root, "dir", root, "target"))
-        .expect_err("Renaming 'dir' to existing file 'target' should fail");
-    assert_eq!(
-        syscall::EEXIST,
-        err.errno,
-        "Renaming to existing file should fail with EEXIST"
-    );
-    assert_ne!(
-        target_file.id(),
-        dir.id(),
-        "'dir' and 'target' should be distinct nodes"
-    );
+        // Don't rename /dir to /target
+        let err = fs
+            .tx(async |tx| tx.rename_node_no_replace(root, "dir", root, "target").await)
+            .await
+            .expect_err("Renaming 'dir' to existing file 'target' should fail");
+        assert_eq!(
+            syscall::EEXIST,
+            err.errno,
+            "Renaming to existing file should fail with EEXIST"
+        );
+        assert_ne!(
+            target_file.id(),
+            dir.id(),
+            "'dir' and 'target' should be distinct nodes"
+        );
 
-    // Don't rename /target to /target
-    let err = fs
-        .tx(|tx| tx.rename_node_no_replace(root, "target", root, "target"))
-        .expect_err("Renaming 'target' to itself should fail");
-    assert_eq!(
-        syscall::EEXIST,
-        err.errno,
-        "Renaming file to itself should fail with EEXIST"
-    );
+        // Don't rename /target to /target
+        let err = fs
+            .tx(async |tx| {
+                tx.rename_node_no_replace(root, "target", root, "target")
+                    .await
+            })
+            .await
+            .expect_err("Renaming 'target' to itself should fail");
+        assert_eq!(
+            syscall::EEXIST,
+            err.errno,
+            "Renaming file to itself should fail with EEXIST"
+        );
 
-    // Rename /target to /dir/target
-    fs.tx(|tx| tx.rename_node_no_replace(root, "target", dir.ptr(), "target"))
+        // Rename /target to /dir/target
+        fs.tx(async |tx| {
+            tx.rename_node_no_replace(root, "target", dir.ptr(), "target")
+                .await
+        })
+        .await
         .expect("Renaming /target to /dir/target should succeed");
-    let moved_target = fs
-        .tx(|tx| tx.find_node(dir.ptr(), "target"))
-        .expect("'target' should have moved to /dir/target");
-    assert_eq!(target_file.id(), moved_target.id());
+        let moved_target = fs
+            .tx(async |tx| tx.find_node(dir.ptr(), "target").await)
+            .await
+            .expect("'target' should have moved to /dir/target");
+        assert_eq!(target_file.id(), moved_target.id());
 
-    // Rename /dir to /newdir
-    fs.tx(|tx| tx.rename_node_no_replace(root, "dir", root, "newdir"))
-        .expect("Renaming 'dir' to 'newdir' should succeed");
+        // Rename /dir to /newdir
+        fs.tx(async |tx| tx.rename_node_no_replace(root, "dir", root, "newdir").await)
+            .await
+            .expect("Renaming 'dir' to 'newdir' should succeed");
+    });
 }
 
 #[test]
 fn rename_works() {
-    let disk = DiskMemory::new(1024 * 1024 * 1024);
-    let mut fs = FileSystem::create(disk, None, 0, 0)
-        .expect("Creating in memory file system should succeed");
+    block_on(async {
+        let disk = DiskMemory::new(1024 * 1024 * 1024);
+        let mut fs = FileSystem::create(disk, None, 0, 0)
+            .await
+            .expect("Creating in memory file system should succeed");
 
-    let root = TreePtr::root();
-    let dir = fs
-        .tx(|tx| tx.create_node(root, "dir", Node::MODE_DIR, 0, 0))
-        .expect("Creating a directory should succeed");
-    let source_file = fs
-        .tx(|tx| tx.create_node(root, "source", Node::MODE_FILE, 0, 0))
-        .expect("Creating source file should succeed");
-    let target_file_orig = fs
-        .tx(|tx| tx.create_node(root, "target", Node::MODE_FILE, 0, 0))
-        .expect("Creating target file should succeed");
+        let root = TreePtr::root();
+        let dir = fs
+            .tx(async |tx| tx.create_node(root, "dir", Node::MODE_DIR, 0, 0).await)
+            .await
+            .expect("Creating a directory should succeed");
+        let source_file = fs
+            .tx(async |tx| tx.create_node(root, "source", Node::MODE_FILE, 0, 0).await)
+            .await
+            .expect("Creating source file should succeed");
+        let target_file_orig = fs
+            .tx(async |tx| tx.create_node(root, "target", Node::MODE_FILE, 0, 0).await)
+            .await
+            .expect("Creating target file should succeed");
 
-    // Rename /source to /source2
-    fs.tx(|tx| tx.rename_node(root, "source", root, "source2"))
-        .expect("Renaming existing 'source' to non-existing 'source2' should succeed");
-    let source2_file = fs
-        .tx(|tx| tx.find_node(root, "source2"))
-        .expect("'source2' should exist because we just renamed 'source' to 'source2'");
-    assert_eq!(source_file.id(), source2_file.id());
-    let err = fs
-        .tx(|tx| tx.find_node(root, "source"))
-        .expect_err("'source' should not exist because it was moved");
-    assert_eq!(syscall::ENOENT, err.errno);
+        // Rename /source to /source2
+        fs.tx(async |tx| tx.rename_node(root, "source", root, "source2").await)
+            .await
+            .expect("Renaming existing 'source' to non-existing 'source2' should succeed");
+        let source2_file = fs
+            .tx(async |tx| tx.find_node(root, "source2").await)
+            .await
+            .expect("'source2' should exist because we just renamed 'source' to 'source2'");
+        assert_eq!(source_file.id(), source2_file.id());
+        let err = fs
+            .tx(async |tx| tx.find_node(root, "source").await)
+            .await
+            .expect_err("'source' should not exist because it was moved");
+        assert_eq!(syscall::ENOENT, err.errno);
 
-    // Rename /source2 to /target
-    fs.tx(|tx| tx.rename_node(root, "source2", root, "target"))
-        .expect("Renaming existing 'source2' to existing 'target' should succeed");
-    let target_file_mv = fs
-        .tx(|tx| tx.find_node(root, "target"))
-        .expect("'target' should exist because the rename succeeded");
-    assert_ne!(
-        target_file_orig.id(),
-        target_file_mv.id(),
-        "Move failed because 'target' is still the same"
-    );
-    assert_eq!(
-        source2_file.id(),
-        target_file_mv.id(),
-        "Move failed because 'source2' != 'target'"
-    );
+        // Rename /source2 to /target
+        fs.tx(async |tx| tx.rename_node(root, "source2", root, "target").await)
+            .await
+            .expect("Renaming existing 'source2' to existing 'target' should succeed");
+        let target_file_mv = fs
+            .tx(async |tx| tx.find_node(root, "target").await)
+            .await
+            .expect("'target' should exist because the rename succeeded");
+        assert_ne!(
+            target_file_orig.id(),
+            target_file_mv.id(),
+            "Move failed because 'target' is still the same"
+        );
+        assert_eq!(
+            source2_file.id(),
+            target_file_mv.id(),
+            "Move failed because 'source2' != 'target'"
+        );
 
-    // Don't rename /target to /dir
-    // XXX: A similar test fails on Linux using rename(). Not sure if the discrepancy matters.
-    // let err = fs
-    //     .tx(|tx| tx.rename_node(root, "target", root, "dir"))
-    //     .expect_err("Renaming 'target' to existing directory 'dir' should fail");
-    // assert_eq!(
-    //     syscall::EEXIST,
-    //     err.errno,
-    //     "Renaming to existing file should fail with EEXIST"
-    // );
-    // assert_ne!(
-    //     dir.id(),
-    //     target_file_mv.id(),
-    //     "'target' and 'dir' should be distinct nodes"
-    // );
+        // Don't rename /target to /dir
+        // XXX: A similar test fails on Linux using rename(). Not sure if the discrepancy matters.
+        // let err = fs
+        //     .tx(async |tx| tx.rename_node(root, "target", root, "dir").await).await
+        //     .expect_err("Renaming 'target' to existing directory 'dir' should fail");
+        // assert_eq!(
+        //     syscall::EEXIST,
+        //     err.errno,
+        //     "Renaming to existing file should fail with EEXIST"
+        // );
+        // assert_ne!(
+        //     dir.id(),
+        //     target_file_mv.id(),
+        //     "'target' and 'dir' should be distinct nodes"
+        // );
 
-    // Don't rename /dir to /target
-    // XXX: A similar test fails on Linux using rename().
-    // let err = fs
-    //     .tx(|tx| tx.rename_node(root, "dir", root, "target"))
-    //     .expect_err("Renaming 'dir' to existing file 'target' should fail");
-    // assert_eq!(
-    //     syscall::EEXIST,
-    //     err.errno,
-    //     "Renaming to existing file should fail with EEXIST"
-    // );
-    // assert_ne!(
-    //     target_file_mv.id(),
-    //     dir.id(),
-    //     "'dir' and 'target' should be distinct nodes"
-    // );
+        // Don't rename /dir to /target
+        // XXX: A similar test fails on Linux using rename().
+        // let err = fs
+        //     .tx(async |tx| tx.rename_node(root, "dir", root, "target").await).await
+        //     .expect_err("Renaming 'dir' to existing file 'target' should fail");
+        // assert_eq!(
+        //     syscall::EEXIST,
+        //     err.errno,
+        //     "Renaming to existing file should fail with EEXIST"
+        // );
+        // assert_ne!(
+        //     target_file_mv.id(),
+        //     dir.id(),
+        //     "'dir' and 'target' should be distinct nodes"
+        // );
 
-    // Rename /target to /target
-    fs.tx(|tx| tx.rename_node(root, "target", root, "target"))
-        .expect("Renaming 'target' to itself should succeed");
-    let target_self_mv = fs
-        .tx(|tx| tx.find_node(root, "target"))
-        .expect("'target' should exist because rename succeeded");
-    assert_eq!(
-        target_file_mv.id(),
-        target_self_mv.id(),
-        "'target' shouldn't have changed during a move to self"
-    );
+        // Rename /target to /target
+        fs.tx(async |tx| tx.rename_node(root, "target", root, "target").await)
+            .await
+            .expect("Renaming 'target' to itself should succeed");
+        let target_self_mv = fs
+            .tx(async |tx| tx.find_node(root, "target").await)
+            .await
+            .expect("'target' should exist because rename succeeded");
+        assert_eq!(
+            target_file_mv.id(),
+            target_self_mv.id(),
+            "'target' shouldn't have changed during a move to self"
+        );
 
-    // Rename /target to /dir/target
-    fs.tx(|tx| tx.rename_node(root, "target", dir.ptr(), "target"))
-        .expect("Renaming /target to /dir/target should succeed");
-    let moved_target = fs
-        .tx(|tx| tx.find_node(dir.ptr(), "target"))
-        .expect("'target' should have moved to /dir/target");
-    assert_eq!(target_file_mv.id(), moved_target.id());
+        // Rename /target to /dir/target
+        fs.tx(async |tx| tx.rename_node(root, "target", dir.ptr(), "target").await)
+            .await
+            .expect("Renaming /target to /dir/target should succeed");
+        let moved_target = fs
+            .tx(async |tx| tx.find_node(dir.ptr(), "target").await)
+            .await
+            .expect("'target' should have moved to /dir/target");
+        assert_eq!(target_file_mv.id(), moved_target.id());
 
-    // Rename /dir to /newdir
-    fs.tx(|tx| tx.rename_node(root, "dir", root, "newdir"))
-        .expect("Renaming 'dir' to 'newdir' should succeed");
+        // Rename /dir to /newdir
+        fs.tx(async |tx| tx.rename_node(root, "dir", root, "newdir").await)
+            .await
+            .expect("Renaming 'dir' to 'newdir' should succeed");
+    });
 }
 
 #[test]

@@ -738,10 +738,6 @@ impl<'a, D: Disk> Transaction<'a, D> {
         Ok(())
     }
 
-    //
-    // MARK: block operations
-    //
-
     pub fn alloc_ptr(&self) -> BlockPtr<AllocList> {
         self.inner.cache.header.alloc
     }
@@ -764,6 +760,10 @@ impl<'a, D: Disk> Transaction<'a, D> {
         self.inner.cache.header.size = bytes.into();
         self.header_changed = true;
     }
+
+    //
+    // MARK: block operations
+    //
 
     /// Allocate a new block of size defined by `meta`, returning its address.
     /// - returns `Err(ENOSPC)` if a block of this size could not be alloated.
