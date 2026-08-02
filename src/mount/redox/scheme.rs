@@ -596,6 +596,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     }
 }
 
+/// Join two paths and canonicalize it
 pub fn resolve_path<'a, 'b, D: Disk>(
     dir: &'a dyn Resource<D>,
     path: RedoxReference<'b>,
