@@ -33,7 +33,7 @@ pub struct FileSystem<D: Disk> {
 
 impl<D: Disk> FileSystem<D> {
     /// Open a file system on a disk
-    pub async fn open(
+    async fn open_impl(
         disk: D,
         password_opt: Option<&[u8]>,
         block_opt: Option<u64>,
@@ -109,6 +109,15 @@ impl<D: Disk> FileSystem<D> {
         Err(Error::new(ENOENT))
     }
 
+    pub async fn open(
+        disk: D,
+        password_opt: Option<&[u8]>,
+        block_opt: Option<u64>,
+        cleanup: bool,
+    ) -> Result<Self> {
+        Box::pin(Self::open_impl(disk, password_opt, block_opt, cleanup)).await
+    }
+
     /// Create a file system on a disk
     #[cfg(feature = "std")]
     pub async fn create(
@@ -124,7 +133,7 @@ impl<D: Disk> FileSystem<D> {
     /// Reserved data will be zero padded up to the nearest block
     /// We need to pass ctime and ctime_nsec in order to initialize the unix timestamps
     #[cfg(feature = "std")]
-    pub async fn create_reserved(
+    async fn create_reserved_impl(
         mut disk: D,
         password_opt: Option<&[u8]>,
         reserved: &[u8],
@@ -233,11 +242,31 @@ impl<D: Disk> FileSystem<D> {
         Ok(fs)
     }
 
+    pub async fn create_reserved(
+        disk: D,
+        password_opt: Option<&[u8]>,
+        reserved: &[u8],
+        ctime: u64,
+        ctime_nsec: u32,
+    ) -> Result<Self> {
+        Box::pin(Self::create_reserved_impl(
+            disk,
+            password_opt,
+            reserved,
+            ctime,
+            ctime_nsec,
+        ))
+        .await
+    }
+
     /// Release unused nodes and squash allocation log, happens on mount (with cleanup) and unmount
     pub async fn cleanup(&mut self) -> Result<()> {
-        let mut tx = Transaction::new(self);
-        tx.release_unused_nodes().await?;
-        tx.commit(true).await
+        Box::pin(async {
+            let mut tx = Transaction::new(self);
+            tx.release_unused_nodes().await?;
+            tx.commit(true).await
+        })
+        .await
     }
 
     /// start a filesystem transaction, required for making any changes
@@ -245,19 +274,24 @@ impl<D: Disk> FileSystem<D> {
         &self,
         f: F,
     ) -> Result<T> {
-        let mut tx = TransactionRead::new(self);
-        let t = f(&mut tx).await?;
-        Ok(t)
+        Box::pin(async {
+            let mut tx = TransactionRead::new(self);
+            f(&mut tx).await
+        })
+        .await
     }
 
     pub async fn tx<F: AsyncFnOnce(&mut Transaction<D>) -> Result<T>, T>(
         &mut self,
         f: F,
     ) -> Result<T> {
-        let mut tx = Transaction::new(self);
-        let t = f(&mut tx).await?;
-        tx.commit(false).await?;
-        Ok(t)
+        Box::pin(async {
+            let mut tx = Transaction::new(self);
+            let t = f(&mut tx).await?;
+            tx.commit(false).await?;
+            Ok(t)
+        })
+        .await
     }
 
     pub fn allocator(&self) -> &Allocator {
