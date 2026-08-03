@@ -88,11 +88,11 @@ std = [
 fuser = { version = "0.16", optional = true }
 
 [target.'cfg(target_os = "redox")'.dependencies]
-redox-rings = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-rings.git", branch = "ffiring", features = ["userspace", "sync"] }
+redox-rings = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-rings.git", branch = "main", features = ["userspace", "sync"] }
 libredox = { version = "0.1.19", optional = true }
 redox-path = "0.4.0"
 redox-scheme = { version = "0.11.2", optional = true }
-redox-buffer-pool = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-buffer-pool", branch = "deallocate-at" }
+redox-buffer-pool = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-buffer-pool.git", branch = "deallocate-at" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
