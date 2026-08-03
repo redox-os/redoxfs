@@ -85,7 +85,7 @@ impl DiskRing {
         )?;
 
         let fixed_rtbl_req = [ring_fd.raw(), disk_fd.raw()];
-        syscall::call_wo(
+        libredox::call::call_wo(
             fixed_rtbl_req.as_slice(),
             &[],
             CallFlags::empty(),
