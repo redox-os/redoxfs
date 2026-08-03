@@ -625,15 +625,11 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         let path_to_open = match Handle::get_resource_or(self.handles.get(&dirfd))? {
             // If pathname is absolute, then dirfd is ignored.
             Some(res) if path.is_relative() => resolve_path(res, path)?,
-            _ => path,
+            _ => path.canonical(),
         };
-        self.open_internal(
-            TreePtr::root(),
-            path_to_open.to_relative().canonical(),
-            flags,
-            ctx,
-        )
-        .await
+
+        self.open_internal(TreePtr::root(), path_to_open.to_relative(), flags, ctx)
+            .await
     }
 
     async fn unlinkat(
@@ -649,13 +645,13 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         let path = match Handle::get_resource_or(self.handles.get(&dirfd))? {
             // If pathname is absolute, then dirfd is ignored.
             Some(res) if path.is_relative() => resolve_path(res, path)?,
-            _ => path,
+            _ => path.canonical(),
         };
         let start_ptr = TreePtr::root();
 
         // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
-        self.unlink_internal(start_ptr, &path.canonical(), flags, uid, gid)
+        self.unlink_internal(start_ptr, &path, flags, uid, gid)
             .await
     }
 
