@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_lock::RwLock;
-use futures::executor::block_on;
 use libredox::Fd;
 use redox_path::RedoxReference;
 use redox_path::RedoxScheme;
@@ -610,9 +609,7 @@ pub fn resolve_path<'a, 'b, D: Disk>(
 impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     fn scheme_root(&mut self) -> Result<usize> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        // block_on() here is ok because &mut guarantees nobody
-        // else is holding a lock
-        block_on(self.handles.insert(id, HandleState::SchemeRoot));
+        self.handles.insert_mut(id, HandleState::SchemeRoot);
         Ok(id)
     }
 

@@ -71,6 +71,11 @@ impl<K,V> AsyncMap<V> {
         AsyncMapGuard::new(rc)
     }
 
+    // Convienience function for scheme_root()
+    pub fn insert_mut(&mut self, k: K, v: V) {
+        self.map.get_mut().insert(k, Rc::new(Mutex::new(v)));
+    }
+
     pub fn remove(&self, k: &K) -> Option<AsyncMapGuard<V>> {
         let map = self.map.write().await;
         let rc = map.remove(k).map(|rc| rc.clone);
