@@ -1,3 +1,4 @@
+use futures::executor::block_on;
 use redox_scheme::{
     scheme::{SchemeAsync, SchemeState},
     RequestKind, Response, SignalBehavior, Socket,
