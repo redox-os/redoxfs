@@ -1,5 +1,3 @@
-image: "redoxos/redoxer"
-
 workflow:
   rules:
     - if: '$CI_COMMIT_BRANCH == "master" && $CI_PROJECT_NAMESPACE == "redox-os"'
@@ -21,11 +19,12 @@ test:linux:
     stage: test
     dependencies:
         - build:linux
-    script: cargo +nightly test --verbose
+    # Requires FUSE otherwise integ test can't be done
+    script: ls /dev/fuse && cargo +nightly test --verbose
 
 test:redox:
     stage: test
     dependencies:
         - build:redox
-    # only run integration test as without KVM unit tests is super slow
-    script: redoxer test --verbose -- --test '*' -- --nocapture
+    # Requires KVM otherwise integ test will be super slow
+    script: ls /dev/kvm && redoxer test
