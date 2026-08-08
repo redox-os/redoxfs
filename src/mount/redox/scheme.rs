@@ -35,7 +35,7 @@ use crate::{
 };
 
 use super::async_map::AsyncMap;
-use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, ResourceBase, ResourceDisk};
+use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, BaseResource, Resource};
 
 enum Handle<D: Disk> {
     ResourceDir((DirResource, PhantomData<D>)),
@@ -59,7 +59,7 @@ impl<D: Disk> Handle<D> {
 
     fn make_path<'a>(&self, path: RedoxReference<'a>) -> Result<RedoxReference<'a>> {
         Ok(match self {
-            Handle::ResourceDir((dir, _)) if path.is_relative() => RedoxReference::new(dir.path())
+            Handle::ResourceDir((dir, _)) if path.is_relative() => RedoxReference::new(&dir.base.path)
                 .ok_or(Error::new(ENOENT))?
                 .join_checked(path),
             Handle::ResourceFile(_) => return Err(Error::new(ENOTDIR)),
@@ -77,31 +77,22 @@ enum HandleMutRef<'a, D: Disk> {
     RefFile((&'a mut FileResource, PhantomData<D>)),
 }
 
-// We could use dyn and Deref here, as ResourceBase isn't
-// async, but that seems excessively tricky.
-impl<'r, D: Disk> ResourceBase for HandleMutRef<'r, D> {
-    fn parent_ptr_opt(&self) -> Option<TreePtr<Node>> {
-        self.resource().parent_ptr_opt()
-    }
+impl<'r, D: Disk> Resource<D> for HandleMutRef<'r, D> {
 
-    fn node_ptr(&self) -> TreePtr<Node> {
-        self.resource().node_ptr()
-    }
-
-    fn uid(&self) -> u32 {
-        self.resource().uid()
+    fn base(&self) -> &BaseResource {
+        match self {
+            HandleMutRef::RefDir(dir) => &dir.0.base,
+            HandleMutRef::RefFile(file) => &file.0.base,
+        }
     }
 
     fn set_path(&mut self, path: &str) {
-        self.resource_mut().set_path(path)
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.base.path = path.to_string(),
+            HandleMutRef::RefFile(file) => file.0.base.path = path.to_string(),
+        };
     }
 
-    fn path(&self) -> &str {
-        self.resource().path()
-    }
-}
-
-impl<'r, D: Disk> ResourceDisk<D> for HandleMutRef<'r, D> {
     async fn read<'a>(
         &mut self,
         fmaps: &super::resource::Fmaps,
@@ -159,20 +150,6 @@ impl<'r, D: Disk> ResourceDisk<D> for HandleMutRef<'r, D> {
         match self {
             HandleMutRef::RefDir(dir) => dir.0.funmap(fmaps, offset, size, tx).await,
             HandleMutRef::RefFile(file) => file.0.funmap(fmaps, offset, size, tx).await,
-        }
-    }
-
-    fn resource(&self) -> &dyn ResourceBase {
-        match self {
-            HandleMutRef::RefDir(dir) => dir.0,
-            HandleMutRef::RefFile(file) => file.0,
-        }
-    }
-
-    fn resource_mut(&mut self) -> &mut dyn ResourceBase {
-        match self {
-            HandleMutRef::RefDir(dir) => dir.0,
-            HandleMutRef::RefFile(file) => file.0,
         }
     }
 
@@ -362,7 +339,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     async fn handle_connect(&self, id: usize, payload: &mut [u8]) -> Result<usize> {
         let mut hdl = self.get_handle(id).await?;
         let resource = hdl.resource()?;
-        let inode_id = resource.node_ptr().id();
+        let inode_id = resource.base().node_ptr.id();
         let fd_map = self.other_scheme_fd_map.read().await;
         let target_fd = fd_map.get(&inode_id).ok_or(Error::new(EBADF))?;
         let len = libredox::call::get_socket_token(target_fd.raw(), payload)?;
@@ -578,7 +555,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             }
         };
 
-        let node_ptr = handle.resource().unwrap().node_ptr();
+        let node_ptr = handle.resource().unwrap().base().node_ptr;
         {
             let mut fmap_info = self
                 .fmap
@@ -860,7 +837,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
             i += 1;
         }
 
-        let path = file.path().as_bytes();
+        let path = file.base().path.as_bytes();
         if !path.is_empty() {
             if i < buf.len() {
                 buf[i] = b'/';
@@ -895,7 +872,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         // an attempt was made to make a directory a subdirectory of itself.
 
         let mut old_name = String::new();
-        for part in file.path().split('/') {
+        for part in file.base().path.split('/') {
             if !part.is_empty() {
                 old_name = part.to_string();
             }
@@ -916,7 +893,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
 
         let scheme_name = &self.scheme_name;
         self.tx(async |tx| {
-            let _orig_parent_ptr = match file.parent_ptr_opt() {
+            let _orig_parent_ptr = match file.base().parent_ptr_opt {
                 Some(some) => some,
                 None => {
                     // println!("orig is root");
@@ -924,7 +901,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                 }
             };
 
-            let orig_node = tx.read_tree(file.node_ptr()).await?;
+            let orig_node = tx.read_tree(file.base().node_ptr).await?;
 
             if !orig_node.data().owner(uid) {
                 // println!("orig_node not owned by caller {}", uid);
@@ -1005,7 +982,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         // an attempt was made to make a directory a subdirectory of itself.
 
         let mut old_name = String::new();
-        for part in file.path().split('/') {
+        for part in file.base().path.split('/') {
             if !part.is_empty() {
                 old_name = part.to_string();
             }
@@ -1026,7 +1003,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
 
         let scheme_name = &self.scheme_name;
         self.tx(async |tx| {
-            let orig_parent_ptr = match file.parent_ptr_opt() {
+            let orig_parent_ptr = match file.base().parent_ptr_opt {
                 Some(some) => some,
                 None => {
                     // println!("orig is root");
@@ -1034,7 +1011,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                 }
             };
 
-            let orig_node = tx.read_tree(file.node_ptr()).await?;
+            let orig_node = tx.read_tree(file.base().node_ptr).await?;
 
             if !orig_node.data().owner(uid) {
                 // println!("orig_node not owned by caller {}", uid);
@@ -1184,7 +1161,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         let Ok(resource) = file.resource() else {
             return;
         };
-        let node_ptr = resource.node_ptr();
+        let node_ptr = resource.base().node_ptr;
         let Some(mut file_info) = self.fmap.get_mut(&node_ptr.id()).await else {
             return;
         };
@@ -1226,7 +1203,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         }
         let other_scheme_fd = Fd::new(new_fd);
 
-        let parent_resource_ptr = parent_resource.node_ptr();
+        let parent_resource_ptr = parent_resource.base().node_ptr;
 
         let parent_node = self
             .tx(async |tx| tx.read_tree(parent_resource_ptr).await)
@@ -1237,7 +1214,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         if !parent_node.data().permission(uid, gid, Node::MODE_WRITE) {
             return Err(Error::new(EACCES));
         }
-        let parent_path = parent_resource.path();
+        let parent_path = &parent_resource.base().path;
 
         // TODO: Move the PATH_MAX definition to a more appropriate place.
         const PATH_MAX: usize = 4096;
@@ -1298,7 +1275,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
             )
         };
 
-        let node_ptr = resource.node_ptr();
+        let node_ptr = resource.base_no_annot().node_ptr;
         {
             let mut fmap_info = self
                 .fmap
@@ -1380,7 +1357,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     }
 
     async fn inode(&self, id: usize) -> Result<usize> {
-        Ok(self.get_handle(id).await?.resource()?.node_ptr().id() as usize)
+        Ok(self.get_handle(id).await?.resource()?.base().node_ptr.id() as usize)
     }
 }
 

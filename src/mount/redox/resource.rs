@@ -19,19 +19,22 @@ use crate::{transaction::TransactionRead, Disk, Node, Transaction, TreePtr, BLOC
 
 pub type Fmaps = AsyncMap<u32, FileMmapInfo>;
 
-pub trait ResourceBase {
-    fn parent_ptr_opt(&self) -> Option<TreePtr<Node>>;
+pub struct BaseResource {
+    pub path: String,
+    pub parent_ptr_opt: Option<TreePtr<Node>>,
+    pub node_ptr: TreePtr<Node>,
+    pub uid: u32,
 
-    fn node_ptr(&self) -> TreePtr<Node>;
-
-    fn uid(&self) -> u32;
-
-    fn set_path(&mut self, path: &str);
-
-    fn path(&self) -> &str;
 }
 
-pub trait ResourceDisk<D: Disk> {
+pub trait Resource<D: Disk> {
+
+    // Used by default implementations
+    fn base(&self) -> &BaseResource;
+
+    // Putting this in the interface lets us avoid exporting base_mut().
+    fn set_path(&mut self, path: &str);
+
     async fn read<'a>(
         &mut self,
         fmaps: &Fmaps,
@@ -67,15 +70,11 @@ pub trait ResourceDisk<D: Disk> {
         tx: &mut Transaction<'a, D>,
     ) -> Result<()>;
 
-    // Used by default implementations
-    fn resource(&self) -> &dyn ResourceBase;
-    fn resource_mut(&mut self) -> &mut dyn ResourceBase;
-
     async fn fchmod<'a>(&mut self, mode: u16, tx: &mut Transaction<'a, D>) -> Result<()> {
-        let res = self.resource_mut();
-        let mut node = tx.read_tree(res.node_ptr()).await?;
+        let base = self.base();
+        let mut node = tx.read_tree(base.node_ptr).await?;
 
-        if node.data().uid() == res.uid() || res.uid() == 0 {
+        if node.data().uid() == base.uid || base.uid == 0 {
             let old_mode = node.data().mode();
             let new_mode = (old_mode & !MODE_PERM) | (mode & MODE_PERM);
             if old_mode != new_mode {
@@ -90,11 +89,11 @@ pub trait ResourceDisk<D: Disk> {
     }
 
     async fn fchown<'a>(&mut self, uid: u32, gid: u32, tx: &mut Transaction<'a, D>) -> Result<()> {
-        let res = self.resource_mut();
-        let mut node = tx.read_tree(res.node_ptr()).await?;
+        let base = self.base();
+        let mut node = tx.read_tree(base.node_ptr).await?;
 
         let old_uid = node.data().uid();
-        if old_uid == res.uid() || res.uid() == 0 {
+        if old_uid == base.uid || base.uid == 0 {
             let mut node_changed = false;
 
             if uid as i32 != -1 {
@@ -125,7 +124,7 @@ pub trait ResourceDisk<D: Disk> {
     fn fcntl(&mut self, cmd: usize, arg: usize, _pd : PhantomData<D>) -> Result<usize>;
 
     async fn stat<'a>(&self, stat: &mut Stat, tx: &mut TransactionRead<'a, D>) -> Result<()> {
-        let node = tx.read_tree(self.resource().node_ptr()).await?;
+        let node = tx.read_tree(self.base().node_ptr).await?;
 
         let ctime = node.data().ctime();
         let mtime = node.data().mtime();
@@ -172,11 +171,8 @@ pub struct Entry {
 }
 
 pub struct DirResource {
-    path: String,
-    parent_ptr_opt: Option<TreePtr<Node>>,
-    node_ptr: TreePtr<Node>,
+    pub base: BaseResource,
     data: Option<Vec<Entry>>,
-    uid: u32,
 }
 
 impl DirResource {
@@ -188,38 +184,22 @@ impl DirResource {
         uid: u32,
     ) -> DirResource {
         DirResource {
-            path,
-            parent_ptr_opt,
-            node_ptr,
-            data,
-            uid,
+            base: BaseResource{path, parent_ptr_opt, node_ptr, uid},
+            data: data,
         }
     }
 }
 
-impl ResourceBase for DirResource {
-    fn parent_ptr_opt(&self) -> Option<TreePtr<Node>> {
-        self.parent_ptr_opt
-    }
+impl<D: Disk> Resource<D> for DirResource {
 
-    fn node_ptr(&self) -> TreePtr<Node> {
-        self.node_ptr
-    }
-
-    fn uid(&self) -> u32 {
-        self.uid
+    fn base(&self) -> &BaseResource {
+        &self.base
     }
 
     fn set_path(&mut self, path: &str) {
-        self.path = path.to_string();
+        self.base.path = path.to_string();
     }
 
-    fn path(&self) -> &str {
-        &self.path
-    }
-}
-
-impl<D: Disk> ResourceDisk<D> for DirResource {
     async fn read<'a>(
         &mut self,
         _fmaps: &Fmaps,
@@ -264,13 +244,6 @@ impl<D: Disk> ResourceDisk<D> for DirResource {
         Err(Error::new(EBADF))
     }
 
-    fn resource(&self) -> &dyn ResourceBase {
-        self
-    }
-    fn resource_mut(&mut self) -> &mut dyn ResourceBase {
-        self
-    }
-
     fn fcntl(&mut self, _cmd: usize, _arg: usize, _pd: PhantomData<D>) -> Result<usize> {
         Err(Error::new(EBADF))
     }
@@ -284,9 +257,9 @@ impl<D: Disk> ResourceDisk<D> for DirResource {
     }
 
     async fn utimens<'a>(&mut self, times: &[TimeSpec], tx: &mut Transaction<'a, D>) -> Result<()> {
-        let mut node = tx.read_tree(self.node_ptr).await?;
+        let mut node = tx.read_tree(self.base.node_ptr).await?;
 
-        if node.data().uid() == self.uid || self.uid == 0 {
+        if node.data().uid() == self.base.uid || self.base.uid == 0 {
             if let &[atime, mtime] = times {
                 let mut node_changed = false;
 
@@ -431,11 +404,8 @@ impl Fmap {
 }
 
 pub struct FileResource {
-    path: String,
-    parent_ptr_opt: Option<TreePtr<Node>>,
-    node_ptr: TreePtr<Node>,
+    pub base: BaseResource,
     flags: usize,
-    uid: u32,
 }
 
 #[derive(Debug)]
@@ -488,38 +458,27 @@ impl FileResource {
         uid: u32,
     ) -> FileResource {
         FileResource {
-            path,
-            parent_ptr_opt,
-            node_ptr,
-            flags,
-            uid,
+            base: BaseResource{path, parent_ptr_opt, node_ptr, uid},
+            flags: flags,
         }
+    }
+
+    // Avoid the need for type annotation.
+    pub fn base_no_annot(&self) -> &BaseResource {
+        &self.base
     }
 }
 
-impl ResourceBase for FileResource {
-    fn parent_ptr_opt(&self) -> Option<TreePtr<Node>> {
-        self.parent_ptr_opt
-    }
+impl<D: Disk> Resource<D> for FileResource {
 
-    fn node_ptr(&self) -> TreePtr<Node> {
-        self.node_ptr
-    }
-
-    fn uid(&self) -> u32 {
-        self.uid
+    fn base(&self) -> &BaseResource {
+        &self.base
     }
 
     fn set_path(&mut self, path: &str) {
-        self.path = path.to_string();
+        self.base.path = path.to_string();
     }
 
-    fn path(&self) -> &str {
-        &self.path
-    }
-}
-
-impl<D: Disk> ResourceDisk<D> for FileResource {
     async fn read<'a>(
         &mut self,
         fmaps: &Fmaps,
@@ -530,7 +489,7 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
         if self.flags & O_ACCMODE != O_RDWR && self.flags & O_ACCMODE != O_RDONLY {
             return Err(Error::new(EBADF));
         }
-        if let Some(fmap_info) = fmaps.get_mut(&self.node_ptr.id()).await {
+        if let Some(fmap_info) = fmaps.get_mut(&self.base.node_ptr.id()).await {
             if !fmap_info.base.is_null() {
                 let requested_end = offset + buf.len() as u64;
                 let mut next_offset = offset;
@@ -560,7 +519,7 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
 
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         tx.read_node(
-            self.node_ptr,
+            self.base.node_ptr,
             offset,
             buf,
             atime.as_secs(),
@@ -580,17 +539,17 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
             return Err(Error::new(EBADF));
         }
         let effective_offset = if self.flags & O_APPEND == O_APPEND {
-            let node = tx.read_tree(self.node_ptr).await?;
+            let node = tx.read_tree(self.base.node_ptr).await?;
             node.data().size()
         } else {
             offset
         };
-        if let Some(mut fmap_info) = fmaps.get_mut(&self.node_ptr.id()).await {
+        if let Some(mut fmap_info) = fmaps.get_mut(&self.base.node_ptr.id()).await {
             fmap_info.version += 1;
         }
         let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         tx.write_node(
-            self.node_ptr,
+            self.base.node_ptr,
             effective_offset,
             buf,
             mtime.as_secs(),
@@ -600,7 +559,7 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
     }
 
     async fn fsize<'a>(&mut self, tx: &mut TransactionRead<'a, D>) -> Result<u64> {
-        let node = tx.read_tree(self.node_ptr).await?;
+        let node = tx.read_tree(self.base.node_ptr).await?;
         Ok(node.data().size())
     }
 
@@ -630,13 +589,13 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
         // TODO: Pass entry directory to Resource trait functions, since the node_ptr can be
         // obtained by the caller.
         let mut fmap_info = fmaps
-            .get_mut(&self.node_ptr.id())
+            .get_mut(&self.base.node_ptr.id())
             .await
             .ok_or(Error::new(EBADFD))?;
 
         if !fmap_info.in_use() {
             // Notify filesystem of open
-            tx.on_open_node(self.node_ptr)?;
+            tx.on_open_node(self.base.node_ptr)?;
         }
 
         let new_size = (offset as usize + aligned_size).next_multiple_of(PAGE_SIZE);
@@ -686,7 +645,7 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
             } else {
                 let map = unsafe {
                     Fmap::new(
-                        self.node_ptr,
+                        self.base.node_ptr,
                         flags,
                         range_size as usize,
                         range.start,
@@ -713,7 +672,7 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
         tx: &mut Transaction<'a, D>,
     ) -> Result<()> {
         let mut fmap_info = fmaps
-            .get_mut(&self.node_ptr.id())
+            .get_mut(&self.base.node_ptr.id())
             .await
             .ok_or(Error::new(EBADFD))?;
 
@@ -728,7 +687,7 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
             //log::info!("SYNCING {}..{}", range.start, range.end);
             unsafe {
                 fmap.sync(
-                    self.node_ptr,
+                    self.base.node_ptr,
                     fmap_info.base,
                     range.start,
                     (range.end - range.start) as usize,
@@ -747,12 +706,12 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
         // Allow release of node if not in use anymore
         if !fmap_info.in_use() {
             // Notify filesystem of close
-            tx.on_close_node(self.node_ptr).await?;
+            tx.on_close_node(self.base.node_ptr).await?;
 
             // if this fmap version is outdated it's no use
             if fmap_info.stale() {
                 let fmap = fmaps
-                    .remove(&self.node_ptr.id())
+                    .remove(&self.base.node_ptr.id())
                     .await
                     .expect("fmap_info must exist");
 
@@ -763,13 +722,6 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
         }
 
         Ok(())
-    }
-
-    fn resource(&self) -> &dyn ResourceBase {
-        self
-    }
-    fn resource_mut(&mut self) -> &mut dyn ResourceBase {
-        self
     }
 
     fn fcntl(&mut self, cmd: usize, arg: usize, _pd: PhantomData<D>) -> Result<usize> {
@@ -784,12 +736,12 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
     }
 
     async fn sync<'a>(&mut self, fmaps: &Fmaps, tx: &mut Transaction<'a, D>) -> Result<()> {
-        if let Some(mut fmap_guard) = fmaps.get_mut(&self.node_ptr.id()).await {
+        if let Some(mut fmap_guard) = fmaps.get_mut(&self.base.node_ptr.id()).await {
             let fmap_info = &mut *fmap_guard;
             for (range, fmap) in fmap_info.ranges.iter_mut() {
                 unsafe {
                     fmap.sync(
-                        self.node_ptr,
+                        self.base.node_ptr,
                         fmap_info.base,
                         range.start,
                         (range.end - range.start) as usize,
@@ -806,7 +758,7 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
     async fn truncate<'a>(&mut self, len: u64, tx: &mut Transaction<'a, D>) -> Result<()> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
             let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            tx.truncate_node(self.node_ptr, len, mtime.as_secs(), mtime.subsec_nanos())
+            tx.truncate_node(self.base.node_ptr, len, mtime.as_secs(), mtime.subsec_nanos())
                 .await?;
             Ok(())
         } else {
@@ -815,9 +767,9 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
     }
 
     async fn utimens<'a>(&mut self, times: &[TimeSpec], tx: &mut Transaction<'a, D>) -> Result<()> {
-        let mut node = tx.read_tree(self.node_ptr).await?;
+        let mut node = tx.read_tree(self.base.node_ptr).await?;
 
-        if node.data().uid() == self.uid || self.uid == 0 {
+        if node.data().uid() == self.base.uid || self.base.uid == 0 {
             if let &[atime, mtime] = times {
                 let mut node_changed = false;
 
