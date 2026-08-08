@@ -32,9 +32,6 @@ pub trait Resource<D: Disk> {
     // Used by default implementations
     fn base(&self) -> &BaseResource;
 
-    // Putting this in the interface lets us avoid exporting base_mut().
-    fn set_path(&mut self, path: &str);
-
     async fn read<'a>(
         &mut self,
         fmaps: &Fmaps,
@@ -194,10 +191,6 @@ impl<D: Disk> Resource<D> for DirResource {
 
     fn base(&self) -> &BaseResource {
         &self.base
-    }
-
-    fn set_path(&mut self, path: &str) {
-        self.base.path = path.to_string();
     }
 
     async fn read<'a>(
@@ -473,10 +466,6 @@ impl<D: Disk> Resource<D> for FileResource {
 
     fn base(&self) -> &BaseResource {
         &self.base
-    }
-
-    fn set_path(&mut self, path: &str) {
-        self.base.path = path.to_string();
     }
 
     async fn read<'a>(

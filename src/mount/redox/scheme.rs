@@ -77,6 +77,16 @@ enum HandleMutRef<'a, D: Disk> {
     RefFile((&'a mut FileResource, PhantomData<D>)),
 }
 
+impl<'r, D: Disk> HandleMutRef<'r, D> {
+    // This lets us avoid exporting a base_mut() implementation.
+    fn set_path(&mut self, path: &str) {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.base.path = path.to_string(),
+            HandleMutRef::RefFile(file) => file.0.base.path = path.to_string(),
+        };
+    }
+}
+
 impl<'r, D: Disk> Resource<D> for HandleMutRef<'r, D> {
 
     fn base(&self) -> &BaseResource {
@@ -84,13 +94,6 @@ impl<'r, D: Disk> Resource<D> for HandleMutRef<'r, D> {
             HandleMutRef::RefDir(dir) => &dir.0.base,
             HandleMutRef::RefFile(file) => &file.0.base,
         }
-    }
-
-    fn set_path(&mut self, path: &str) {
-        match self {
-            HandleMutRef::RefDir(dir) => dir.0.base.path = path.to_string(),
-            HandleMutRef::RefFile(file) => file.0.base.path = path.to_string(),
-        };
     }
 
     async fn read<'a>(
