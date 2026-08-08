@@ -693,7 +693,7 @@ checksum = "54ec1b67c01c63545205ea6d218b336751399f0d8974c1a635c28604bedb81bc"
 [[package]]
 name = "redox-scheme"
 version = "0.11.2"
-source = "git+https://gitlab.redox-os.org/rsteinke/redox-scheme.git?branch=RSS_SCHEME_ASYNC#d1ef7cb88b972ce5af98c3bcde2eb2214f119c2a"
+source = "git+https://gitlab.redox-os.org/rsteinke/redox-scheme.git?branch=RSS_SCHEME_ASYNC#015323a8e22b03daaf3af1b21bc81d8fbc94d79a"
 dependencies = [
  "libredox",
  "redox_syscall",

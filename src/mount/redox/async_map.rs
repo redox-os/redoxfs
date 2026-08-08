@@ -1,86 +1,71 @@
-use async_lock::{
-    Mutex,
-    MutexGuard,
-    RwLock,
-};
-use std::HashMap;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+use async_lock::{Mutex, MutexGuardArc, RwLock};
 
-#[derive(Debug, Drop)]
-struct AsyncMapGuard<V> {
-    rc: Rc<Mutex<V>>,
-    guard: MutexGuard<V>,
+pub struct AsyncMap<K: Ord + PartialOrd, V> {
+    map: RwLock<BTreeMap<K, Arc<Mutex<V>>>>,
 }
 
-impl<V> AsyncMapGuard<V> {
-    pub async fn new(rc: Rc<Mutex<V>>) -> Self {
-        let guard = rc.lock().await;
+impl<K: Ord + PartialOrd, V> AsyncMap<K, V> {
+    pub fn new() -> Self {
         Self {
-            rc: rc,
-            guard: guard,
+            map: RwLock::new(BTreeMap::new()),
         }
     }
-}
 
-impl<V> Deref for AsyncMapGuard<V> {
-    fn deref(&self) -> &V {
-        self.guard.deref()
-    }
-}
+    // Note that in all cases below we drop() the map before awaiting
+    // the Mutex.
 
-impl<V> DerefMut for AsyncMapGuard<V> {
-    fn deref_mut(&mut self) -> &V {
-        self.guard.deref_mut()
-    }
-}
-
-struct AsyncMap<K, V> {
-    map: RwLock<HashMap<K, Rc<Mutex<V>>>>,
-}
-
-impl<K,V> AsyncMap<V> {
-
-    pub fn new() -> Self {
-        Self{map: RwLock::new(HashMap::new())}
-    }
-
-    pub fn get(&self, k: &K) -> Option<AsyncMapGuard<V>> {
+    pub async fn get(&self, k: &K) -> Option<MutexGuardArc<V>> {
         let map = self.map.read().await;
-        let rc = map.get(k).map(|rc| rc.clone);
+        let lock = map.get(k).map(|v| v.lock_arc());
         drop(map);
-        rc.map(|rc| AsyncMapGuard::new(rc))
+        match lock {
+            Some(fut) => Some(fut.await),
+            None => None,
+        }
     }
 
     // TODO: fix callers
-    pub fn get_mut(&self, k: &K) -> Option<AsyncMapGuard<V>> {
-        self.get(k)
+    pub async fn get_mut(&self, k: &K) -> Option<MutexGuardArc<V>> {
+        self.get(k).await
     }
 
-    pub fn insert(&self, k: K, v: V) -> Option<AsyncMapGuard<V>> {
-        let map = self.map.write().await;
-        let rc = map.insert(k, Rc::new(Mutex::new(v))).map(|rc| rc.clone);
+    pub async fn insert(&self, k: K, v: V) -> Option<MutexGuardArc<V>> {
+        let mut map = self.map.write().await;
+        let lock = map.insert(k, Arc::new(Mutex::new(v))).map(|v| v.lock_arc());
         drop(map);
-        rc.map(|rc| AsyncMapGuard::new(rc))
+        match lock {
+            Some(fut) => Some(fut.await),
+            None => None,
+        }
     }
 
     // Returning an entry in the map doesn't really work with this
     // locking scheme, so this is a single function.
-    pub fn get_or_insert_with<F: FnOnce() -> V>(&self, k: K, f: F) -> Option<AsyncMapGuard<V>> {
-        let map = self.map.write().await;
-        let rc = map.entry(k).or_insert_with(|| Rc::new(Mutex::new(f()))).map(|rc| rc.clone);
+    pub async fn get_or_insert_with<F: FnOnce() -> V>(&self, k: K, f: F) -> MutexGuardArc<V> {
+        let mut map = self.map.write().await;
+        let lock = map
+            .entry(k)
+            .or_insert_with(|| Arc::new(Mutex::new(f())))
+            .lock_arc();
         drop(map);
-        AsyncMapGuard::new(rc)
+        lock.await
     }
 
     // Convienience function for scheme_root()
     pub fn insert_mut(&mut self, k: K, v: V) {
-        self.map.get_mut().insert(k, Rc::new(Mutex::new(v)));
+        self.map.get_mut().insert(k, Arc::new(Mutex::new(v)));
     }
 
-    pub fn remove(&self, k: &K) -> Option<AsyncMapGuard<V>> {
-        let map = self.map.write().await;
-        let rc = map.remove(k).map(|rc| rc.clone);
+    pub async fn remove(&self, k: &K) -> Option<MutexGuardArc<V>> {
+        let mut map = self.map.write().await;
+        let lock = map.remove(k).map(|v| v.lock_arc());
         drop(map);
-        rc.map(|rc| AsyncMapGuard::new(rc))
+        match lock {
+            Some(fut) => Some(fut.await),
+            None => None,
+        }
     }
 
     // TODO: Add insert_drop() and remove_drop() that don't lock

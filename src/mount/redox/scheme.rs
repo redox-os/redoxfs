@@ -5,7 +5,7 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_lock::RwLock;
+use async_lock::{MutexGuardArc, RwLock};
 use libredox::Fd;
 use redox_path::RedoxReference;
 use redox_path::RedoxScheme;
@@ -29,59 +29,194 @@ use syscall::MunmapFlags;
 
 use redox_path::RedoxPath;
 
-use crate::{Disk, FileSystem, Node, Transaction, TreeData, TreePtr, BLOCK_SIZE};
+use crate::{
+    transaction::TransactionRead, Disk, FileSystem, Node, Transaction, TreeData, TreePtr,
+    BLOCK_SIZE,
+};
 
-use super::async_map::{AsyncMap, AsyncMapGuard};
-use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, Resource};
+use super::async_map::AsyncMap;
+use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, ResourceBase, ResourceDisk};
 
-enum HandleState<D: Disk> {
+enum Handle<D: Disk> {
     ResourceDir((DirResource, PhantomData<D>)),
     ResourceFile((FileResource, PhantomData<D>)),
     SchemeRoot,
 }
 
-impl<D: Disk> HandleState<D> {
-    pub fn resource(&self) -> Result<&dyn Resource<D>> {
-        match self {
-            Handle::ResourceDir((dir_resource, _)) => Ok(dir_resource as &dyn Resource<D>),
-            Handle::ResourceFile((file_resource, _)) => Ok(file_resource),
-            Handle::SchemeRoot => Err(Error::new(EBADF)),
-        }
-    }
-    pub fn resource_mut(&mut self) -> Result<&mut dyn Resource<D>> {
-        match self {
-            Handle::ResourceDir((dir_resource, _)) => Ok(dir_resource as &mut dyn Resource<D>),
-            Handle::ResourceFile((file_resource, _)) => Ok(file_resource),
-            Handle::SchemeRoot => Err(Error::new(EBADF)),
-        }
-    }
-}
-
-struct Handle<D: Disk> {
-    guard: AsyncMapGuard<HandleState<D>>,
-}
-
 impl<D: Disk> Handle<D> {
-    pub fn get_resource(res: Option<&Self>) -> Result<&dyn Resource<D>> {
-        res.ok_or(Error::new(EBADF)).and_then(|s| s.resource())
+    fn resource<'a>(&'a mut self) -> Result<HandleMutRef<'a, D>> {
+        match self {
+            Handle::ResourceDir((dir, _)) => {
+                Ok(HandleMutRef::RefDir((dir as &mut DirResource, PhantomData)))
+            }
+            Handle::ResourceFile((file, _)) => Ok(HandleMutRef::RefFile((
+                file as &mut FileResource,
+                PhantomData,
+            ))),
+            Handle::SchemeRoot => Err(Error::new(EBADF)),
+        }
     }
-    pub fn get_resource_mut(res: Option<&mut Self>) -> Result<&mut dyn Resource<D>> {
-        res.ok_or(Error::new(EBADF)).and_then(|s| s.resource_mut())
-    }
-    pub fn get_resource_or(res: Option<&Self>) -> Result<Option<&dyn Resource<D>>> {
-        res.ok_or(Error::new(EBADF)).map(|s| s.resource().ok())
+
+    fn make_path<'a>(&self, path: RedoxReference<'a>) -> Result<RedoxReference<'a>> {
+        Ok(match self {
+            Handle::ResourceDir((dir, _)) if path.is_relative() => RedoxReference::new(dir.path())
+                .ok_or(Error::new(ENOENT))?
+                .join_checked(path),
+            Handle::ResourceFile(_) => return Err(Error::new(ENOTDIR)),
+            _ => path,
+        }
+        .canonical())
     }
 }
 
-impl<D: Disk> Deref for Handle<D> {
-    fn deref(&self) -> &HandleState<D> {
-        self.guard.deref()
+// dyn and async don't play well together, so this is a workaround
+// for acquiring a generic Resource
+
+enum HandleMutRef<'a, D: Disk> {
+    RefDir((&'a mut DirResource, PhantomData<D>)),
+    RefFile((&'a mut FileResource, PhantomData<D>)),
+}
+
+// We could use dyn and Deref here, as ResourceBase isn't
+// async, but that seems excessively tricky.
+impl<'r, D: Disk> ResourceBase for HandleMutRef<'r, D> {
+    fn parent_ptr_opt(&self) -> Option<TreePtr<Node>> {
+        self.resource().parent_ptr_opt()
+    }
+
+    fn node_ptr(&self) -> TreePtr<Node> {
+        self.resource().node_ptr()
+    }
+
+    fn uid(&self) -> u32 {
+        self.resource().uid()
+    }
+
+    fn set_path(&mut self, path: &str) {
+        self.resource_mut().set_path(path)
+    }
+
+    fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize> {
+        self.resource_mut().fcntl(cmd, arg)
+    }
+
+    fn path(&self) -> &str {
+        self.resource().path()
     }
 }
 
-impl<D: Disk> DerefMut for Handle<D> {
-    fn deref_mut(&mut self) -> &mut HandleState<D> {
-        self.guard.deref_mut()
+impl<'r, D: Disk> ResourceDisk<D> for HandleMutRef<'r, D> {
+    async fn read<'a>(
+        &mut self,
+        fmaps: &super::resource::Fmaps,
+        buf: &mut [u8],
+        offset: u64,
+        tx: &mut TransactionRead<'a, D>,
+    ) -> Result<usize> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.read(fmaps, buf, offset, tx).await,
+            HandleMutRef::RefFile(file) => file.0.read(fmaps, buf, offset, tx).await,
+        }
+    }
+
+    async fn write<'a>(
+        &mut self,
+        fmaps: &super::resource::Fmaps,
+        buf: &[u8],
+        offset: u64,
+        tx: &mut Transaction<'a, D>,
+    ) -> Result<usize> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.write(fmaps, buf, offset, tx).await,
+            HandleMutRef::RefFile(file) => file.0.write(fmaps, buf, offset, tx).await,
+        }
+    }
+
+    async fn fsize<'a>(&mut self, tx: &mut TransactionRead<'a, D>) -> Result<u64> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.fsize(tx).await,
+            HandleMutRef::RefFile(file) => file.0.fsize(tx).await,
+        }
+    }
+
+    async fn fmap<'a>(
+        &mut self,
+        fmaps: &super::resource::Fmaps,
+        flags: MapFlags,
+        size: usize,
+        offset: u64,
+        tx: &mut Transaction<'a, D>,
+    ) -> Result<usize> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.fmap(fmaps, flags, size, offset, tx).await,
+            HandleMutRef::RefFile(file) => file.0.fmap(fmaps, flags, size, offset, tx).await,
+        }
+    }
+
+    async fn funmap<'a>(
+        &mut self,
+        fmaps: &super::resource::Fmaps,
+        offset: u64,
+        size: usize,
+        tx: &mut Transaction<'a, D>,
+    ) -> Result<()> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.funmap(fmaps, offset, size, tx).await,
+            HandleMutRef::RefFile(file) => file.0.funmap(fmaps, offset, size, tx).await,
+        }
+    }
+
+    fn resource(&self) -> &dyn ResourceBase {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0,
+            HandleMutRef::RefFile(file) => file.0,
+        }
+    }
+
+    fn resource_mut(&mut self) -> &mut dyn ResourceBase {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0,
+            HandleMutRef::RefFile(file) => file.0,
+        }
+    }
+
+    // Both DirResource and FileResource use the default fchmod(), fchown() and stat().
+
+    async fn sync<'a>(
+        &mut self,
+        fmaps: &super::resource::Fmaps,
+        tx: &mut Transaction<'a, D>,
+    ) -> Result<()> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.sync(fmaps, tx).await,
+            HandleMutRef::RefFile(file) => file.0.sync(fmaps, tx).await,
+        }
+    }
+
+    async fn truncate<'a>(&mut self, len: u64, tx: &mut Transaction<'a, D>) -> Result<()> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.truncate(len, tx).await,
+            HandleMutRef::RefFile(file) => file.0.truncate(len, tx).await,
+        }
+    }
+
+    async fn utimens<'a>(&mut self, times: &[TimeSpec], tx: &mut Transaction<'a, D>) -> Result<()> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.utimens(times, tx).await,
+            HandleMutRef::RefFile(file) => file.0.utimens(times, tx).await,
+        }
+    }
+
+    async fn getdents<'a, 'buf>(
+        &mut self,
+        buf: DirentBuf<&'buf mut [u8]>,
+        opaque_offset: u64,
+        tx: &mut TransactionRead<'a, D>,
+    ) -> Result<DirentBuf<&'buf mut [u8]>> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.getdents(buf, opaque_offset, tx).await,
+            HandleMutRef::RefFile(file) => file.0.getdents(buf, opaque_offset, tx).await,
+        }
     }
 }
 
@@ -129,21 +264,25 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         })
     }
 
+    async fn get_handle(&self, id: usize) -> Result<MutexGuardArc<Handle<D>>> {
+        self.handles.get(&id).await.ok_or(Error::new(EBADF))
+    }
+
     pub async fn tx_read<F: AsyncFnOnce(&mut TransactionRead<D>) -> Result<T>, T>(
         &self,
         f: F,
     ) -> Result<T> {
-        self.fs.read().await.deref().tx_read(f).await
+        self.fs.read().await.tx_read(f).await
     }
 
     pub async fn tx<F: AsyncFnOnce(&mut Transaction<D>) -> Result<T>, T>(&self, f: F) -> Result<T> {
-        self.fs.write().await.deref().tx(f).await
+        self.fs.write().await.tx(f).await
     }
 
     /// Resolve a symbolic link of given `node`. `full_path` must be non-canonicalized path from root node.
-    fn resolve_symlink<'a>(
+    async fn resolve_symlink<'a, 'b>(
         scheme_name: &RedoxScheme<'sock>,
-        tx: &mut Transaction<D>,
+        tx: &mut Transaction<'b, D>,
         uid: u32,
         gid: u32,
         full_path: RedoxReference<'a>,
@@ -160,13 +299,15 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             // XXX What should the limit be?
             assert!(node.data().is_symlink());
             let mut buf = [0; 4096];
-            let count = tx.read_node(
-                node.ptr(),
-                0,
-                &mut buf,
-                atime.as_secs(),
-                atime.subsec_nanos(),
-            )?;
+            let count = tx
+                .read_node(
+                    node.ptr(),
+                    0,
+                    &mut buf,
+                    atime.as_secs(),
+                    atime.subsec_nanos(),
+                )
+                .await?;
 
             let path = str::from_utf8(&buf[..count]).or(Err(Error::new(EINVAL)))?;
             let path = RedoxStr::new(path).ok_or(Error::new(EINVAL))?;
@@ -194,7 +335,9 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 uid,
                 gid,
                 nodes,
-            )? {
+            )
+            .await?
+            {
                 if !next_node.data().is_symlink() {
                     nodes.push((next_node, next_node_name));
                     return Ok(target_reference.into_owned());
@@ -208,21 +351,18 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         Err(Error::new(ELOOP))
     }
 
-    fn handle_connect(&self, id: usize, payload: &mut [u8]) -> Result<usize> {
-        let resource = Handle::get_resource(self.handles.get(&id))?;
+    async fn handle_connect(&self, id: usize, payload: &mut [u8]) -> Result<usize> {
+        let mut hdl = self.get_handle(id).await?;
+        let resource = hdl.resource()?;
         let inode_id = resource.node_ptr().id();
-        let target_fd = self
-            .other_scheme_fd_map
-            .read()
-            .await
-            .get(&inode_id)
-            .ok_or(Error::new(EBADF))?;
+        let fd_map = self.other_scheme_fd_map.read().await;
+        let target_fd = fd_map.get(&inode_id).ok_or(Error::new(EBADF))?;
         let len = libredox::call::get_socket_token(target_fd.raw(), payload)?;
         return Ok(len);
     }
 
     async fn open(
-        &mut self,
+        &self,
         url: RedoxReference<'_>,
         flags: usize,
         ctx: &CallerCtx,
@@ -245,13 +385,12 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         let scheme_name = &self.scheme_name;
         let mut nodes = SmallVec::new();
         let node_opt = self
-            .fs
             .tx(async |tx| {
                 Self::path_nodes(scheme_name, tx, start_ptr, &path, uid, gid, &mut nodes).await
             })
             .await?;
         let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
-        let handle: HandleState<D> = match node_opt {
+        let mut handle: Handle<D> = match node_opt {
             Some((node, _node_name)) => {
                 if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
                     return Err(Error::new(EEXIST));
@@ -263,8 +402,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         }
 
                         let mut children = Vec::new();
-                        self.fs
-                            .tx(async |tx| tx.child_nodes(node.ptr(), &mut children).await)
+                        self.tx(async |tx| tx.child_nodes(node.ptr(), &mut children).await)
                             .await?;
 
                         let mut data = Vec::new();
@@ -277,7 +415,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                             }
                         }
 
-                        HandleState::ResourceDir((
+                        Handle::ResourceDir((
                             DirResource::new(
                                 path.to_string(),
                                 parent_ptr_opt,
@@ -291,7 +429,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         // println!("{:X} & {:X}: EISDIR {}", flags, O_DIRECTORY, path);
                         return Err(Error::new(EISDIR));
                     } else {
-                        HandleState::ResourceDir((
+                        Handle::ResourceDir((
                             DirResource::new(
                                 path.to_string(),
                                 parent_ptr_opt,
@@ -308,7 +446,6 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 {
                     let mut resolve_nodes = SmallVec::new();
                     let resolved = self
-                        .fs
                         .tx(async |tx| {
                             Self::resolve_symlink(
                                 scheme_name,
@@ -322,7 +459,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                             .await
                         })
                         .await?;
-                    return self.open(resolved, flags, ctx);
+                    return Box::pin(self.open(resolved, flags, ctx)).await;
                 } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));
                 } else {
@@ -354,15 +491,14 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         }
 
                         let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                        self.fs
-                            .tx(async |tx| {
-                                tx.truncate_node(node_ptr, 0, mtime.as_secs(), mtime.subsec_nanos())
-                                    .await
-                            })
-                            .await?;
+                        self.tx(async |tx| {
+                            tx.truncate_node(node_ptr, 0, mtime.as_secs(), mtime.subsec_nanos())
+                                .await
+                        })
+                        .await?;
                     }
 
-                    HandleState::ResourceFile((
+                    Handle::ResourceFile((
                         FileResource::new(path.to_string(), parent_ptr_opt, node_ptr, flags, uid),
                         PhantomData,
                     ))
@@ -399,7 +535,6 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 };
 
                 let node_ptr = self
-                    .fs
                     .tx(async |tx| {
                         let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
                         let mut node = tx
@@ -415,19 +550,19 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         if node.data().uid() != uid || node.data().gid() != gid {
                             node.data_mut().set_uid(uid);
                             node.data_mut().set_gid(gid);
-                            tx.sync_tree(node)?;
+                            tx.sync_tree(node).await?;
                         }
                         Ok(node_ptr)
                     })
                     .await?;
 
                 if dir {
-                    HandleState::ResourceDir((
+                    Handle::ResourceDir((
                         DirResource::new(path.to_string(), parent_ptr_opt, node_ptr, None, uid),
                         PhantomData,
                     ))
                 } else {
-                    HandleState::ResourceFile((
+                    Handle::ResourceFile((
                         FileResource::new(path.to_string(), parent_ptr_opt, node_ptr, flags, uid),
                         PhantomData,
                     ))
@@ -437,20 +572,19 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
 
         let node_ptr = handle.resource().unwrap().node_ptr();
         {
-            let fmap_info = self
+            let mut fmap_info = self
                 .fmap
-                .get_or_insert_with(node_ptr.id(), FileMmapInfo::new);
+                .get_or_insert_with(node_ptr.id(), FileMmapInfo::new)
+                .await;
             if !fmap_info.in_use() {
                 // Notify filesystem of open
-                self.fs
-                    .tx(async |tx| tx.on_open_node(node_ptr).await)
-                    .await?;
+                self.tx(async |tx| tx.on_open_node(node_ptr)).await?;
             }
             fmap_info.open_fds += 1;
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.handles.insert(id, handle);
+        self.handles.insert(id, handle).await;
 
         Ok(OpenResult::ThisScheme {
             number: id,
@@ -469,12 +603,12 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         let scheme_name = &self.scheme_name;
 
         let unlink_result = self
-            .fs
             .tx(async |tx| {
                 let mut nodes = SmallVec::new();
 
                 let Some((child, child_name)) =
-                    Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes)?
+                    Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes)
+                        .await?
                 else {
                     return Err(Error::new(ENOENT));
                 };
@@ -533,9 +667,9 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         Ok(())
     }
 
-    fn path_nodes(
+    async fn path_nodes<'a>(
         scheme_name: &RedoxScheme<'sock>,
-        tx: &mut Transaction<D>,
+        tx: &mut Transaction<'a, D>,
         start_ptr: TreePtr<Node>,
         path: &RedoxReference<'_>,
         uid: u32,
@@ -551,10 +685,10 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         let mut node_name = String::new();
         loop {
             let node_res = match part_opt {
-                None => tx.read_tree(node_ptr),
+                None => tx.read_tree(node_ptr).await,
                 Some(part) => {
                     node_name = part.to_string();
-                    tx.find_node(node_ptr, part)
+                    tx.find_node(node_ptr, part).await
                 }
             };
 
@@ -575,7 +709,16 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         url.push_str(&parent_name);
                     }
                     let url = RedoxReference::new(url).ok_or(Error::new(EINVAL))?;
-                    Self::resolve_symlink(scheme_name, tx, uid, gid, url, node, nodes)?;
+                    Box::pin(Self::resolve_symlink(
+                        scheme_name,
+                        tx,
+                        uid,
+                        gid,
+                        url,
+                        node,
+                        nodes,
+                    ))
+                    .await?;
                     node_ptr = nodes.last().unwrap().0.ptr();
                 } else if !node.data().is_dir() {
                     return Err(Error::new(ENOTDIR));
@@ -596,20 +739,10 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     }
 }
 
-/// Join two paths and canonicalize it
-pub fn resolve_path<'a, 'b, D: Disk>(
-    dir: &'a dyn Resource<D>,
-    path: RedoxReference<'b>,
-) -> Result<RedoxReference<'b>> {
-    let dirpath = RedoxReference::new(dir.path());
-    let dirpath = dirpath.ok_or(Error::new(ENOENT))?;
-    Ok(dirpath.join_checked(path).canonical())
-}
-
 impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     fn scheme_root(&mut self) -> Result<usize> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.handles.insert_mut(id, HandleState::SchemeRoot);
+        self.handles.insert_mut(id, Handle::SchemeRoot);
         Ok(id)
     }
 
@@ -622,12 +755,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         ctx: &CallerCtx,
     ) -> Result<OpenResult> {
         let path = RedoxReference::new(path).ok_or(Error::new(EINVAL))?;
-        let path_to_open = match Handle::get_resource_or(self.handles.get(&dirfd))? {
-            // If pathname is absolute, then dirfd is ignored.
-            Some(res) if path.is_relative() => resolve_path(res, path)?,
-            _ => path.canonical(),
-        };
-
+        let path_to_open = self.get_handle(dirfd).await?.make_path(path)?;
         self.open_internal(TreePtr::root(), path_to_open.to_relative(), flags, ctx)
             .await
     }
@@ -642,16 +770,12 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         let uid = ctx.uid;
         let gid = ctx.gid;
         let path = RedoxReference::new(path).ok_or(Error::new(EINVAL))?;
-        let path = match Handle::get_resource_or(self.handles.get(&dirfd))? {
-            // If pathname is absolute, then dirfd is ignored.
-            Some(res) if path.is_relative() => resolve_path(res, path)?,
-            _ => path.canonical(),
-        };
+        let path_to_unlink = self.get_handle(dirfd).await?.make_path(path)?;
         let start_ptr = TreePtr::root();
 
         // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
-        self.unlink_internal(start_ptr, &path, flags, uid, gid)
+        self.unlink_internal(start_ptr, &path_to_unlink, flags, uid, gid)
             .await
     }
 
@@ -665,7 +789,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<usize> {
         // println!("Read {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         self.tx_read(async |tx| file.read(&self.fmap, buf, offset, tx).await)
             .await
     }
@@ -679,42 +804,46 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         _ctx: &CallerCtx,
     ) -> Result<usize> {
         // println!("Write {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         self.tx(async |tx| file.write(&self.fmap, buf, offset, tx).await)
             .await
     }
 
     async fn fsize(&self, id: usize, _ctx: &CallerCtx) -> Result<u64> {
         // println!("Seek {}, {} {}", id, pos, whence);
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.tx(async |tx| file.fsize(tx).await).await
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
+        self.tx_read(async |tx| file.fsize(tx).await).await
     }
 
     async fn fchmod(&self, id: usize, mode: u16, _ctx: &CallerCtx) -> Result<()> {
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         self.tx(async |tx| file.fchmod(mode, tx).await).await
     }
 
     async fn fchown(&self, id: usize, new_uid: u32, new_gid: u32, _ctx: &CallerCtx) -> Result<()> {
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         self.tx(async |tx| file.fchown(new_uid, new_gid, tx).await)
             .await
     }
 
     async fn fcntl(&self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        file.fcntl(cmd, arg)
+        self.get_handle(id).await?.resource()?.fcntl(cmd, arg)
     }
 
     async fn fevent(&self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {
-        let _file = Handle::get_resource(self.handles.get(&id))?;
+        let _file = self.get_handle(id).await?.resource()?;
         // EPERM is returned for handles that are always readable or writable
         Err(Error::new(EPERM))
     }
 
     async fn fpath(&self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let file = Handle::get_resource(self.handles.get(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let file = hdl.resource()?;
         let mounted_path = self.mounted_path.as_bytes();
 
         let mut i = 0;
@@ -751,7 +880,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
 
         // println!("Flink {}, {} from {}, {}", id, new_path, uid, gid);
 
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         //TODO: Check for EINVAL
         // The new pathname contained a path prefix of the old, or, more generally,
         // an attempt was made to make a directory a subdirectory of itself.
@@ -802,7 +932,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                 uid,
                 gid,
                 &mut new_nodes,
-            )?;
+            )
+            .await?;
 
             if let Some((ref new_parent, _)) = new_nodes.last() {
                 if !new_parent.data().owner(uid) {
@@ -859,7 +990,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
 
         // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
 
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         //TODO: Check for EINVAL
         // The new pathname contained a path prefix of the old, or, more generally,
         // an attempt was made to make a directory a subdirectory of itself.
@@ -910,7 +1042,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                 uid,
                 gid,
                 &mut new_nodes,
-            )?;
+            )
+            .await?;
 
             if let Some((ref new_parent, _)) = new_nodes.last() {
                 if !new_parent.data().owner(uid) {
@@ -959,15 +1092,17 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
 
     async fn fstat(&self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fstat {}, {:X}", id, stat as *mut Stat as usize);
-        let file = Handle::get_resource(self.handles.get(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let file = hdl.resource()?;
         self.tx_read(async |tx| file.stat(stat, tx).await).await
     }
 
     async fn fstatvfs(&self, id: usize, stat: &mut StatVfs, _ctx: &CallerCtx) -> Result<()> {
-        let _file = Handle::get_resource(self.handles.get(&id))?;
+        let _file = self.get_handle(id).await?.resource()?;
+        let fs = self.fs.read().await;
         stat.f_bsize = BLOCK_SIZE as u32;
-        stat.f_blocks = self.fs.header.size() / (stat.f_bsize as u64);
-        stat.f_bfree = self.fs.allocator().free();
+        stat.f_blocks = fs.header.size() / (stat.f_bsize as u64);
+        stat.f_bfree = fs.allocator().free();
         stat.f_bavail = stat.f_bfree;
 
         Ok(())
@@ -975,19 +1110,22 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
 
     async fn fsync(&self, id: usize, _ctx: &CallerCtx) -> Result<()> {
         // println!("Fsync {}", id);
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         self.tx(async |tx| file.sync(&self.fmap, tx).await).await
     }
 
     async fn ftruncate(&self, id: usize, len: u64, _ctx: &CallerCtx) -> Result<()> {
         // println!("Ftruncate {}, {}", id, len);
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         self.tx(async |tx| file.truncate(len, tx).await).await
     }
 
     async fn futimens(&self, id: usize, times: &[TimeSpec], _ctx: &CallerCtx) -> Result<()> {
         // println!("Futimens {}, {}", id, times.len());
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         self.tx(async |tx| file.utimens(times, tx).await).await
     }
 
@@ -997,9 +1135,9 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         buf: DirentBuf<&'buf mut [u8]>,
         opaque_offset: u64,
     ) -> Result<DirentBuf<&'buf mut [u8]>> {
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        self.fs
-            .tx_read(async |tx| file.getdents(buf, opaque_offset, tx).await)
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
+        self.tx_read(async |tx| file.getdents(buf, opaque_offset, tx).await)
             .await
     }
 
@@ -1011,7 +1149,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         flags: MapFlags,
         _ctx: &CallerCtx,
     ) -> Result<usize> {
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         self.tx(async |tx| file.fmap(&self.fmap, flags, size, offset, tx).await)
             .await
     }
@@ -1023,21 +1162,22 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         _flags: MunmapFlags,
         _ctx: &CallerCtx,
     ) -> Result<()> {
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+        let mut hdl = self.get_handle(id).await?;
+        let mut file = hdl.resource()?;
         self.tx(async |tx| file.funmap(&self.fmap, offset, size, tx).await)
             .await
     }
 
     async fn on_close(&self, id: usize) {
         // println!("Close {}", id);
-        let Some(file) = self.handles.remove(&id) else {
+        let Some(mut file) = self.handles.remove(&id).await else {
             return;
         };
         let Ok(resource) = file.resource() else {
             return;
         };
         let node_ptr = resource.node_ptr();
-        let Some(file_info) = self.fmap.get_mut(&node_ptr.id()) else {
+        let Some(mut file_info) = self.fmap.get_mut(&node_ptr.id()).await else {
             return;
         };
 
@@ -1049,11 +1189,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         // Check if node no longer in use
         if !file_info.in_use() {
             // Notify filesystem of close
-            if let Err(err) = self
-                .fs
-                .tx(async |tx| tx.on_close_node(node_ptr).await)
-                .await
-            {
+            if let Err(err) = self.tx(async |tx| tx.on_close_node(node_ptr).await).await {
                 log::error!("failed to close node {}: {}", node_ptr.id(), err);
             }
 
@@ -1069,7 +1205,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         let uid = ctx.uid;
         let gid = ctx.gid;
 
-        let parent_resource = Handle::get_resource(self.handles.get(&sendfd_request.id()))?;
+        let mut hdl = self.get_handle(sendfd_request.id()).await?;
+        let parent_resource = hdl.resource()?;
 
         let mut new_fd = usize::MAX;
         if let Err(e) = sendfd_request.obtain_fd(
@@ -1084,7 +1221,6 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         let parent_resource_ptr = parent_resource.node_ptr();
 
         let parent_node = self
-            .fs
             .tx(async |tx| tx.read_tree(parent_resource_ptr).await)
             .await?;
         if !parent_node.data().is_dir() {
@@ -1119,9 +1255,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
 
             let flags = 0o777;
             let node_ptr = self
-                .fs
                 .tx(async |tx| {
-                    if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
+                    if tx.find_node(parent_resource_ptr, &last_part).await.is_ok() {
                         // If the file already exists, we cannot create it again
                         return Err(Error::new(EEXIST));
                     }
@@ -1140,7 +1275,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                     if node.data().uid() != uid || node.data().gid() != gid {
                         node.data_mut().set_uid(uid);
                         node.data_mut().set_gid(gid);
-                        tx.sync_tree(node)?;
+                        tx.sync_tree(node).await?;
                     }
                     Ok(node_ptr)
                 })
@@ -1155,21 +1290,23 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
             )
         };
 
-        let node_ptr = (&resource as &'_ dyn Resource<D>).node_ptr();
+        let node_ptr = resource.node_ptr();
         {
-            let fmap_info = self
+            let mut fmap_info = self
                 .fmap
-                .get_or_insert_with(node_ptr.id(), FileMmapInfo::new);
+                .get_or_insert_with(node_ptr.id(), FileMmapInfo::new)
+                .await;
             if !fmap_info.in_use() {
                 // Notify filesystem of open
-                self.fs.tx(async |tx| tx.on_open_node(node_ptr)).await?;
+                self.tx(async |tx| tx.on_open_node(node_ptr)).await?;
             }
             fmap_info.open_fds += 1;
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.handles
-            .insert(id, Handle::ResourceFile((resource, PhantomData)));
+            .insert(id, Handle::ResourceFile((resource, PhantomData)))
+            .await;
         self.other_scheme_fd_map
             .write()
             .await
@@ -1188,7 +1325,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
             return Err(Error::new(EINVAL));
         };
         match verb {
-            FsCall::Connect => self.handle_connect(id, payload),
+            FsCall::Connect => self.handle_connect(id, payload).await,
             _ => Err(Error::new(EOPNOTSUPP)),
         }
     }
@@ -1209,14 +1346,15 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
                     return Err(Error::new(EPERM));
                 }
                 self.fchown(id, new_uid, new_gid as u32, ctx)
-                    .map(|_| 0)
                     .await
+                    .map(|_| 0)
             }
             /* TODO: Support Unlinkat using std_fs_call
             Unlinkat => {
                 let path = unsafe { str::from_utf8_unchecked(payload) };
                 let flags = metadata.arg1;
-                let dir_node_ptr = match self.handles.get(&id).ok_or(Error::new(EBADF))? {
+                let mut hdl = self.get_handle(id).await?;
+                let dir_node_ptr = match *hdl {
                     // If pathname is absolute, then dirfd is ignored.
                     Handle::Resource(dir_resource) if !path.starts_with('/') => {
                         // only allow dirresource as base for openat
@@ -1233,9 +1371,8 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
         }
     }
 
-    fn inode(&self, id: usize) -> Result<usize> {
-        let resource = Handle::get_resource(self.handles.get(&id))?;
-        Ok(resource.node_ptr().id() as usize)
+    async fn inode(&self, id: usize) -> Result<usize> {
+        Ok(self.get_handle(id).await?.resource()?.node_ptr().id() as usize)
     }
 }
 
