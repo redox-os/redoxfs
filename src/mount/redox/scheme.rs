@@ -35,7 +35,7 @@ use crate::{
 };
 
 use super::async_map::AsyncMap;
-use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, BaseResource, Resource};
+use super::resource::{BaseResource, DirResource, Entry, FileMmapInfo, FileResource, Resource};
 
 enum Handle<D: Disk> {
     ResourceDir((DirResource, PhantomData<D>)),
@@ -59,9 +59,11 @@ impl<D: Disk> Handle<D> {
 
     fn make_path<'a>(&self, path: RedoxReference<'a>) -> Result<RedoxReference<'a>> {
         Ok(match self {
-            Handle::ResourceDir((dir, _)) if path.is_relative() => RedoxReference::new(&dir.base.path)
-                .ok_or(Error::new(ENOENT))?
-                .join_checked(path),
+            Handle::ResourceDir((dir, _)) if path.is_relative() => {
+                RedoxReference::new(&dir.base.path)
+                    .ok_or(Error::new(ENOENT))?
+                    .join_checked(path)
+            }
             Handle::ResourceFile(_) => return Err(Error::new(ENOTDIR)),
             _ => path,
         }
@@ -88,7 +90,6 @@ impl<'r, D: Disk> HandleMutRef<'r, D> {
 }
 
 impl<'r, D: Disk> Resource<D> for HandleMutRef<'r, D> {
-
     fn base(&self) -> &BaseResource {
         match self {
             HandleMutRef::RefDir(dir) => &dir.0.base,
@@ -158,12 +159,7 @@ impl<'r, D: Disk> Resource<D> for HandleMutRef<'r, D> {
 
     // Both DirResource and FileResource use the default fchmod(), fchown() and stat().
 
-    fn fcntl<'a>(
-        &mut self,
-        cmd: usize,
-        arg: usize,
-        ph: PhantomData<D>,
-    ) -> Result<usize> {
+    fn fcntl<'a>(&mut self, cmd: usize, arg: usize, ph: PhantomData<D>) -> Result<usize> {
         match self {
             HandleMutRef::RefDir(dir) => dir.0.fcntl(cmd, arg, ph),
             HandleMutRef::RefFile(file) => file.0.fcntl(cmd, arg, ph),
@@ -819,7 +815,10 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     }
 
     async fn fcntl(&self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
-        self.get_handle(id).await?.resource()?.fcntl(cmd, arg, PhantomData::<D>)
+        self.get_handle(id)
+            .await?
+            .resource()?
+            .fcntl(cmd, arg, PhantomData::<D>)
     }
 
     async fn fevent(&self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {

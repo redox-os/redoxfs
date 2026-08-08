@@ -24,11 +24,9 @@ pub struct BaseResource {
     pub parent_ptr_opt: Option<TreePtr<Node>>,
     pub node_ptr: TreePtr<Node>,
     pub uid: u32,
-
 }
 
 pub trait Resource<D: Disk> {
-
     // Used by default implementations
     fn base(&self) -> &BaseResource;
 
@@ -118,7 +116,7 @@ pub trait Resource<D: Disk> {
         }
     }
 
-    fn fcntl(&mut self, cmd: usize, arg: usize, _pd : PhantomData<D>) -> Result<usize>;
+    fn fcntl(&mut self, cmd: usize, arg: usize, _pd: PhantomData<D>) -> Result<usize>;
 
     async fn stat<'a>(&self, stat: &mut Stat, tx: &mut TransactionRead<'a, D>) -> Result<()> {
         let node = tx.read_tree(self.base().node_ptr).await?;
@@ -181,14 +179,18 @@ impl DirResource {
         uid: u32,
     ) -> DirResource {
         DirResource {
-            base: BaseResource{path, parent_ptr_opt, node_ptr, uid},
+            base: BaseResource {
+                path,
+                parent_ptr_opt,
+                node_ptr,
+                uid,
+            },
             data: data,
         }
     }
 }
 
 impl<D: Disk> Resource<D> for DirResource {
-
     fn base(&self) -> &BaseResource {
         &self.base
     }
@@ -451,7 +453,12 @@ impl FileResource {
         uid: u32,
     ) -> FileResource {
         FileResource {
-            base: BaseResource{path, parent_ptr_opt, node_ptr, uid},
+            base: BaseResource {
+                path,
+                parent_ptr_opt,
+                node_ptr,
+                uid,
+            },
             flags: flags,
         }
     }
@@ -463,7 +470,6 @@ impl FileResource {
 }
 
 impl<D: Disk> Resource<D> for FileResource {
-
     fn base(&self) -> &BaseResource {
         &self.base
     }
@@ -747,8 +753,13 @@ impl<D: Disk> Resource<D> for FileResource {
     async fn truncate<'a>(&mut self, len: u64, tx: &mut Transaction<'a, D>) -> Result<()> {
         if self.flags & O_ACCMODE == O_RDWR || self.flags & O_ACCMODE == O_WRONLY {
             let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            tx.truncate_node(self.base.node_ptr, len, mtime.as_secs(), mtime.subsec_nanos())
-                .await?;
+            tx.truncate_node(
+                self.base.node_ptr,
+                len,
+                mtime.as_secs(),
+                mtime.subsec_nanos(),
+            )
+            .await?;
             Ok(())
         } else {
             Err(Error::new(EBADF))
