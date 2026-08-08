@@ -96,10 +96,6 @@ impl<'r, D: Disk> ResourceBase for HandleMutRef<'r, D> {
         self.resource_mut().set_path(path)
     }
 
-    fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize> {
-        self.resource_mut().fcntl(cmd, arg)
-    }
-
     fn path(&self) -> &str {
         self.resource().path()
     }
@@ -181,6 +177,18 @@ impl<'r, D: Disk> ResourceDisk<D> for HandleMutRef<'r, D> {
     }
 
     // Both DirResource and FileResource use the default fchmod(), fchown() and stat().
+
+    fn fcntl<'a>(
+        &mut self,
+        cmd: usize,
+        arg: usize,
+        ph: PhantomData<D>,
+    ) -> Result<usize> {
+        match self {
+            HandleMutRef::RefDir(dir) => dir.0.fcntl(cmd, arg, ph),
+            HandleMutRef::RefFile(file) => file.0.fcntl(cmd, arg, ph),
+        }
+    }
 
     async fn sync<'a>(
         &mut self,
@@ -831,7 +839,7 @@ impl<'sock, D: Disk> SchemeAsync for FileScheme<'sock, D> {
     }
 
     async fn fcntl(&self, id: usize, cmd: usize, arg: usize, _ctx: &CallerCtx) -> Result<usize> {
-        self.get_handle(id).await?.resource()?.fcntl(cmd, arg)
+        self.get_handle(id).await?.resource()?.fcntl(cmd, arg, PhantomData::<D>)
     }
 
     async fn fevent(&self, id: usize, _flags: EventFlags, _ctx: &CallerCtx) -> Result<EventFlags> {

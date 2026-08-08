@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::slice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,8 +27,6 @@ pub trait ResourceBase {
     fn uid(&self) -> u32;
 
     fn set_path(&mut self, path: &str);
-
-    fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize>;
 
     fn path(&self) -> &str;
 }
@@ -123,6 +122,8 @@ pub trait ResourceDisk<D: Disk> {
         }
     }
 
+    fn fcntl(&mut self, cmd: usize, arg: usize, _pd : PhantomData<D>) -> Result<usize>;
+
     async fn stat<'a>(&self, stat: &mut Stat, tx: &mut TransactionRead<'a, D>) -> Result<()> {
         let node = tx.read_tree(self.resource().node_ptr()).await?;
 
@@ -213,10 +214,6 @@ impl ResourceBase for DirResource {
         self.path = path.to_string();
     }
 
-    fn fcntl(&mut self, _cmd: usize, _arg: usize) -> Result<usize> {
-        Err(Error::new(EBADF))
-    }
-
     fn path(&self) -> &str {
         &self.path
     }
@@ -272,6 +269,10 @@ impl<D: Disk> ResourceDisk<D> for DirResource {
     }
     fn resource_mut(&mut self) -> &mut dyn ResourceBase {
         self
+    }
+
+    fn fcntl(&mut self, _cmd: usize, _arg: usize, _pd: PhantomData<D>) -> Result<usize> {
+        Err(Error::new(EBADF))
     }
 
     async fn sync<'a>(&mut self, _fmaps: &Fmaps, _tx: &mut Transaction<'a, D>) -> Result<()> {
@@ -511,17 +512,6 @@ impl ResourceBase for FileResource {
 
     fn set_path(&mut self, path: &str) {
         self.path = path.to_string();
-    }
-
-    fn fcntl(&mut self, cmd: usize, arg: usize) -> Result<usize> {
-        match cmd {
-            F_GETFL => Ok(self.flags),
-            F_SETFL => {
-                self.flags = (self.flags & O_ACCMODE) | (arg & !O_ACCMODE);
-                Ok(0)
-            }
-            _ => Err(Error::new(EINVAL)),
-        }
     }
 
     fn path(&self) -> &str {
@@ -780,6 +770,17 @@ impl<D: Disk> ResourceDisk<D> for FileResource {
     }
     fn resource_mut(&mut self) -> &mut dyn ResourceBase {
         self
+    }
+
+    fn fcntl(&mut self, cmd: usize, arg: usize, _pd: PhantomData<D>) -> Result<usize> {
+        match cmd {
+            F_GETFL => Ok(self.flags),
+            F_SETFL => {
+                self.flags = (self.flags & O_ACCMODE) | (arg & !O_ACCMODE);
+                Ok(0)
+            }
+            _ => Err(Error::new(EINVAL)),
+        }
     }
 
     async fn sync<'a>(&mut self, fmaps: &Fmaps, tx: &mut Transaction<'a, D>) -> Result<()> {
