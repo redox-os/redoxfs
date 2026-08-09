@@ -19,7 +19,7 @@ pub struct Header {
     pub version: Le<u64>,
     /// Disk ID, a 128-bit unique identifier
     pub uuid: [u8; 16],
-    /// Disk size, in number of BLOCK_SIZE sectors
+    /// Disk size, in bytes
     pub size: Le<u64>,
     /// Generation of header
     pub generation: Le<u64>,

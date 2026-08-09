@@ -1,3 +1,4 @@
+use async_lock::RwLock;
 use std::collections::{HashMap, VecDeque};
 use std::{cmp, ptr};
 use syscall::error::Result;
@@ -11,23 +12,27 @@ fn copy_memory(src: &[u8], dest: &mut [u8]) -> usize {
     len
 }
 
-pub struct DiskCache<T> {
-    inner: T,
-    cache: HashMap<u64, [u8; BLOCK_SIZE as usize]>,
+type Block = [u8; BLOCK_SIZE as usize];
+
+struct DiskCacheState {
+    cache: HashMap<u64, Block>,
     order: VecDeque<u64>,
     size: usize,
 }
 
-impl<T: Disk> DiskCache<T> {
-    pub fn new(inner: T) -> Self {
+impl DiskCacheState {
+    pub fn new() -> Self {
         // 16 MB cache
         let size = 16 * 1024 * 1024 / BLOCK_SIZE as usize;
-        DiskCache {
-            inner,
+        Self {
             cache: HashMap::with_capacity(size),
             order: VecDeque::with_capacity(size),
             size,
         }
+    }
+
+    fn get(&self, i: &u64) -> Option<&Block> {
+        self.cache.get(i)
     }
 
     fn insert(&mut self, i: u64, data: [u8; BLOCK_SIZE as usize]) {
@@ -41,12 +46,27 @@ impl<T: Disk> DiskCache<T> {
     }
 }
 
+pub struct DiskCache<T> {
+    inner: T,
+    cache: RwLock<DiskCacheState>,
+}
+
+impl<T: Disk> DiskCache<T> {
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner,
+            cache: RwLock::new(DiskCacheState::new()),
+        }
+    }
+}
+
 impl<T: Disk> Disk for DiskCache<T> {
-    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    async unsafe fn read_at(&self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         // println!("Cache read at {}", block);
 
         let mut read = 0;
         let mut failed = false;
+        let cache = self.cache.read().await;
         for i in 0..buffer.len().div_ceil(BLOCK_SIZE as usize) {
             let block_i = block + i as u64;
 
@@ -54,7 +74,7 @@ impl<T: Disk> Disk for DiskCache<T> {
             let buffer_j = cmp::min(buffer_i + BLOCK_SIZE as usize, buffer.len());
             let buffer_slice = &mut buffer[buffer_i..buffer_j];
 
-            if let Some(cache_buf) = self.cache.get_mut(&block_i) {
+            if let Some(cache_buf) = cache.get(&block_i) {
                 read += copy_memory(cache_buf, buffer_slice);
             } else {
                 failed = true;
@@ -62,8 +82,13 @@ impl<T: Disk> Disk for DiskCache<T> {
             }
         }
 
+        drop(cache);
+
         if failed {
-            self.inner.read_at(block, buffer)?;
+            // Note that we don't hold the cache lock across disk activity
+            self.inner.read_at(block, buffer).await?;
+
+            let mut cache = self.cache.write().await;
 
             read = 0;
             for i in 0..buffer.len().div_ceil(BLOCK_SIZE as usize) {
@@ -75,18 +100,20 @@ impl<T: Disk> Disk for DiskCache<T> {
 
                 let mut cache_buf = [0; BLOCK_SIZE as usize];
                 read += copy_memory(buffer_slice, &mut cache_buf);
-                self.insert(block_i, cache_buf);
+                cache.insert(block_i, cache_buf);
             }
         }
 
         Ok(read)
     }
 
-    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    async unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         //TODO: Write only blocks that have changed
         // println!("Cache write at {}", block);
 
-        self.inner.write_at(block, buffer)?;
+        self.inner.write_at(block, buffer).await?;
+
+        let mut cache = self.cache.write().await;
 
         let mut written = 0;
         for i in 0..buffer.len().div_ceil(BLOCK_SIZE as usize) {
@@ -98,7 +125,7 @@ impl<T: Disk> Disk for DiskCache<T> {
 
             let mut cache_buf = [0; BLOCK_SIZE as usize];
             written += copy_memory(buffer_slice, &mut cache_buf);
-            self.insert(block_i, cache_buf);
+            cache.insert(block_i, cache_buf);
         }
 
         Ok(written)

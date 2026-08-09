@@ -16,7 +16,7 @@ impl DiskMemory {
 }
 
 impl Disk for DiskMemory {
-    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+    async unsafe fn read_at(&self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         let offset = (block * BLOCK_SIZE) as usize;
         let end = offset + buffer.len();
         if end > self.data.len() {
@@ -26,7 +26,7 @@ impl Disk for DiskMemory {
         Ok(buffer.len())
     }
 
-    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    async unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         let offset = (block * BLOCK_SIZE) as usize;
         let end = offset + buffer.len();
         if end > self.data.len() {

@@ -6,12 +6,12 @@ use alloc::{
 use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 use xts_mode::{get_tweak_default, Xts128};
 
+use crate::{
+    transaction::TransactionRead, Allocator, BlockAddr, BlockLevel, BlockMeta, Disk, Header,
+    Transaction, BLOCK_SIZE, HEADER_RING, RECORD_SIZE,
+};
 #[cfg(feature = "std")]
 use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt, TreeList};
-use crate::{
-    Allocator, BlockAddr, BlockLevel, BlockMeta, Disk, Header, Transaction, BLOCK_SIZE,
-    HEADER_RING, RECORD_SIZE,
-};
 
 fn compress_cache() -> Vec<u8> {
     vec![0; lz4_flex::block::get_maximum_output_size(RECORD_SIZE as usize)]
@@ -33,15 +33,15 @@ pub struct FileSystem<D: Disk> {
 
 impl<D: Disk> FileSystem<D> {
     /// Open a file system on a disk
-    pub fn open(
-        mut disk: D,
+    async fn open_impl(
+        disk: D,
         password_opt: Option<&[u8]>,
         block_opt: Option<u64>,
         cleanup: bool,
     ) -> Result<Self> {
         for ring_block in block_opt.map_or(0..65536, |x| x..x + 1) {
             let mut header = Header::default();
-            unsafe { disk.read_at(ring_block, &mut header)? };
+            unsafe { disk.read_at(ring_block, &mut header).await? };
 
             // Skip invalid headers
             if !header.valid() {
@@ -51,7 +51,7 @@ impl<D: Disk> FileSystem<D> {
             let block = ring_block - (header.generation() % HEADER_RING);
             for i in 0..HEADER_RING {
                 let mut other_header = Header::default();
-                unsafe { disk.read_at(block + i, &mut other_header)? };
+                unsafe { disk.read_at(block + i, &mut other_header).await? };
 
                 // Skip invalid headers
                 if !other_header.valid() {
@@ -97,10 +97,10 @@ impl<D: Disk> FileSystem<D> {
                 node_usages: BTreeMap::new(),
             };
 
-            unsafe { fs.reset_allocator()? };
+            unsafe { fs.reset_allocator().await? };
 
             if cleanup {
-                fs.cleanup()?
+                fs.cleanup().await?
             }
 
             return Ok(fs);
@@ -109,22 +109,31 @@ impl<D: Disk> FileSystem<D> {
         Err(Error::new(ENOENT))
     }
 
+    pub async fn open(
+        disk: D,
+        password_opt: Option<&[u8]>,
+        block_opt: Option<u64>,
+        cleanup: bool,
+    ) -> Result<Self> {
+        Box::pin(Self::open_impl(disk, password_opt, block_opt, cleanup)).await
+    }
+
     /// Create a file system on a disk
     #[cfg(feature = "std")]
-    pub fn create(
+    pub async fn create(
         disk: D,
         password_opt: Option<&[u8]>,
         ctime: u64,
         ctime_nsec: u32,
     ) -> Result<Self> {
-        Self::create_reserved(disk, password_opt, &[], ctime, ctime_nsec)
+        Self::create_reserved(disk, password_opt, &[], ctime, ctime_nsec).await
     }
 
     /// Create a file system on a disk, with reserved data at the beginning
     /// Reserved data will be zero padded up to the nearest block
     /// We need to pass ctime and ctime_nsec in order to initialize the unix timestamps
     #[cfg(feature = "std")]
-    pub fn create_reserved(
+    async fn create_reserved_impl(
         mut disk: D,
         password_opt: Option<&[u8]>,
         reserved: &[u8],
@@ -150,7 +159,7 @@ impl<D: Disk> FileSystem<D> {
             }
 
             unsafe {
-                disk.write_at(block as u64, &data)?;
+                disk.write_at(block as u64, &data).await?;
             }
         }
 
@@ -181,7 +190,7 @@ impl<D: Disk> FileSystem<D> {
         };
 
         // Write header generation zero
-        let count = unsafe { fs.disk.write_at(fs.block, &fs.header)? };
+        let count = unsafe { fs.disk.write_at(fs.block, &fs.header).await? };
         if count != core::mem::size_of_val(&fs.header) {
             // Wrote wrong number of bytes
             #[cfg(feature = "log")]
@@ -190,7 +199,7 @@ impl<D: Disk> FileSystem<D> {
         }
 
         // Set tree and alloc pointers and write header generation one
-        fs.tx(|tx| unsafe {
+        fs.tx(async |tx| unsafe {
             let tree = BlockData::new(
                 BlockAddr::new(HEADER_RING + 1, BlockMeta::default()),
                 TreeList::empty(BlockLevel::default()).unwrap(),
@@ -204,46 +213,85 @@ impl<D: Disk> FileSystem<D> {
             let alloc_free = fs_blocks - (HEADER_RING + 4);
             alloc.data_mut().entries[0] = AllocEntry::new(HEADER_RING + 4, alloc_free as i64);
 
-            tx.header.tree = tx.write_block(tree)?;
-            tx.header.alloc = tx.write_block(alloc)?;
-            tx.header_changed = true;
+            let tree_ptr = tx.write_block(tree)?;
+            let alloc_ptr = tx.write_block(alloc)?;
+            tx.update_alloc(tree_ptr, alloc_ptr);
 
             Ok(())
-        })?;
+        })
+        .await?;
 
         unsafe {
-            fs.reset_allocator()?;
+            fs.reset_allocator().await?;
         }
 
-        fs.tx(|tx| unsafe {
+        fs.tx(async |tx| unsafe {
             let mut root = BlockData::new(
                 BlockAddr::new(HEADER_RING + 3, BlockMeta::default()),
                 Node::new(Node::MODE_DIR | 0o755, 0, 0, ctime, ctime_nsec),
             );
             root.data_mut().set_links(1);
             let root_ptr = tx.write_block(root)?;
-            assert_eq!(tx.insert_tree(root_ptr)?.id(), 1);
+            assert_eq!(tx.insert_tree(root_ptr).await?.id(), 1);
             Ok(())
-        })?;
+        })
+        .await?;
 
-        fs.cleanup()?;
+        fs.cleanup().await?;
 
         Ok(fs)
     }
 
+    pub async fn create_reserved(
+        disk: D,
+        password_opt: Option<&[u8]>,
+        reserved: &[u8],
+        ctime: u64,
+        ctime_nsec: u32,
+    ) -> Result<Self> {
+        Box::pin(Self::create_reserved_impl(
+            disk,
+            password_opt,
+            reserved,
+            ctime,
+            ctime_nsec,
+        ))
+        .await
+    }
+
     /// Release unused nodes and squash allocation log, happens on mount (with cleanup) and unmount
-    pub fn cleanup(&mut self) -> Result<()> {
-        let mut tx = Transaction::new(self);
-        tx.release_unused_nodes()?;
-        tx.commit(true)
+    pub async fn cleanup(&mut self) -> Result<()> {
+        Box::pin(async {
+            let mut tx = Transaction::new(self);
+            tx.release_unused_nodes().await?;
+            tx.commit(true).await
+        })
+        .await
     }
 
     /// start a filesystem transaction, required for making any changes
-    pub fn tx<F: FnOnce(&mut Transaction<D>) -> Result<T>, T>(&mut self, f: F) -> Result<T> {
-        let mut tx = Transaction::new(self);
-        let t = f(&mut tx)?;
-        tx.commit(false)?;
-        Ok(t)
+    pub async fn tx_read<F: AsyncFnOnce(&mut TransactionRead<D>) -> Result<T>, T>(
+        &self,
+        f: F,
+    ) -> Result<T> {
+        Box::pin(async {
+            let mut tx = TransactionRead::new(self);
+            f(&mut tx).await
+        })
+        .await
+    }
+
+    pub async fn tx<F: AsyncFnOnce(&mut Transaction<D>) -> Result<T>, T>(
+        &mut self,
+        f: F,
+    ) -> Result<T> {
+        Box::pin(async {
+            let mut tx = Transaction::new(self);
+            let t = f(&mut tx).await?;
+            tx.commit(false).await?;
+            Ok(t)
+        })
+        .await
     }
 
     pub fn allocator(&self) -> &Allocator {
@@ -259,22 +307,23 @@ impl<D: Disk> FileSystem<D> {
     ///
     /// # Safety
     /// Unsafe, it must only be called when opening the filesystem
-    unsafe fn reset_allocator(&mut self) -> Result<()> {
+    async unsafe fn reset_allocator(&mut self) -> Result<()> {
         self.allocator = Allocator::default();
 
         // To avoid having to update all prior alloc blocks, there is only a previous pointer
         // This means we need to roll back all allocations. Currently we do this by reading the
         // alloc log into a buffer to reverse it.
         let mut allocs = VecDeque::new();
-        self.tx(|tx| {
-            let mut alloc_ptr = tx.header.alloc;
+        self.tx(async |tx| {
+            let mut alloc_ptr = tx.alloc_ptr();
             while !alloc_ptr.is_null() {
-                let alloc = tx.read_block(alloc_ptr)?;
+                let alloc = tx.read_block(alloc_ptr).await?;
                 alloc_ptr = alloc.data().prev;
                 allocs.push_front(alloc);
             }
             Ok(())
-        })?;
+        })
+        .await?;
 
         for alloc in allocs {
             for entry in alloc.data().entries.iter() {
@@ -298,7 +347,7 @@ impl<D: Disk> FileSystem<D> {
         Ok(())
     }
 
-    pub(crate) fn decrypt(&mut self, data: &mut [u8], addr: BlockAddr) -> bool {
+    pub(crate) fn decrypt(&self, data: &mut [u8], addr: BlockAddr) -> bool {
         if let Some(ref cipher) = self.cipher_opt {
             cipher.decrypt_area(
                 data,
@@ -313,7 +362,7 @@ impl<D: Disk> FileSystem<D> {
         }
     }
 
-    pub(crate) fn encrypt(&mut self, data: &mut [u8], addr: BlockAddr) -> bool {
+    pub(crate) fn encrypt(&self, data: &mut [u8], addr: BlockAddr) -> bool {
         if let Some(ref cipher) = self.cipher_opt {
             cipher.encrypt_area(
                 data,

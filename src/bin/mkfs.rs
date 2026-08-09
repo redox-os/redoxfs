@@ -4,6 +4,7 @@ extern crate uuid;
 use std::io::Read;
 use std::{env, fs, io, process, time};
 
+use futures::executor::block_on;
 use redoxfs::{DiskFile, FileSystem};
 use termion::input::TermRead;
 use uuid::Uuid;
@@ -93,13 +94,13 @@ fn main() {
     let ctime = time::SystemTime::now()
         .duration_since(time::UNIX_EPOCH)
         .unwrap();
-    match FileSystem::create_reserved(
+    match block_on(FileSystem::create_reserved(
         disk,
         password_opt.as_ref().map(|x| x.as_bytes()),
         &bootloader,
         ctime.as_secs(),
         ctime.subsec_nanos(),
-    ) {
+    )) {
         Ok(filesystem) => {
             let uuid = Uuid::from_bytes(filesystem.header.uuid());
             eprintln!(

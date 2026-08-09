@@ -13,6 +13,7 @@ use std::process;
 #[cfg(target_os = "redox")]
 use std::{mem::MaybeUninit, ptr::addr_of_mut, sync::atomic::Ordering};
 
+use futures::executor::block_on;
 use redoxfs::{mount, DiskCache, DiskFile, FileSystem};
 use termion::input::TermRead;
 use uuid::Uuid;
@@ -169,7 +170,12 @@ fn filesystem_by_path(
 
         match DiskFile::open(path).map(DiskCache::new) {
             Ok(disk) => {
-                match redoxfs::FileSystem::open(disk, password_opt.as_deref(), block_opt, true) {
+                match block_on(redoxfs::FileSystem::open(
+                    disk,
+                    password_opt.as_deref(),
+                    block_opt,
+                    true,
+                )) {
                     Ok(filesystem) => {
                         log::debug!(
                             "opened filesystem on {} with uuid {}",

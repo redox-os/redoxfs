@@ -1,5 +1,6 @@
+use futures::executor::block_on;
 use redox_scheme::{
-    scheme::{SchemeState, SchemeSync},
+    scheme::{SchemeAsync, SchemeState},
     RequestKind, Response, SignalBehavior, Socket,
 };
 use std::io;
@@ -10,6 +11,7 @@ use crate::{Disk, FileSystem, IS_UMT};
 
 use self::scheme::FileScheme;
 
+pub mod async_map;
 pub mod resource;
 pub mod scheme;
 
@@ -31,7 +33,7 @@ where
     let mut state = SchemeState::new();
     let mut scheme = FileScheme::new(scheme_name, mounted_path.clone(), filesystem, &socket)?;
 
-    redox_scheme::scheme::register_sync_scheme(
+    redox_scheme::scheme::register_async_scheme(
         &socket,
         &format!("{}", mountpoint.display()),
         &mut scheme,
@@ -46,7 +48,7 @@ where
                 match req.kind() {
                     RequestKind::Call(r) => r,
                     RequestKind::SendFd(sendfd_request) => {
-                        let result = scheme.on_sendfd(&sendfd_request);
+                        let result = block_on(scheme.on_sendfd(&sendfd_request));
                         let response = Response::new(result, sendfd_request);
 
                         if !socket.write_response(response, SignalBehavior::Restart)? {
@@ -55,12 +57,12 @@ where
                         continue;
                     }
                     RequestKind::OnClose { id } => {
-                        scheme.on_close(id);
+                        block_on(scheme.on_close(id));
                         state.on_close(id);
                         continue;
                     }
                     RequestKind::OnDetach { id, pid } => {
-                        let Ok(inode) = scheme.inode(id) else {
+                        let Ok(inode) = block_on(scheme.inode(id)) else {
                             log::warn!("RequestKind::OnDetach with invalid `id`");
                             continue;
                         };
@@ -75,7 +77,7 @@ where
                 }
             }
         };
-        let response = req.handle_sync(&mut scheme, &mut state);
+        let response = block_on(req.handle_async(&mut scheme, &mut state));
 
         if !socket.write_response(response, SignalBehavior::Restart)? {
             break;
@@ -83,7 +85,7 @@ where
     }
 
     // Cleanup on unmount
-    scheme.fs.cleanup()?;
+    block_on(scheme.fs.get_mut().cleanup())?;
 
     Ok(res)
 }

@@ -10,8 +10,8 @@ fn syscall_err(err: syscall::Error) -> io::Error {
     io::Error::from_raw_os_error(err.errno)
 }
 
-pub fn archive_at<D: Disk, P: AsRef<Path>>(
-    tx: &mut Transaction<D>,
+pub async fn archive_at<'a, D: Disk, P: AsRef<Path>>(
+    tx: &mut Transaction<'a, D>,
     parent_path: P,
     parent_ptr: TreePtr<Node>,
 ) -> io::Result<()> {
@@ -49,6 +49,7 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(
                     metadata.ctime() as u64,
                     metadata.ctime_nsec() as u32,
                 )
+                .await
                 .map_err(syscall_err)?;
 
             node_ptr = node.ptr();
@@ -56,13 +57,13 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(
             if node.data().uid() != metadata.uid() || node.data().gid() != metadata.gid() {
                 node.data_mut().set_uid(metadata.uid());
                 node.data_mut().set_gid(metadata.gid());
-                tx.sync_tree(node).map_err(syscall_err)?;
+                tx.sync_tree(node).await.map_err(syscall_err)?;
             }
         }
 
         let path = entry.path();
         if file_type.is_dir() {
-            archive_at(tx, path, node_ptr)?;
+            Box::pin(archive_at(tx, path, node_ptr)).await?;
         } else if file_type.is_file() {
             let data = fs::read(path)?;
             let count = tx
@@ -73,6 +74,7 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(
                     metadata.mtime() as u64,
                     metadata.mtime_nsec() as u32,
                 )
+                .await
                 .map_err(syscall_err)?;
             if count != data.len() {
                 panic!("file write count {} != {}", count, data.len());
@@ -88,6 +90,7 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(
                     metadata.mtime() as u64,
                     metadata.mtime_nsec() as u32,
                 )
+                .await
                 .map_err(syscall_err)?;
             if count != data.len() {
                 panic!("symlink write count {} != {}", count, data.len());
@@ -103,17 +106,21 @@ pub fn archive_at<D: Disk, P: AsRef<Path>>(
     Ok(())
 }
 
-pub fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P) -> io::Result<u64> {
+pub async fn archive<D: Disk, P: AsRef<Path>>(
+    fs: &mut FileSystem<D>,
+    parent_path: P,
+) -> io::Result<u64> {
     let end_block = fs
-        .tx(|tx| {
+        .tx(async |tx| {
             // Archive_at root node
             archive_at(tx, parent_path, TreePtr::root())
+                .await
                 .map_err(|err| syscall::Error::new(err.raw_os_error().unwrap()))?;
 
             // Squash alloc log
-            tx.sync(true)?;
+            tx.sync(true).await?;
 
-            let end_block = tx.header.size() / BLOCK_SIZE;
+            let end_block = tx.fs_bytes() / BLOCK_SIZE;
             /* TODO: Cut off any free blocks at the end of the filesystem
             let mut end_changed = true;
             while end_changed {
@@ -134,12 +141,12 @@ pub fn archive<D: Disk, P: AsRef<Path>>(fs: &mut FileSystem<D>, parent_path: P) 
             */
 
             // Update header
-            tx.header.size = (end_block * BLOCK_SIZE).into();
-            tx.header_changed = true;
-            tx.sync(false)?;
+            tx.set_fs_bytes(end_block * BLOCK_SIZE);
+            tx.sync(false).await?;
 
             Ok(end_block)
         })
+        .await
         .map_err(syscall_err)?;
 
     Ok((fs.block + end_block) * BLOCK_SIZE)

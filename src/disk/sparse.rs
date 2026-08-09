@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
 use std::path::Path;
 use syscall::error::{Error, Result, EIO};
 
@@ -35,16 +35,12 @@ impl DiskSparse {
 }
 
 impl Disk for DiskSparse {
-    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
-        try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
-        let count = try_disk!(self.file.read(buffer));
-        Ok(count)
+    async unsafe fn read_at(&self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+        Ok(try_disk!(self.file.read_at(buffer, block * BLOCK_SIZE)))
     }
 
-    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
-        try_disk!(self.file.seek(SeekFrom::Start(block * BLOCK_SIZE)));
-        let count = try_disk!(self.file.write(buffer));
-        Ok(count)
+    async unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+        Ok(try_disk!(self.file.write_at(buffer, block * BLOCK_SIZE)))
     }
 
     fn size(&mut self) -> Result<u64> {
