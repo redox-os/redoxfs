@@ -15,8 +15,7 @@ use syscall::ENOMEM;
 use zerocopy::IntoBytes;
 
 use super::Disk;
-use crate::DiskFile;
-use crate::SIGNATURE;
+use crate::{DiskFile, BLOCK_SIZE};
 
 const POOL_SIZE: u32 = 4 * 1024 * 1024; // 4 MiB pool
 
@@ -56,8 +55,8 @@ pub struct DiskRing {
     shm_base: *mut u8,
     allocator: BufferPool,
     next_id: u64,
+    sectors_per_block: u64,
     disk_size: u64,
-    offset: u64,
     #[allow(unused, reason = "closed on drop")]
     ring_fd: Fd,
     pipe: Pipe,
@@ -69,6 +68,15 @@ impl DiskRing {
         use redox_rings::op::{RingCallVerb, RingSetupFlags, RingSetupParams};
 
         let disk_fd = Fd::new(df.file.into_raw_fd() as usize);
+        let sector_size =
+            u64::try_from(disk_fd.stat()?.st_blksize).map_err(|_| Error::new(syscall::EINVAL))?;
+
+        if !BLOCK_SIZE.is_multiple_of(sector_size) {
+            log::error!("block size must be a multiple of sector size: BLOCK_SIZE={BLOCK_SIZE}, sector_size={sector_size}");
+            return Err(Error::new(syscall::EINVAL));
+        }
+
+        let sectors_per_block = BLOCK_SIZE / sector_size;
 
         let mut params = RingSetupParams {
             nr_sq_entries: 256,
@@ -141,32 +149,17 @@ impl DiskRing {
             pool
         };
 
-        let mut ring = Self {
+        Ok(Self {
             sq,
             cq,
             ring_fd,
             shm_base: shm_ptr,
             allocator,
             next_id: 0,
+            sectors_per_block,
             disk_size,
-            offset: 0,
             pipe: Pipe(pipe),
-        };
-
-        // Scan for RedoxFS signature
-        // Assuming 512 byte sectors for NVMe
-        let candidates = [0, 2048];
-        for &start_lba in &candidates {
-            let mut buf = [0u8; 4096];
-            if let Ok(_) = unsafe { ring.read_at(start_lba, &mut buf) } {
-                if &buf[0..8] == SIGNATURE {
-                    ring.offset = start_lba;
-                    break;
-                }
-            }
-        }
-
-        Ok(ring)
+        })
     }
 
     fn disk_op<'a, B, I, P, C>(
@@ -275,7 +268,7 @@ impl Disk for DiskRing {
     unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         self.disk_op(
             DiskOpKind::Read,
-            core::iter::once((block * 8 + self.offset, buffer)),
+            core::iter::once((block * self.sectors_per_block, buffer)),
             |_buf, _cmd_buf| {},
             |buf, cmd_buf| buf.copy_from_slice(cmd_buf),
         )
@@ -286,10 +279,12 @@ impl Disk for DiskRing {
     }
 
     unsafe fn write_at_batched(&mut self, batch: &[(u64, &[u8])]) -> Result<usize> {
-        let offset = self.offset;
+        let sectors_per_block = self.sectors_per_block;
         self.disk_op(
             DiskOpKind::Write,
-            batch.iter().map(|(block, buf)| (*block * 8 + offset, *buf)),
+            batch
+                .iter()
+                .map(|(block, buf)| (*block * sectors_per_block, *buf)),
             |buf, cmd_buf| cmd_buf.copy_from_slice(buf),
             |_buf, _cmd_buf| {},
         )
