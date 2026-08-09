@@ -7,6 +7,7 @@ extern crate uuid;
 use std::env;
 use std::fs::File;
 use std::io::{self, Read, Write};
+#[cfg(target_os = "redox")]
 use std::os::fd::AsRawFd;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::process;
