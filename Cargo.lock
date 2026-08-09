@@ -597,7 +597,7 @@ checksum = "384c2842d4e069d5ccacf5fe1dca4ef8d07a5444329715f0fc3c61813502d4d1"
 [[package]]
 name = "redox-buffer-pool"
 version = "0.6.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-buffer-pool.git?branch=deallocate-at#d7697741e70596078b745a9e56d3302ae3c5de21"
+source = "git+https://gitlab.redox-os.org/redox-os/redox-buffer-pool.git#259719734304f6d2138b8b910fbdac663ebe6ff0"
 dependencies = [
  "guard-trait",
  "log",
@@ -614,7 +614,7 @@ checksum = "54ec1b67c01c63545205ea6d218b336751399f0d8974c1a635c28604bedb81bc"
 [[package]]
 name = "redox-rings"
 version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-rings.git?branch=main#73102ebb173595b38b8c2cfa9f44591faf7d12f9"
+source = "git+https://gitlab.redox-os.org/redox-os/redox-rings.git#73102ebb173595b38b8c2cfa9f44591faf7d12f9"
 dependencies = [
  "bitflags 2.13.1",
  "libredox",
