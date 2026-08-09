@@ -362,7 +362,6 @@ fn daemon(
 }
 
 fn main() {
-    unsafe { env::set_var("RUST_LOG", "debug") };
     env_logger::init();
     unsafe {
         if libc::setpriority(libc::PRIO_PROCESS, 0, -10) == -1 {
