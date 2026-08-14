@@ -538,6 +538,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     }
 }
 
+/// Join two paths and canonicalize it
 pub fn resolve_path<'a, 'b, D: Disk>(
     dir: &'a dyn Resource<D>,
     path: RedoxReference<'b>,
@@ -566,14 +567,9 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let path_to_open = match Handle::get_resource_or(self.handles.get(&dirfd))? {
             // If pathname is absolute, then dirfd is ignored.
             Some(res) if path.is_relative() => resolve_path(res, path)?,
-            _ => path,
+            _ => path.canonical(),
         };
-        self.open_internal(
-            TreePtr::root(),
-            path_to_open.to_relative().canonical(),
-            flags,
-            ctx,
-        )
+        self.open_internal(TreePtr::root(), path_to_open.to_relative(), flags, ctx)
     }
 
     fn unlinkat(&mut self, dirfd: usize, path: &str, flags: usize, ctx: &CallerCtx) -> Result<()> {
@@ -583,13 +579,13 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         let path = match Handle::get_resource_or(self.handles.get(&dirfd))? {
             // If pathname is absolute, then dirfd is ignored.
             Some(res) if path.is_relative() => resolve_path(res, path)?,
-            _ => path,
+            _ => path.canonical(),
         };
         let start_ptr = TreePtr::root();
 
         // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
-        self.unlink_internal(start_ptr, &path.canonical(), flags, uid, gid)
+        self.unlink_internal(start_ptr, &path, flags, uid, gid)
     }
 
     /* Resource operations */
