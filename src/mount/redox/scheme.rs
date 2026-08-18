@@ -536,6 +536,92 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             }
         }
     }
+
+    /// returns (orig_parent_ptr, orig_node, new_parent, new_name)
+    fn validate_new_link<'a>(
+        scheme_name: &'_ RedoxScheme<'sock>,
+        file: &'_ dyn Resource<D>,
+        new_path: &'a RedoxReference<'a>,
+        ctx: &'_ CallerCtx,
+        tx: &mut Transaction<'_, D>,
+    ) -> Result<
+        (
+            TreePtr<Node>,
+            TreeData<Node>,
+            TreeData<Node>,
+            RedoxReference<'a>,
+        ),
+        Error,
+    > {
+        //TODO: Check for EINVAL
+        // The new pathname contained a path prefix of the old, or, more generally,
+        // an attempt was made to make a directory a subdirectory of itself.
+
+        let uid = ctx.uid;
+        let gid = ctx.gid;
+
+        let (_, Some(new_name)) = new_path.dirname_split() else {
+            return Err(Error::new(EPERM));
+        };
+
+        let orig_parent_ptr = match file.parent_ptr_opt() {
+            Some(some) => some,
+            None => {
+                // println!("orig is root");
+                return Err(Error::new(EBUSY));
+            }
+        };
+        let orig_node = tx.read_tree(file.node_ptr())?;
+        if !orig_node.data().owner(uid) {
+            // println!("orig_node not owned by caller {}", uid);
+            return Err(Error::new(EACCES));
+        }
+        let mut new_nodes = SmallVec::new();
+        let new_node_opt = Self::path_nodes(
+            scheme_name,
+            tx,
+            TreePtr::root(),
+            new_path,
+            uid,
+            gid,
+            &mut new_nodes,
+        )?;
+
+        let Some((new_parent, _)) = new_nodes.pop() else {
+            return Err(Error::new(EPERM));
+        };
+        if !new_parent.data().owner(uid) {
+            // println!("new_parent not owned by caller {}", uid);
+            return Err(Error::new(EACCES));
+        }
+        if let Some((ref new_node, _)) = new_node_opt {
+            if !new_node.data().owner(uid) {
+                // println!("new dir not owned by caller {}", uid);
+                return Err(Error::new(EACCES));
+            }
+
+            if new_node.data().is_dir() {
+                if !orig_node.data().is_dir() {
+                    // println!("orig_node is file, new is dir");
+                    return Err(Error::new(EACCES));
+                }
+
+                let mut children = Vec::new();
+                tx.child_nodes(new_node.ptr(), &mut children)?;
+
+                if !children.is_empty() {
+                    // println!("new dir not empty");
+                    return Err(Error::new(ENOTEMPTY));
+                }
+            } else {
+                if orig_node.data().is_dir() {
+                    // println!("orig_node is dir, new is file");
+                    return Err(Error::new(ENOTDIR));
+                }
+            }
+        }
+        Ok((orig_parent_ptr, orig_node, new_parent, new_name))
+    }
 }
 
 /// Join two paths and canonicalize it
@@ -669,216 +755,59 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         Ok(i)
     }
 
-    //TODO: this function has too much code, try to simplify it
     fn flink(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
         let new_path = RedoxReference::new(url)
             .ok_or(Error::new(EINVAL))?
             .canonical();
-        let uid = ctx.uid;
-        let gid = ctx.gid;
 
-        // println!("Flink {}, {} from {}, {}", id, new_path, uid, gid);
+        // println!("Flink {}, {} from {}, {}", id, new_path, ctx.uid, ctx.gid);
 
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        //TODO: Check for EINVAL
-        // The new pathname contained a path prefix of the old, or, more generally,
-        // an attempt was made to make a directory a subdirectory of itself.
-
-        let mut old_name = String::new();
-        for part in file.path().split('/') {
-            if !part.is_empty() {
-                old_name = part.to_string();
-            }
-        }
-        if old_name.is_empty() {
-            return Err(Error::new(EPERM));
-        }
-
-        let mut new_name = String::new();
-        for part in new_path.as_ref().split('/') {
-            if !part.is_empty() {
-                new_name = part.to_string();
-            }
-        }
-        if new_name.is_empty() {
-            return Err(Error::new(EPERM));
-        }
 
         let scheme_name = &self.scheme_name;
         self.fs.tx(|tx| {
-            let _orig_parent_ptr = match file.parent_ptr_opt() {
-                Some(some) => some,
-                None => {
-                    // println!("orig is root");
-                    return Err(Error::new(EBUSY));
-                }
-            };
+            let (_, orig_node, new_parent, new_name) =
+                Self::validate_new_link(scheme_name, file, &new_path, ctx, tx)?;
 
-            let orig_node = tx.read_tree(file.node_ptr())?;
+            tx.link_node(new_parent.ptr(), new_name.as_ref(), orig_node.ptr())?;
 
-            if !orig_node.data().owner(uid) {
-                // println!("orig_node not owned by caller {}", uid);
-                return Err(Error::new(EACCES));
-            }
-
-            let mut new_nodes = SmallVec::new();
-            let new_node_opt = Self::path_nodes(
-                scheme_name,
-                tx,
-                TreePtr::root(),
-                &new_path,
-                uid,
-                gid,
-                &mut new_nodes,
-            )?;
-
-            if let Some((ref new_parent, _)) = new_nodes.last() {
-                if !new_parent.data().owner(uid) {
-                    // println!("new_parent not owned by caller {}", uid);
-                    return Err(Error::new(EACCES));
-                }
-
-                if let Some((ref new_node, _)) = new_node_opt {
-                    if !new_node.data().owner(uid) {
-                        // println!("new dir not owned by caller {}", uid);
-                        return Err(Error::new(EACCES));
-                    }
-
-                    if new_node.data().is_dir() {
-                        if !orig_node.data().is_dir() {
-                            // println!("orig_node is file, new is dir");
-                            return Err(Error::new(EACCES));
-                        }
-
-                        let mut children = Vec::new();
-                        tx.child_nodes(new_node.ptr(), &mut children)?;
-
-                        if !children.is_empty() {
-                            // println!("new dir not empty");
-                            return Err(Error::new(ENOTEMPTY));
-                        }
-                    } else {
-                        if orig_node.data().is_dir() {
-                            // println!("orig_node is dir, new is file");
-                            return Err(Error::new(ENOTDIR));
-                        }
-                    }
-                }
-
-                tx.link_node(new_parent.ptr(), &new_name, orig_node.ptr())?;
-
-                file.set_path(new_path.as_ref());
-                Ok(0)
-            } else {
-                Err(Error::new(EPERM))
-            }
+            file.set_path(new_path.as_ref());
+            Ok(0)
         })
     }
 
-    //TODO: this function has too much code, try to simplify it
     fn frename(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
         let new_path = RedoxReference::new(url)
             .ok_or(Error::new(EINVAL))?
             .canonical();
-        let uid = ctx.uid;
-        let gid = ctx.gid;
 
-        // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
+        // println!("Frename {}, {} from {}, {}", id, new_path, ctx.uid, ctx.gid);
 
         let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-        //TODO: Check for EINVAL
-        // The new pathname contained a path prefix of the old, or, more generally,
-        // an attempt was made to make a directory a subdirectory of itself.
 
-        let mut old_name = String::new();
-        for part in file.path().split('/') {
-            if !part.is_empty() {
-                old_name = part.to_string();
-            }
-        }
-        if old_name.is_empty() {
+        let old_path = file.redox_path();
+        let (_, Some(old_name)) = old_path.dirname_split() else {
             return Err(Error::new(EPERM));
-        }
-
-        let mut new_name = String::new();
-        for part in new_path.as_ref().split('/') {
-            if !part.is_empty() {
-                new_name = part.to_string();
-            }
-        }
-        if new_name.is_empty() {
-            return Err(Error::new(EPERM));
-        }
+        };
 
         let scheme_name = &self.scheme_name;
+        let old_name = old_name.as_ref();
         self.fs.tx(|tx| {
-            let orig_parent_ptr = match file.parent_ptr_opt() {
-                Some(some) => some,
-                None => {
-                    // println!("orig is root");
-                    return Err(Error::new(EBUSY));
-                }
-            };
+            let (orig_parent_ptr, _, new_parent, new_name) =
+                Self::validate_new_link(scheme_name, file, &new_path, ctx, tx)?;
 
-            let orig_node = tx.read_tree(file.node_ptr())?;
-
-            if !orig_node.data().owner(uid) {
-                // println!("orig_node not owned by caller {}", uid);
-                return Err(Error::new(EACCES));
-            }
-
-            let mut new_nodes = SmallVec::new();
-            let new_node_opt = Self::path_nodes(
-                scheme_name,
-                tx,
-                TreePtr::root(),
-                &new_path,
-                uid,
-                gid,
-                &mut new_nodes,
+            tx.rename_node(
+                orig_parent_ptr,
+                old_name,
+                new_parent.ptr(),
+                new_name.as_ref(),
             )?;
 
-            if let Some((ref new_parent, _)) = new_nodes.last() {
-                if !new_parent.data().owner(uid) {
-                    // println!("new_parent not owned by caller {}", uid);
-                    return Err(Error::new(EACCES));
-                }
+            Ok(())
+        })?;
 
-                if let Some((ref new_node, _)) = new_node_opt {
-                    if !new_node.data().owner(uid) {
-                        // println!("new dir not owned by caller {}", uid);
-                        return Err(Error::new(EACCES));
-                    }
-
-                    if new_node.data().is_dir() {
-                        if !orig_node.data().is_dir() {
-                            // println!("orig_node is file, new is dir");
-                            return Err(Error::new(EACCES));
-                        }
-
-                        let mut children = Vec::new();
-                        tx.child_nodes(new_node.ptr(), &mut children)?;
-
-                        if !children.is_empty() {
-                            // println!("new dir not empty");
-                            return Err(Error::new(ENOTEMPTY));
-                        }
-                    } else {
-                        if orig_node.data().is_dir() {
-                            // println!("orig_node is dir, new is file");
-                            return Err(Error::new(ENOTDIR));
-                        }
-                    }
-                }
-
-                tx.rename_node(orig_parent_ptr, &old_name, new_parent.ptr(), &new_name)?;
-
-                file.set_path(new_path.as_ref());
-                Ok(0)
-            } else {
-                Err(Error::new(EPERM))
-            }
-        })
+        file.set_path(new_path.as_ref());
+        Ok(0)
     }
 
     fn fstat(&mut self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
