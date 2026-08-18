@@ -115,6 +115,11 @@ pub trait Resource<D: Disk> {
 
     fn path(&self) -> &str;
 
+    fn redox_path(&self) -> redox_path::RedoxReference<'_> {
+        // SAFETY: paths already stored is assumed to be valid
+        unsafe { redox_path::RedoxReference::new_unchecked(self.path()) }
+    }
+
     fn stat(&self, stat: &mut Stat, tx: &mut Transaction<D>) -> Result<()> {
         let node = tx.read_tree(self.node_ptr())?;
 

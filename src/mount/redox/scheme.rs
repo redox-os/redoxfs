@@ -543,9 +543,7 @@ pub fn resolve_path<'a, 'b, D: Disk>(
     dir: &'a dyn Resource<D>,
     path: RedoxReference<'b>,
 ) -> Result<RedoxReference<'b>> {
-    let dirpath = RedoxReference::new(dir.path());
-    let dirpath = dirpath.ok_or(Error::new(ENOENT))?;
-    Ok(dirpath.join_checked(path).canonical())
+    Ok(dir.redox_path().join_checked(path).canonical())
 }
 
 impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
@@ -1016,31 +1014,25 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         }
         let parent_path = parent_resource.path();
 
-        // TODO: Move the PATH_MAX definition to a more appropriate place.
-        const PATH_MAX: usize = 4096;
-        let mut url_buf = [0u8; PATH_MAX];
+        let mut url_buf = [0u8; redox_path::PATH_MAX];
         let url_len = other_scheme_fd.fpath(&mut url_buf)?;
-        let url_str = str::from_utf8(&url_buf[..url_len]).map_err(|_| Error::new(EINVAL))?;
-        let redox_path = RedoxPath::from_absolute(url_str).ok_or(Error::new(EINVAL))?;
+        let redox_path =
+            RedoxPath::from_absolute_buf(&url_buf, url_len).ok_or(Error::new(EINVAL))?;
         let (_, path) = redox_path.as_parts().ok_or(Error::new(EINVAL))?;
-
-        let mut last_part = String::new();
-        for part in path.as_ref().split('/') {
-            if !part.is_empty() {
-                last_part = part.to_string();
-            }
-        }
-
-        if last_part.is_empty() {
+        let (_, Some(last_part)) = path.dirname_split() else {
             return Err(Error::new(EINVAL));
-        }
+        };
+
         let (resource, node_id) = {
             let stat = other_scheme_fd.stat()?;
             let mode_type = stat.st_mode as u16 & Node::MODE_TYPE;
 
             let flags = 0o777;
             let node_ptr = self.fs.tx(|tx| {
-                if tx.find_node(parent_resource_ptr, &last_part).is_ok() {
+                if tx
+                    .find_node(parent_resource_ptr, last_part.as_ref())
+                    .is_ok()
+                {
                     // If the file already exists, we cannot create it again
                     return Err(Error::new(EEXIST));
                 }
@@ -1048,7 +1040,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 let ctime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
                 let mut node = tx.create_node(
                     parent_resource_ptr,
-                    &last_part,
+                    last_part.as_ref(),
                     mode_type | (flags as u16 & Node::MODE_PERM),
                     ctime.as_secs(),
                     ctime.subsec_nanos(),
