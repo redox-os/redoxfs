@@ -398,10 +398,13 @@ fn main() {
 
                 process::exit(res[0] as i32);
             } else {
-                panic!("redoxfs: failed to fork");
+                panic!("redoxfs: failed to fork: {:?}", io::Error::last_os_error());
             }
         } else {
-            panic!("redoxfs: failed to create pipe");
+            panic!(
+                "redoxfs: failed to create pipe: {:?}",
+                io::Error::last_os_error()
+            );
         }
     } else {
         log::info!("running in foreground");
