@@ -107,7 +107,7 @@ where
     });
 
     if cfg!(not(target_os = "redox")) {
-        dbg!(fs::remove_dir(dbg!(mount_path_o))).unwrap();
+        dbg!(fs::remove_dir_all(dbg!(mount_path_o))).unwrap();
     }
 
     res
