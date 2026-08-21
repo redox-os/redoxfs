@@ -5,6 +5,7 @@ use std::str;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use alloc::borrow::Cow;
 use libredox::Fd;
 use redox_path::RedoxReference;
 use redox_path::RedoxScheme;
@@ -14,12 +15,12 @@ use smallvec::SmallVec;
 use syscall::data::{Stat, StatVfs, StdFsCallMeta, TimeSpec};
 use syscall::dirent::DirentBuf;
 use syscall::error::{
-    Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EISDIR, ELOOP, ENOENT, ENOTDIR, ENOTEMPTY,
-    EOPNOTSUPP, EPERM, EXDEV,
+    Error, Result, EACCES, EBADF, EBUSY, EEXIST, EINVAL, EIO, EISDIR, ELOOP, ENOENT, ENOTDIR,
+    ENOTEMPTY, EOPNOTSUPP, EPERM, EXDEV,
 };
 use syscall::flag::{
     EventFlags, MapFlags, StdFsCallKind, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW,
-    O_RDONLY, O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
+    O_RDONLY, O_RDWR, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
 use syscall::FobtainFdFlags;
@@ -35,7 +36,25 @@ use super::resource::{DirResource, Entry, FileMmapInfo, FileResource, Resource};
 enum Handle<D: Disk> {
     ResourceDir((DirResource, PhantomData<D>)),
     ResourceFile((FileResource, PhantomData<D>)),
+    ResourceExternal((String, PhantomData<D>)),
     SchemeRoot,
+}
+
+enum ResolveResult<'a, T> {
+    Normal(T),
+    External(RedoxPath<'a>),
+}
+
+impl<'a, T> ResolveResult<'a, T>
+where
+    T: Sized,
+{
+    pub fn normal(self) -> Result<T> {
+        match self {
+            ResolveResult::Normal(t) => Ok(t),
+            ResolveResult::External(_) => Err(Error::new(EXDEV)),
+        }
+    }
 }
 
 impl<D: Disk> Handle<D> {
@@ -43,6 +62,7 @@ impl<D: Disk> Handle<D> {
         match self {
             Handle::ResourceDir((dir_resource, _)) => Ok(dir_resource as &dyn Resource<D>),
             Handle::ResourceFile((file_resource, _)) => Ok(file_resource),
+            Handle::ResourceExternal(_) => Err(Error::new(EXDEV)),
             Handle::SchemeRoot => Err(Error::new(EBADF)),
         }
     }
@@ -50,6 +70,7 @@ impl<D: Disk> Handle<D> {
         match self {
             Handle::ResourceDir((dir_resource, _)) => Ok(dir_resource as &mut dyn Resource<D>),
             Handle::ResourceFile((file_resource, _)) => Ok(file_resource),
+            Handle::ResourceExternal(_) => Err(Error::new(EXDEV)),
             Handle::SchemeRoot => Err(Error::new(EBADF)),
         }
     }
@@ -115,7 +136,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         full_path: RedoxReference<'a>,
         node: TreeData<Node>,
         nodes: &mut SmallVec<[(TreeData<Node>, String); 16]>,
-    ) -> Result<RedoxReference<'a>> {
+    ) -> Result<ResolveResult<'a, RedoxReference<'a>>> {
         let atime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         // symbolic link is relative to this part of the url
         let mut working_dir = full_path.dirname();
@@ -142,7 +163,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         .get_scheme()
                         .is_some_and(|s| s.as_ref() != scheme_name.as_ref())
                     {
-                        return Err(Error::new(EXDEV));
+                        // The remaining path will get appended by `path_nodes`
+                        return Ok(ResolveResult::External(redox_path.into_owned()));
                     }
                     redox_path.to_reference()
                 }
@@ -152,7 +174,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             };
 
             nodes.clear();
-            if let Some((next_node, next_node_name)) = Self::path_nodes(
+            match Self::path_nodes(
                 scheme_name,
                 tx,
                 TreePtr::root(),
@@ -161,14 +183,19 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 gid,
                 nodes,
             )? {
-                if !next_node.data().is_symlink() {
-                    nodes.push((next_node, next_node_name));
-                    return Ok(target_reference.into_owned());
+                ResolveResult::Normal(Some((next_node, next_node_name))) => {
+                    if !next_node.data().is_symlink() {
+                        nodes.push((next_node, next_node_name));
+                        return Ok(ResolveResult::Normal(target_reference.into_owned()));
+                    }
+                    node = next_node;
+                    working_dir = target_reference.dirname()
                 }
-                node = next_node;
-                working_dir = target_reference.dirname()
-            } else {
-                return Err(Error::new(ENOENT));
+                ResolveResult::Normal(None) => return Err(Error::new(ENOENT)),
+                // Should have appended the remaining path
+                ResolveResult::External(redox_path) => {
+                    return Ok(ResolveResult::External(redox_path.into_owned()));
+                }
             }
         }
         Err(Error::new(ELOOP))
@@ -213,7 +240,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             .tx(|tx| Self::path_nodes(scheme_name, tx, start_ptr, &path, uid, gid, &mut nodes))?;
         let parent_ptr_opt = nodes.last().map(|x| x.0.ptr());
         let handle: Handle<D> = match node_opt {
-            Some((node, _node_name)) => {
+            ResolveResult::External(path) => return self.open_external(path, flags),
+            ResolveResult::Normal(Some((node, _node_name))) => {
                 if flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL {
                     return Err(Error::new(EEXIST));
                 } else if node.data().is_dir() {
@@ -261,10 +289,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                             PhantomData,
                         ))
                     }
-                } else if node.data().is_symlink()
-                    && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW)
-                    && flags & O_SYMLINK != O_SYMLINK
-                {
+                } else if node.data().is_symlink() && flags & O_NOFOLLOW != O_NOFOLLOW {
+                    // Without O_NOFOLLOW, we have to continue traversing symlink
                     let mut resolve_nodes = SmallVec::new();
                     let resolved = self.fs.tx(|tx| {
                         Self::resolve_symlink(
@@ -277,7 +303,14 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                             &mut resolve_nodes,
                         )
                     })?;
-                    return self.open(resolved, flags, ctx);
+                    return match resolved {
+                        ResolveResult::Normal(redox_reference) => {
+                            self.open(redox_reference, flags, ctx)
+                        }
+                        ResolveResult::External(redox_path) => {
+                            self.open_external(redox_path, flags)
+                        }
+                    };
                 } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));
                 } else {
@@ -320,7 +353,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                     ))
                 }
             }
-            None => {
+            ResolveResult::Normal(None) => {
                 if flags & O_CREAT != O_CREAT {
                     return Err(Error::new(ENOENT));
                 }
@@ -404,6 +437,22 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         })
     }
 
+    fn open_external(&mut self, redox_path: RedoxPath<'_>, flags: usize) -> Result<OpenResult> {
+        if flags & syscall::O_SYMLINK == 0 || flags & syscall::O_CREAT != 0 {
+            // Handle::ResourceExternal is relibc internal behavior which relibc should resolve
+            // into by open() from the path of this `fpath` before returning the handle to user
+            return Err(Error::new(EXDEV));
+        }
+        let path = redox_path.to_standard().to_string();
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let handle = Handle::ResourceExternal((path, PhantomData));
+        self.handles.insert(id, handle);
+        Ok(OpenResult::ThisScheme {
+            number: id,
+            flags: NewFdFlags::POSITIONED,
+        })
+    }
+
     fn unlink_internal(
         &mut self,
         start_ptr: TreePtr<Node>,
@@ -419,6 +468,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
 
             let Some((child, child_name)) =
                 Self::path_nodes(scheme_name, tx, start_ptr, path, uid, gid, &mut nodes)?
+                    .normal()?
             else {
                 return Err(Error::new(ENOENT));
             };
@@ -475,19 +525,20 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         Ok(())
     }
 
-    fn path_nodes(
+    fn path_nodes<'a>(
         scheme_name: &RedoxScheme<'sock>,
         tx: &mut Transaction<D>,
         start_ptr: TreePtr<Node>,
-        path: &RedoxReference<'_>,
+        path: &'a RedoxReference<'a>,
         uid: u32,
         gid: u32,
         nodes: &mut SmallVec<[(TreeData<Node>, String); 16]>,
-    ) -> Result<Option<(TreeData<Node>, String)>> {
+    ) -> Result<ResolveResult<'a, Option<(TreeData<Node>, String)>>> {
         let mut parts = path
             .as_ref()
             .split('/')
-            .filter(|part| !part.is_empty() && *part != ".");
+            .filter(|part| !part.is_empty() && *part != ".")
+            .peekable();
         let mut part_opt: Option<&str> = None;
         let mut node_ptr = start_ptr;
         let mut node_name = String::new();
@@ -508,8 +559,6 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 }
                 if node.data().is_symlink() {
                     let mut url = String::new();
-                    // url.push_str(scheme_name.as_ref());
-                    // url.push(':');
                     for (_parent, parent_name) in nodes.iter() {
                         if !url.is_empty() {
                             url.push('/');
@@ -517,7 +566,15 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         url.push_str(&parent_name);
                     }
                     let url = RedoxReference::new(url).ok_or(Error::new(EINVAL))?;
-                    Self::resolve_symlink(scheme_name, tx, uid, gid, url, node, nodes)?;
+                    if let ResolveResult::External(mut path) =
+                        Self::resolve_symlink(scheme_name, tx, uid, gid, url, node, nodes)?
+                    {
+                        path = path.join(part).ok_or(Error::new(EINVAL))?;
+                        while let Some(part) = parts.next() {
+                            path = path.join(part).ok_or(Error::new(EINVAL))?;
+                        }
+                        return Ok(ResolveResult::External(path));
+                    }
                     node_ptr = nodes.last().unwrap().0.ptr();
                 } else if !node.data().is_dir() {
                     return Err(Error::new(ENOTDIR));
@@ -526,13 +583,13 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                     nodes.push((node, part.to_string()));
                 }
             } else {
-                match node_res {
-                    Ok(node) => return Ok(Some((node, node_name))),
+                return Ok(ResolveResult::Normal(match node_res {
+                    Ok(node) => Some((node, node_name)),
                     Err(err) => match err.errno {
-                        ENOENT => return Ok(None),
+                        ENOENT => None,
                         _ => return Err(err),
                     },
-                }
+                }));
             }
         }
     }
@@ -560,9 +617,17 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         let uid = ctx.uid;
         let gid = ctx.gid;
 
-        let (_, Some(new_name)) = new_path.dirname_split() else {
+        let (new_path_parent, Some(new_name)) = new_path.dirname_split() else {
             return Err(Error::new(EPERM));
         };
+
+        if RedoxStr::from(new_path_parent)
+            .as_abs()
+            .and_then(|s| s.get_scheme())
+            .is_some_and(|s| &s != scheme_name)
+        {
+            return Err(Error::new(EXDEV));
+        }
 
         let orig_parent_ptr = match file.parent_ptr_opt() {
             Some(some) => some,
@@ -585,7 +650,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             uid,
             gid,
             &mut new_nodes,
-        )?;
+        )?
+        .normal()?;
 
         let Some((new_parent, _)) = new_nodes.pop() else {
             return Err(Error::new(EPERM));
@@ -727,32 +793,34 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn fpath(&mut self, id: usize, buf: &mut [u8], _ctx: &CallerCtx) -> Result<usize> {
+        use std::io::Write;
         // println!("Fpath {}, {:X} {}", id, buf.as_ptr() as usize, buf.len());
-        let file = Handle::get_resource(self.handles.get(&id))?;
-        let mounted_path = self.mounted_path.as_bytes();
 
-        let mut i = 0;
-        while i < buf.len() && i < mounted_path.len() {
-            buf[i] = mounted_path[i];
-            i += 1;
-        }
+        let mut writer = &mut buf[..];
 
-        let path = file.path().as_bytes();
+        let handle = self.handles.get(&id);
+        let path: Cow<'_, str> = match Handle::get_resource(handle.clone()) {
+            Ok(file) => file.path().into(),
+            Err(Error { errno: EXDEV }) => {
+                let Some(Handle::ResourceExternal((path, _))) = handle else {
+                    unreachable!()
+                };
+                return Ok(writer.write(path.as_bytes()).map_err(|_| Error::new(EIO))?);
+            }
+            Err(e) => return Err(e),
+        };
+
+        let path = path.as_bytes();
+        let mut len = writer
+            .write(self.mounted_path.as_bytes())
+            .map_err(|_| Error::new(EIO))?;
+
         if !path.is_empty() {
-            if i < buf.len() {
-                buf[i] = b'/';
-                i += 1;
-            }
-
-            let mut j = 0;
-            while i < buf.len() && j < path.len() {
-                buf[i] = path[j];
-                i += 1;
-                j += 1;
-            }
+            len += writer.write(b"/").map_err(|_| Error::new(EIO))?;
+            len += writer.write(path).map_err(|_| Error::new(EIO))?;
         }
 
-        Ok(i)
+        Ok(len)
     }
 
     fn flink(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
