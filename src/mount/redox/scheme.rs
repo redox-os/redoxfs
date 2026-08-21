@@ -20,7 +20,7 @@ use syscall::error::{
 };
 use syscall::flag::{
     EventFlags, MapFlags, StdFsCallKind, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW,
-    O_RDONLY, O_RDWR, O_SYMLINK, O_TRUNC, O_WRONLY,
+    O_RDONLY, O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
 use syscall::FobtainFdFlags;
@@ -289,7 +289,10 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                             PhantomData,
                         ))
                     }
-                } else if node.data().is_symlink() && flags & O_NOFOLLOW != O_NOFOLLOW {
+                } else if node.data().is_symlink()
+                    && !(flags & O_STAT == O_STAT && flags & O_NOFOLLOW == O_NOFOLLOW)
+                    && flags & O_SYMLINK != O_SYMLINK
+                {
                     // Without O_NOFOLLOW, we have to continue traversing symlink
                     let mut resolve_nodes = SmallVec::new();
                     let resolved = self.fs.tx(|tx| {
