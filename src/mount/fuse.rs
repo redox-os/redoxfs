@@ -36,11 +36,23 @@ where
 {
     let mountpoint = mountpoint.as_ref();
 
+    let mut options = Vec::new();
+
     // One of the uses of this redoxfs fuse wrapper is to populate a filesystem
     // while building the Redox OS kernel. This means that we need to write on
     // a filesystem that belongs to `root`, which in turn means that we need to
     // be `root`, thus that we need to allow `root` to have access.
-    let defer_permissions = [MountOption::CUSTOM("defer_permissions".to_owned())];
+    if cfg!(target_os = "macos") {
+        options.push(MountOption::CUSTOM("defer_permissions".to_owned()));
+    }
+
+    // This allows redoxfs being run as root (e.g. mounting /dev partition)
+    // then accessing it from non root account, with built-in file access check.
+    if std::env::var("REDOXFS_FUSE_SHARE").is_ok_and(|s| s == "1") {
+        options.push(MountOption::AllowOther);
+        options.push(MountOption::AutoUnmount);
+        options.push(MountOption::DefaultPermissions);
+    }
 
     let res = {
         let mut session = Session::new(
@@ -48,11 +60,7 @@ where
                 fs: &mut filesystem,
             },
             mountpoint,
-            if cfg!(target_os = "macos") {
-                &defer_permissions
-            } else {
-                &[]
-            },
+            &options,
         )?;
 
         let res = callback(mountpoint);
