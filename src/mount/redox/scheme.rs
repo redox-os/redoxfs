@@ -466,6 +466,8 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         uid: u32,
         gid: u32,
     ) -> Result<()> {
+        println!("Unlinkat '{}' flags: {:X}", path, flags);
+
         let scheme_name = &self.scheme_name;
 
         let unlink_result = self.fs.tx(|tx| {
@@ -737,8 +739,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
             _ => path.canonical(),
         };
         let start_ptr = TreePtr::root();
-
-        // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
         self.unlink_internal(start_ptr, &path, flags, uid, gid)
     }
@@ -1105,7 +1105,7 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         &mut self,
         id: usize,
         kind: StdFsCallKind,
-        _payload: &mut [u8],
+        payload: &mut [u8],
         metadata: StdFsCallMeta,
         ctx: &CallerCtx,
     ) -> Result<usize> {
@@ -1118,23 +1118,22 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
                 }
                 self.fchown(id, new_uid, new_gid as u32, ctx).map(|_| 0)
             }
-            /* TODO: Support Unlinkat using std_fs_call
-            Unlinkat => {
+            StdFsCallKind::Unlinkat => {
                 let path = unsafe { str::from_utf8_unchecked(payload) };
-                let flags = metadata.arg1;
-                let dir_node_ptr = match self.handles.get(&id).ok_or(Error::new(EBADF))? {
+                let flags = metadata.arg1 as usize;
+
+                let path = RedoxReference::new(path).ok_or(Error::new(EINVAL))?;
+                let path = match Handle::get_resource_or(self.handles.get(&id))? {
                     // If pathname is absolute, then dirfd is ignored.
-                    Handle::Resource(dir_resource) if !path.starts_with('/') => {
-                        // only allow dirresource as base for openat
-                        dir_resource.node_ptr()
-                    }
-                    _ => TreePtr::root(),
+                    Some(res) if path.is_relative() => resolve_path(res, path)?,
+                    _ => path.canonical(),
                 };
+                let start_ptr = TreePtr::root();
                 let (_pid, uid, gid) = get_uid_gid_from_pid(&self.proc_creds_capability, ctx.pid)?;
-                self.unlink_internal(dir_node_ptr, path, *flags as usize, uid, gid)
+
+                self.unlink_internal(start_ptr, &path, flags, uid, gid)
                     .map(|_| 0)
             }
-            */
             _ => Err(Error::new(EOPNOTSUPP)),
         }
     }
