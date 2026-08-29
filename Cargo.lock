@@ -624,9 +624,9 @@ dependencies = [
 
 [[package]]
 name = "redox-scheme"
-version = "0.11.2"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5928b2f572e06a74e9c210fcacf15b70b8ffa6fdb3d8650f4601b83c12fe194b"
+checksum = "aee42bf75b05941289e47373f24b4bce194a49d5eb5c99d7e0f82ab15c62e800"
 dependencies = [
  "libredox",
  "redox_syscall 0.9.0",
