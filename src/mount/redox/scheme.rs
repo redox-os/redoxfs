@@ -626,13 +626,14 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             return Err(Error::new(EPERM));
         };
 
-        if RedoxStr::from(new_path_parent)
+        let new_path = match RedoxStr::from(new_path_parent)
             .as_abs()
-            .and_then(|s| s.get_scheme())
-            .is_some_and(|s| &s != scheme_name)
+            .and_then(|s| s.as_parts())
         {
-            return Err(Error::new(EXDEV));
-        }
+            Some((s, _)) if &s != scheme_name => return Err(Error::new(EXDEV)),
+            Some((_, r)) => r.join_checked(new_name.clone()),
+            None => new_path.clone(),
+        };
 
         let orig_parent_ptr = match file.parent_ptr_opt() {
             Some(some) => some,
@@ -651,7 +652,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             scheme_name,
             tx,
             TreePtr::root(),
-            new_path,
+            &new_path,
             uid,
             gid,
             &mut new_nodes,
