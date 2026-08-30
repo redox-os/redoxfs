@@ -20,7 +20,7 @@ use syscall::error::{
 };
 use syscall::flag::{
     EventFlags, MapFlags, StdFsCallKind, O_ACCMODE, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW,
-    O_RDONLY, O_RDWR, O_SYMLINK, O_TRUNC, O_WRONLY,
+    O_RDONLY, O_RDWR, O_STAT, O_SYMLINK, O_TRUNC, O_WRONLY,
 };
 use syscall::schemev2::NewFdFlags;
 use syscall::FobtainFdFlags;
@@ -290,7 +290,6 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                         ))
                     }
                 } else if node.data().is_symlink()
-                    // TODO: O_NOFOLLOW & O_RDONLY should throw ELOOP, thus not giving the handle to read symlink
                     && !(flags & O_NOFOLLOW == O_NOFOLLOW)
                     // TODO: Old relibc symlink traversal, delete this condition later
                     && !(flags & O_SYMLINK == O_SYMLINK && flags & O_RDONLY == O_RDONLY)
@@ -316,6 +315,11 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                             self.open_external(redox_path, flags)
                         }
                     };
+                } else if node.data().is_symlink()
+                    && flags & O_NOFOLLOW == O_NOFOLLOW
+                    && flags & O_STAT != O_STAT
+                {
+                    return Err(Error::new(ELOOP));
                 } else if !node.data().is_symlink() && flags & O_SYMLINK == O_SYMLINK {
                     return Err(Error::new(EINVAL));
                 } else {
