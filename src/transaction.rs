@@ -1169,7 +1169,13 @@ impl<'a, D: Disk> Transaction<'a, D> {
         htree_root
             .data_mut()
             .ptrs
-            .sort_by(|a, b| a.htree_hash.cmp(&b.htree_hash));
+            .sort_by(|a, b| match (a.is_null(), b.is_null()) {
+                (true, true) => core::cmp::Ordering::Equal,
+                (true, false) => core::cmp::Ordering::Greater,
+                (false, true) => core::cmp::Ordering::Less,
+                (false, false) => a.htree_hash.cmp(&b.htree_hash),
+            });
+
         if htree_root.data().ptrs[0].is_null() {
             // Dealocate the htree_root only if it was a real root node in the H-tree
             if htree_levels > 0 {
@@ -1428,7 +1434,12 @@ impl<'a, D: Disk> Transaction<'a, D> {
                 htree_node
                     .data_mut()
                     .ptrs
-                    .sort_by(|a, b| a.htree_hash.cmp(&b.htree_hash));
+                    .sort_by(|a, b| match (a.is_null(), b.is_null()) {
+                        (true, true) => core::cmp::Ordering::Equal,
+                        (true, false) => core::cmp::Ordering::Greater,
+                        (false, true) => core::cmp::Ordering::Less,
+                        (false, false) => a.htree_hash.cmp(&b.htree_hash),
+                    });
 
                 if let Some(new_htree_hash) = htree_node.data().find_max_htree_hash() {
                     // The entry_ptr needs to be updated in the parent_htree_node
