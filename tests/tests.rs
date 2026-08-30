@@ -73,9 +73,25 @@ where
             }
             real_path
         } else {
-            sleep(Duration::from_millis(200));
-            let r = Path::new(".").join(&mount_path);
-            r
+            let real_path = Path::new(".").join(&mount_path);
+            let mut tries = 0;
+            loop {
+                let status = Command::new("mountpoint")
+                    .arg("-q")
+                    .arg(&real_path)
+                    .status();
+
+                if status.is_ok_and(|s| s.success()) {
+                    break;
+                }
+
+                tries += 1;
+                if tries == 20 {
+                    panic!("Fail to wait for mount");
+                }
+                sleep(Duration::from_millis(100));
+            }
+            real_path
         };
 
         let res = catch_unwind(AssertUnwindSafe(|| callback(&real_path)));
