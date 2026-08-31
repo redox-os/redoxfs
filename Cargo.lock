@@ -613,7 +613,7 @@ checksum = "083c57139a99303d842a4cfe1f0fd6483d77d81eda1442be84bcb1a0f737ed96"
 [[package]]
 name = "redox-rings"
 version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-rings.git?branch=update-crates#7dea230a6913706f03a67e66fcd90f1b22b80c81"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-rings.git?branch=update-crates#fbe737ce90b92fd7fb6b50186a30fa728b6288f4"
 dependencies = [
  "bitflags 2.13.1",
  "libredox",
@@ -642,7 +642,7 @@ dependencies = [
 [[package]]
 name = "redox_syscall"
 version = "0.10.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/syscall.git?branch=rm-redundant-dup#1899ea04747aa5346b93991cd218b1c88a72d93a"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/syscall.git?branch=rm-redundant-dup#b8f2c99242ad53f91c27f3a53ef89a0e5152aba6"
 dependencies = [
  "bitflags 2.13.1",
 ]
