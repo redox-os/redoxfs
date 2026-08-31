@@ -466,7 +466,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         uid: u32,
         gid: u32,
     ) -> Result<()> {
-        println!("Unlinkat '{}' flags: {:X}", path, flags);
+        // println!("Unlinkat '{}' flags: {:X}", path, flags);
 
         let scheme_name = &self.scheme_name;
 
@@ -605,8 +605,10 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
     fn validate_new_link<'a>(
         scheme_name: &'_ RedoxScheme<'sock>,
         file: &'_ dyn Resource<D>,
+        start_ptr: TreePtr<Node>,
         new_path: &'a RedoxReference<'a>,
-        ctx: &'_ CallerCtx,
+        uid: u32,
+        gid: u32,
         tx: &mut Transaction<'_, D>,
     ) -> Result<
         (
@@ -621,8 +623,11 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         // The new pathname contained a path prefix of the old, or, more generally,
         // an attempt was made to make a directory a subdirectory of itself.
 
-        let uid = ctx.uid;
-        let gid = ctx.gid;
+        let start_ptr = if new_path.is_relative() {
+            start_ptr
+        } else {
+            TreePtr::root()
+        };
 
         let (new_path_parent, Some(new_name)) = new_path.dirname_split() else {
             return Err(Error::new(EPERM));
@@ -652,7 +657,7 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
         let new_node_opt = Self::path_nodes(
             scheme_name,
             tx,
-            TreePtr::root(),
+            start_ptr,
             new_path,
             uid,
             gid,
@@ -694,6 +699,83 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             }
         }
         Ok((orig_parent_ptr, orig_node, new_parent, new_name))
+    }
+
+    fn flink_internal(
+        &mut self,
+        id: usize,
+        start_ptr: TreePtr<Node>,
+        path: &str,
+        _flags: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<usize> {
+        let new_path = RedoxReference::new(path)
+            .ok_or(Error::new(EINVAL))?
+            .canonical();
+
+        // println!("Flink {}, {} from {}, {}", id, new_path, uid, gid);
+
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+
+        let scheme_name = &self.scheme_name;
+        self.fs.tx(|tx| {
+            let (_, orig_node, new_parent, new_name) =
+                Self::validate_new_link(scheme_name, file, start_ptr, &new_path, uid, gid, tx)?;
+
+            tx.link_node(new_parent.ptr(), new_name.as_ref(), orig_node.ptr())?;
+
+            file.set_path(new_path.as_ref());
+            Ok(0)
+        })
+    }
+
+    fn frename_internal(
+        &mut self,
+        id: usize,
+        start_ptr: TreePtr<Node>,
+        path: &str,
+        flags: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<usize> {
+        let new_path = RedoxReference::new(path)
+            .ok_or(Error::new(EINVAL))?
+            .canonical();
+
+        // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
+
+        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
+
+        let old_path = file.redox_path();
+        let (_, Some(old_name)) = old_path.dirname_split() else {
+            return Err(Error::new(EPERM));
+        };
+
+        let scheme_name = &self.scheme_name;
+        let old_name = old_name.as_ref();
+        self.fs.tx(|tx| {
+            let (orig_parent_ptr, _, new_parent, new_name) =
+                Self::validate_new_link(scheme_name, file, start_ptr, &new_path, uid, gid, tx)?;
+
+            if flags & libredox::flag::RENAME_NOREPLACE != 0 {
+                if tx.find_node(new_parent.ptr(), new_name.as_ref()).is_ok() {
+                    return Err(Error::new(EEXIST));
+                }
+            }
+
+            tx.rename_node(
+                orig_parent_ptr,
+                old_name,
+                new_parent.ptr(),
+                new_name.as_ref(),
+            )?;
+
+            Ok(())
+        })?;
+
+        file.set_path(new_path.as_ref());
+        Ok(0)
     }
 }
 
@@ -829,58 +911,44 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn flink(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
-        let new_path = RedoxReference::new(url)
-            .ok_or(Error::new(EINVAL))?
-            .canonical();
+        self.flink_internal(id, TreePtr::root(), url, 0, ctx.uid, ctx.gid)
+    }
 
-        // println!("Flink {}, {} from {}, {}", id, new_path, ctx.uid, ctx.gid);
-
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-
-        let scheme_name = &self.scheme_name;
-        self.fs.tx(|tx| {
-            let (_, orig_node, new_parent, new_name) =
-                Self::validate_new_link(scheme_name, file, &new_path, ctx, tx)?;
-
-            tx.link_node(new_parent.ptr(), new_name.as_ref(), orig_node.ptr())?;
-
-            file.set_path(new_path.as_ref());
-            Ok(0)
-        })
+    fn flinkat(
+        &mut self,
+        id: usize,
+        dirid: usize,
+        path: &str,
+        flags: u32,
+        ctx: &CallerCtx,
+    ) -> Result<usize> {
+        let dir_ptr = match Handle::get_resource_or(self.handles.get(&dirid))? {
+            Some(res) => res.node_ptr(),
+            None => TreePtr::root(),
+        };
+        let (_pid, uid, gid) = get_uid_gid_from_pid(&self.proc_creds_capability, ctx.pid)?;
+        self.flink_internal(id, dir_ptr, path, flags, uid, gid)
     }
 
     fn frename(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
-        let new_path = RedoxReference::new(url)
-            .ok_or(Error::new(EINVAL))?
-            .canonical();
+        self.frename_internal(id, TreePtr::root(), url, 0, ctx.uid, ctx.gid)
+    }
 
-        // println!("Frename {}, {} from {}, {}", id, new_path, ctx.uid, ctx.gid);
-
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-
-        let old_path = file.redox_path();
-        let (_, Some(old_name)) = old_path.dirname_split() else {
-            return Err(Error::new(EPERM));
+    fn frenameat(
+        &mut self,
+        id: usize,
+        dirid: usize,
+        path: &str,
+        flags: u32,
+        ctx: &CallerCtx,
+    ) -> Result<usize> {
+        println!("frenameat called");
+        let dir_ptr = match Handle::get_resource_or(self.handles.get(&dirid))? {
+            Some(res) => res.node_ptr(),
+            None => TreePtr::root(),
         };
-
-        let scheme_name = &self.scheme_name;
-        let old_name = old_name.as_ref();
-        self.fs.tx(|tx| {
-            let (orig_parent_ptr, _, new_parent, new_name) =
-                Self::validate_new_link(scheme_name, file, &new_path, ctx, tx)?;
-
-            tx.rename_node(
-                orig_parent_ptr,
-                old_name,
-                new_parent.ptr(),
-                new_name.as_ref(),
-            )?;
-
-            Ok(())
-        })?;
-
-        file.set_path(new_path.as_ref());
-        Ok(0)
+        let (_pid, uid, gid) = get_uid_gid_from_pid(&self.proc_creds_capability, ctx.pid)?;
+        self.frename_internal(id, dir_ptr, path, flags, uid, gid)
     }
 
     fn fstat(&mut self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {
