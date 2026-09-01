@@ -1,8 +1,8 @@
 use crate::{
     htree::{HTreeHash, HTreeNode, HTreePtr, HTREE_IDX_ENTRIES},
     transaction::{level_data, level_data_mut, FsCtx},
-    BlockAddr, BlockData, BlockMeta, BlockPtr, DirEntry, DirList, DiskMemory, DiskSparse,
-    FileSystem, Node, TreePtr, ALLOC_GC_THRESHOLD, BLOCK_SIZE,
+    BlockAddr, BlockData, BlockMeta, BlockPtr, DirEntry, DirList, DiskSparse, FileSystem, Node,
+    TreePtr, ALLOC_GC_THRESHOLD, BLOCK_SIZE,
 };
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
