@@ -942,7 +942,6 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
         flags: u32,
         ctx: &CallerCtx,
     ) -> Result<usize> {
-        println!("frenameat called");
         let dir_ptr = match Handle::get_resource_or(self.handles.get(&dirid))? {
             Some(res) => res.node_ptr(),
             None => TreePtr::root(),
