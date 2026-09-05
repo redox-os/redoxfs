@@ -732,31 +732,89 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
 
     fn frename_internal(
         &mut self,
-        id: usize,
-        start_ptr: TreePtr<Node>,
-        path: &str,
+        old_start_ptr: TreePtr<Node>,
+        old_path: &str,
+        new_start_ptr: TreePtr<Node>,
+        new_path: &str,
         flags: u32,
         uid: u32,
         gid: u32,
     ) -> Result<usize> {
-        let new_path = RedoxReference::new(path)
+        // println!("Frename {}, {}  {} from {}, {}", old_path, new_path, flags, uid, gid);
+
+        let old_path = RedoxReference::new(old_path)
+            .ok_or(Error::new(EINVAL))?
+            .canonical();
+        let new_path = RedoxReference::new(new_path)
             .ok_or(Error::new(EINVAL))?
             .canonical();
 
-        // println!("Frename {}, {} from {}, {}", id, new_path, uid, gid);
-
-        let file = Handle::get_resource_mut(self.handles.get_mut(&id))?;
-
-        let old_path = file.redox_path();
-        let (_, Some(old_name)) = old_path.dirname_split() else {
+        let (_old_path_parent, Some(old_name)) = old_path.dirname_split() else {
             return Err(Error::new(EPERM));
+        };
+        let (_new_path_parent, Some(new_name)) = new_path.dirname_split() else {
+            return Err(Error::new(EPERM));
+        };
+
+        let scheme_name = &self.scheme_name;
+
+        let old_start_ptr = if old_path.is_relative() {
+            old_start_ptr
+        } else {
+            TreePtr::root()
+        };
+
+        let new_start_ptr = if new_path.is_relative() {
+            new_start_ptr
+        } else {
+            TreePtr::root()
         };
 
         let scheme_name = &self.scheme_name;
         let old_name = old_name.as_ref();
         self.fs.tx(|tx| {
-            let (orig_parent_ptr, _, new_parent, new_name) =
-                Self::validate_new_link(scheme_name, file, start_ptr, &new_path, uid, gid, tx)?;
+            let mut old_nodes = SmallVec::new();
+            let Some((orig_node, _)) = Self::path_nodes(
+                scheme_name,
+                tx,
+                old_start_ptr,
+                &old_path,
+                uid,
+                gid,
+                &mut old_nodes,
+            )?
+            .normal()?
+            else {
+                return Err(Error::new(ENOENT));
+            };
+
+            let Some((orig_parent, _)) = old_nodes.pop() else {
+                return Err(Error::new(EBUSY));
+            };
+
+            if !orig_parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                return Err(Error::new(EACCES));
+            }
+
+            let mut new_nodes = SmallVec::new();
+            let new_node_opt = Self::path_nodes(
+                scheme_name,
+                tx,
+                new_start_ptr,
+                &new_path,
+                uid,
+                gid,
+                &mut new_nodes,
+            )?
+            .normal()?;
+
+            let Some((new_parent, _)) = new_nodes.pop() else {
+                return Err(Error::new(EPERM));
+            };
+
+            if !new_parent.data().permission(uid, gid, Node::MODE_WRITE) {
+                return Err(Error::new(EACCES));
+            }
 
             if flags & libredox::flag::RENAME_NOREPLACE != 0 {
                 if tx.find_node(new_parent.ptr(), new_name.as_ref()).is_ok() {
@@ -764,9 +822,27 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
                 }
             }
 
+            if let Some((ref new_node, _)) = new_node_opt {
+                if new_node.data().is_dir() {
+                    if !orig_node.data().is_dir() {
+                        return Err(Error::new(EISDIR));
+                    }
+
+                    let mut children = Vec::new();
+                    tx.child_nodes(new_node.ptr(), &mut children)?;
+                    if !children.is_empty() {
+                        return Err(Error::new(ENOTEMPTY));
+                    }
+                } else {
+                    if orig_node.data().is_dir() {
+                        return Err(Error::new(ENOTDIR));
+                    }
+                }
+            }
+
             tx.rename_node(
-                orig_parent_ptr,
-                old_name,
+                orig_parent.ptr(),
+                old_name.as_ref(),
                 new_parent.ptr(),
                 new_name.as_ref(),
             )?;
@@ -774,7 +850,6 @@ impl<'sock, D: Disk> FileScheme<'sock, D> {
             Ok(())
         })?;
 
-        file.set_path(new_path.as_ref());
         Ok(0)
     }
 }
@@ -931,23 +1006,49 @@ impl<'sock, D: Disk> SchemeSync for FileScheme<'sock, D> {
     }
 
     fn frename(&mut self, id: usize, url: &str, ctx: &CallerCtx) -> Result<usize> {
-        self.frename_internal(id, TreePtr::root(), url, 0, ctx.uid, ctx.gid)
+        let file = Handle::get_resource(self.handles.get(&id))?;
+        let old_path = file.path().to_string();
+        self.frename_internal(
+            TreePtr::root(),
+            &old_path,
+            TreePtr::root(),
+            url,
+            0,
+            ctx.uid,
+            ctx.gid,
+        )
     }
 
     fn frenameat(
         &mut self,
-        id: usize,
-        dirid: usize,
-        path: &str,
+        old_dir: usize,
+        old_path: &str,
+        new_dir: usize,
+        new_path: &str,
         flags: u32,
         ctx: &CallerCtx,
     ) -> Result<usize> {
-        let dir_ptr = match Handle::get_resource_or(self.handles.get(&dirid))? {
+        let old_dir_ptr = match Handle::get_resource_or(self.handles.get(&old_dir))? {
             Some(res) => res.node_ptr(),
             None => TreePtr::root(),
         };
+
+        let new_dir_ptr = match Handle::get_resource_or(self.handles.get(&new_dir))? {
+            Some(res) => res.node_ptr(),
+            None => TreePtr::root(),
+        };
+
         let (_pid, uid, gid) = get_uid_gid_from_pid(&self.proc_creds_capability, ctx.pid)?;
-        self.frename_internal(id, dir_ptr, path, flags, uid, gid)
+
+        self.frename_internal(
+            old_dir_ptr,
+            old_path,
+            new_dir_ptr,
+            new_path,
+            flags,
+            uid,
+            gid,
+        )
     }
 
     fn fstat(&mut self, id: usize, stat: &mut Stat, _ctx: &CallerCtx) -> Result<()> {

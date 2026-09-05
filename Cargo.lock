@@ -394,8 +394,8 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
-version = "0.1.22"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=fcntl-fd-flags#830e662efff6656a9bb831230ed5021147fd0e53"
+version = "0.1.23"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/libredox.git?branch=fcntl-fd-flags#6c6babe8ee9e2f3bc09398c6f38a8d9405006228"
 dependencies = [
  "bitflags 2.13.1",
  "libc",
@@ -613,7 +613,7 @@ checksum = "083c57139a99303d842a4cfe1f0fd6483d77d81eda1442be84bcb1a0f737ed96"
 [[package]]
 name = "redox-rings"
 version = "0.1.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-rings.git?branch=update-crates#fbe737ce90b92fd7fb6b50186a30fa728b6288f4"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-rings.git?branch=update-redox_syscall#59487986de159561cfce6ede52025b0ecb0892f4"
 dependencies = [
  "bitflags 2.13.1",
  "libredox",
@@ -623,8 +623,8 @@ dependencies = [
 
 [[package]]
 name = "redox-scheme"
-version = "0.11.4"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-scheme.git?branch=update-crates#f3d785c4b4805ca5c5781f842711bd255cd96401"
+version = "0.11.5"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/redox-scheme.git?branch=update-crates#6dc9e715dc94a2b12e2843c477b74cf9d3cf8925"
 dependencies = [
  "libredox",
  "redox_syscall 0.10.0",
@@ -642,7 +642,7 @@ dependencies = [
 [[package]]
 name = "redox_syscall"
 version = "0.10.0"
-source = "git+https://gitlab.redox-os.org/Ibuki.O/syscall.git?branch=rm-redundant-dup#b8f2c99242ad53f91c27f3a53ef89a0e5152aba6"
+source = "git+https://gitlab.redox-os.org/Ibuki.O/kernel.git?branch=rebase#21873528b90d1968d7752e9fb048670ff4a4660c"
 dependencies = [
  "bitflags 2.13.1",
 ]

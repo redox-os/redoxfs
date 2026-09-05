@@ -56,7 +56,7 @@ log = { version = "0.4.14", default-features = false, optional = true }
 lz4_flex = { version = "0.11", default-features = false, features = ["checked-decode"] }
 parse-size = { version = "1", optional = true }
 range-tree = { version = "0.1", optional = true }
-redox_syscall = { git = "https://gitlab.redox-os.org/Ibuki.O/syscall.git", branch = "rm-redundant-dup" }
+redox_syscall = { git = "https://gitlab.redox-os.org/Ibuki.O/kernel.git", branch = "rebase" }
 seahash = { version = "4.1.0", default-features = false }
 smallvec = { version = "1.15.2", optional = true }
 termion = { version = "4", optional = true }
@@ -88,7 +88,7 @@ std = [
 fuser = { version = "0.16", optional = true }
 
 [target.'cfg(target_os = "redox")'.dependencies]
-redox-rings = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-rings.git", branch = "update-crates", features = ["userspace", "sync"] }
+redox-rings = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-rings.git", branch = "update-redox_syscall", features = ["userspace", "sync"] }
 libredox = { git = "https://gitlab.redox-os.org/Ibuki.O/libredox.git", branch = "fcntl-fd-flags", optional = true }
 redox-path = "0.4.1"
 redox-scheme = { git = "https://gitlab.redox-os.org/Ibuki.O/redox-scheme.git", branch = "update-crates", optional = true }
